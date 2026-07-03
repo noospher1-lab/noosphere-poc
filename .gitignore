@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.bak
+noosphere.db
+.env
+.pytest_cache/
+uvicorn.log

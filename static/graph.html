@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Noosphere — Argument Graph</title>
+<style>
+  :root {
+    --bg: #05060a;
+    --ivory: #ece6d8;
+    --bronze: #d8af6e;
+    --green: #57d98a;
+    --red: #e25b56;
+    --orange: #e2933f;
+    --blue: #5aa9e6;
+    --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  /* ---- edge labels (CSS overlay, billboarded via JS) ---- */
+  .edge-label {
+    position: absolute; transform: translate(-50%, -50%);
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.12em;
+    padding: 1px 5px; border-radius: 2px; pointer-events: none;
+    background: rgba(5,6,10,0.72); white-space: nowrap; opacity: 0; transition: opacity .3s;
+  }
+  .edge-label.show { opacity: 0.9; }
+  .rel-SUPPORTS  { color: var(--green);  border: 1px solid rgba(87,217,138,0.35); }
+  .rel-REBUTS    { color: var(--red);    border: 1px solid rgba(226,91,86,0.35); }
+  .rel-UNDERCUTS { color: var(--orange); border: 1px solid rgba(226,147,63,0.35); }
+  .rel-QUALIFIES { color: var(--blue);   border: 1px solid rgba(90,169,230,0.35); }
+
+  /* ---- node labels (short thesis; full text in HUD on click) ---- */
+  .node-label {
+    position: absolute; transform: translate(-50%, -50%);
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em;
+    color: var(--ivory); padding: 2px 7px; border-radius: 3px;
+    background: rgba(5,6,10,0.62); border: 1px solid rgba(216,175,110,0.22);
+    pointer-events: none; white-space: nowrap; max-width: 230px;
+    overflow: hidden; text-overflow: ellipsis;
+    opacity: 0; transition: opacity .3s;
+  }
+  .node-label.show { opacity: 0.92; }
+  .node-label.prop {
+    color: var(--bronze); font-size: 11px; letter-spacing: 0.14em;
+    text-transform: uppercase; border-color: rgba(216,175,110,0.45);
+  }
+
+  /* ---- time-axis phase markers ---- */
+  .axis-label {
+    position: absolute; transform: translate(-50%, -50%);
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.22em;
+    text-transform: uppercase; color: #6b6658; pointer-events: none;
+    white-space: nowrap; opacity: 0; transition: opacity .3s;
+  }
+  .axis-label.show { opacity: 0.82; }
+  .axis-label.g { color: #6f8bff; }
+  .axis-label.c { color: #b98cff; }
+
+  /* ---- variant switcher ---- */
+  #variants {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 6px; z-index: 5;
+    font-family: var(--mono);
+  }
+  #variants button {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
+    color: #8a8576; background: rgba(12,14,20,0.82); cursor: pointer;
+    border: 1px solid rgba(216,175,110,0.22); border-radius: 3px;
+    padding: 6px 11px; backdrop-filter: blur(6px); transition: all .2s;
+  }
+  #variants button:hover { color: var(--ivory); border-color: rgba(216,175,110,0.4); }
+  #variants button.active { color: #05060a; background: var(--bronze); border-color: var(--bronze); }
+
+  /* ---- topic (discussion) switcher — stub for the future topics menu ---- */
+  #topics {
+    position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 8px; z-index: 5; font-family: var(--mono);
+  }
+  #topics .lbl { font-size: 9px; letter-spacing: 0.22em; text-transform: uppercase; color: #6b6658; }
+  #topics select {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em;
+    color: var(--ivory); background: rgba(12,14,20,0.82); cursor: pointer;
+    border: 1px solid rgba(216,175,110,0.3); border-radius: 3px; padding: 5px 9px;
+    backdrop-filter: blur(6px);
+  }
+
+  /* ---- PoI lens tier legend ---- */
+  #lens-legend {
+    position: fixed; bottom: 40px; left: 20px; font-family: var(--mono);
+    font-size: 9px; letter-spacing: 0.1em; color: #8a8576; display: none; gap: 14px;
+  }
+  #lens-legend.show { display: flex; }
+  #lens-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  #lens-legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+
+  /* ---- HUD panel ---- */
+  #hud {
+    position: fixed; top: 18px; right: 18px; width: 300px; max-width: calc(100vw - 36px);
+    font-family: var(--mono); color: var(--ivory);
+    background: linear-gradient(180deg, rgba(12,14,20,0.92), rgba(8,9,14,0.92));
+    border: 1px solid rgba(216,175,110,0.28); border-radius: 4px;
+    padding: 16px 16px 14px; backdrop-filter: blur(6px);
+    transform: translateX(calc(100% + 30px)); transition: transform .35s cubic-bezier(.2,.8,.2,1);
+  }
+  #hud.open { transform: translateX(0); }
+  #hud .eyebrow { font-size: 9px; letter-spacing: 0.28em; color: var(--bronze); text-transform: uppercase; }
+  #hud h1 { font-size: 15px; line-height: 1.35; margin: 8px 0 10px; font-weight: 500; }
+  #hud .body { font-size: 11px; line-height: 1.55; color: #c4bfb2; margin-bottom: 14px;
+    max-height: 56vh; overflow-y: auto; white-space: pre-wrap; padding-right: 4px; }
+  #hud .body::-webkit-scrollbar { width: 6px; }
+  #hud .body::-webkit-scrollbar-thumb { background: rgba(216,175,110,0.3); border-radius: 3px; }
+  #hud .meter { margin-bottom: 10px; }
+  #hud .meter .row { display: flex; justify-content: space-between; font-size: 10px; letter-spacing: .08em; margin-bottom: 4px; }
+  #hud .meter .row .k { color: var(--bronze); text-transform: uppercase; }
+  #hud .meter .row .v { color: var(--ivory); font-variant-numeric: tabular-nums; }
+  #hud .track { height: 4px; background: rgba(255,255,255,0.07); border-radius: 2px; overflow: hidden; }
+  #hud .fill { height: 100%; width: 0; background: var(--bronze); transition: width .5s ease; }
+  #hud .fill.poi.up { background: var(--green); }
+  #hud .fill.poi.down { background: var(--red); }
+  #hud .close { position: absolute; top: 10px; right: 12px; cursor: pointer; color: #6b6658; font-size: 14px; line-height: 1; }
+  #hud .close:hover { color: var(--ivory); }
+
+  /* ---- reactions (PoI-weighted votes on a node) ---- */
+  #hud-reactions { border-top: 1px solid rgba(216,175,110,0.18); margin-top: 12px; padding-top: 10px; }
+  .rx-head { font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--bronze); margin-bottom: 8px; }
+  .rx-head span { color: #c4bfb2; letter-spacing: 0; text-transform: none; }
+  .rx-act { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+  .rx-act select { flex: 1; font-family: var(--mono); font-size: 10px; color: var(--ivory);
+    background: rgba(5,6,10,0.6); border: 1px solid rgba(216,175,110,0.22); border-radius: 3px; padding: 5px; }
+  .rx-btn { font-family: var(--mono); font-size: 10px; cursor: pointer; border-radius: 3px;
+    padding: 5px 7px; border: 1px solid; background: transparent; }
+  .rx-btn.agree { color: var(--green); border-color: rgba(87,217,138,0.4); }
+  .rx-btn.agree:hover { background: rgba(87,217,138,0.15); }
+  .rx-btn.disagree { color: var(--red); border-color: rgba(226,91,86,0.4); }
+  .rx-btn.disagree:hover { background: rgba(226,91,86,0.15); }
+  .rx-row { display: flex; align-items: center; gap: 6px; font-size: 9px; margin-bottom: 3px; }
+  .rx-row .lab { width: 44px; color: #8a8576; text-align: right; font-variant-numeric: tabular-nums; }
+  .rx-row .bars { flex: 1; display: flex; gap: 2px; align-items: center; }
+  .rx-row .bar { height: 8px; border-radius: 1px; }
+  .rx-row .bar.a { background: var(--green); }
+  .rx-row .bar.d { background: var(--red); }
+  .rx-row .cnt { color: #c4bfb2; font-variant-numeric: tabular-nums; min-width: 28px; }
+  .rx-empty { font-size: 9px; color: #6b6658; }
+
+  /* ---- legend / title ---- */
+  #brand {
+    position: fixed; top: 18px; left: 20px; font-family: var(--mono); color: var(--ivory);
+    pointer-events: none;
+  }
+  #brand .name { font-size: 13px; letter-spacing: 0.34em; text-transform: uppercase; }
+  #brand .name b { color: var(--bronze); font-weight: 500; }
+  #brand .sub { font-size: 9px; letter-spacing: 0.18em; color: #6b6658; margin-top: 4px; }
+
+  #legend {
+    position: fixed; bottom: 16px; left: 20px; font-family: var(--mono);
+    font-size: 9px; letter-spacing: 0.1em; color: #8a8576; display: flex; gap: 14px; flex-wrap: wrap;
+  }
+  #legend span { display: inline-flex; align-items: center; gap: 6px; }
+  #legend i { width: 14px; height: 2px; display: inline-block; }
+
+  #feed {
+    position: fixed; bottom: 16px; right: 18px; width: 300px; max-width: calc(100vw - 36px);
+    font-family: var(--mono); font-size: 9.5px; color: #8a8576; text-align: right;
+    pointer-events: none;
+  }
+  #feed .line { opacity: 0; animation: feedin 4s ease forwards; }
+  @keyframes feedin { 0%{opacity:0; transform:translateY(4px);} 12%{opacity:.95;} 70%{opacity:.95;} 100%{opacity:0;} }
+  .tag-SUPPORTS { color: var(--green); } .tag-REBUTS { color: var(--red); }
+  .tag-UNDERCUTS { color: var(--orange); } .tag-QUALIFIES { color: var(--blue); }
+
+  /* ---- left toolbar + slide-in panels (add argument / test) ---- */
+  #tools {
+    position: fixed; top: 64px; left: 20px; z-index: 6;
+    display: flex; flex-direction: column; gap: 6px; font-family: var(--mono);
+  }
+  #tools button {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
+    color: #8a8576; background: rgba(12,14,20,0.82); cursor: pointer;
+    border: 1px solid rgba(216,175,110,0.22); border-radius: 3px;
+    padding: 6px 11px; backdrop-filter: blur(6px); transition: all .2s; text-align: left;
+  }
+  #tools button:hover { color: var(--ivory); border-color: rgba(216,175,110,0.4); }
+  #tools button.active { color: #05060a; background: var(--bronze); border-color: var(--bronze); }
+
+  .panel {
+    position: fixed; top: 64px; left: 132px; width: 290px; max-width: calc(100vw - 152px);
+    max-height: calc(100vh - 96px); overflow-y: auto;
+    font-family: var(--mono); color: var(--ivory); z-index: 6;
+    background: linear-gradient(180deg, rgba(12,14,20,0.94), rgba(8,9,14,0.94));
+    border: 1px solid rgba(216,175,110,0.28); border-radius: 4px;
+    padding: 14px; backdrop-filter: blur(6px);
+    transform: translateX(-12px); opacity: 0; pointer-events: none; transition: all .3s;
+  }
+  .panel.open { transform: translateX(0); opacity: 1; pointer-events: auto; }
+  .panel h2 { font-size: 10px; letter-spacing: 0.22em; color: var(--bronze);
+    text-transform: uppercase; margin: 0 0 10px; font-weight: 500; }
+  .panel h3 { font-size: 9px; letter-spacing: 0.18em; color: #8a8576;
+    text-transform: uppercase; margin: 14px 0 6px; font-weight: 500; }
+  .panel label { display: block; font-size: 9px; letter-spacing: 0.12em; color: #8a8576;
+    text-transform: uppercase; margin: 8px 0 4px; }
+  .panel textarea, .panel select, .panel input[type=text], .panel input[type=number] {
+    width: 100%; font-family: var(--mono); font-size: 11px; color: var(--ivory);
+    background: rgba(5,6,10,0.6); border: 1px solid rgba(216,175,110,0.22);
+    border-radius: 3px; padding: 7px 8px; box-sizing: border-box;
+  }
+  .panel textarea { resize: vertical; min-height: 64px; }
+  .panel .seg { display: flex; gap: 4px; margin-top: 4px; }
+  .panel .seg button {
+    flex: 1; font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em;
+    color: #8a8576; background: rgba(5,6,10,0.6); cursor: pointer;
+    border: 1px solid rgba(216,175,110,0.22); border-radius: 3px; padding: 6px 4px;
+    transition: all .2s;
+  }
+  .panel .seg button.active { color: #05060a; background: var(--bronze); border-color: var(--bronze); }
+  .panel .primary {
+    width: 100%; margin-top: 12px; font-family: var(--mono); font-size: 11px;
+    letter-spacing: 0.1em; color: #05060a; background: var(--bronze); cursor: pointer;
+    border: none; border-radius: 3px; padding: 9px; transition: opacity .2s;
+  }
+  .panel .primary:disabled { opacity: 0.5; cursor: default; }
+  .panel .hint { font-size: 9px; color: #6b6658; margin-top: 6px; line-height: 1.5; }
+  .panel .status { font-size: 10px; margin-top: 8px; min-height: 13px; }
+  .panel .status.err { color: var(--red); }
+  .panel .status.ok { color: var(--green); }
+  .panel .status.busy { color: var(--bronze); }
+
+  /* persona rows */
+  .author-row { margin-bottom: 10px; }
+  .author-row .top { display: flex; justify-content: space-between; align-items: center; font-size: 10px; }
+  .author-row .top .nm { display: inline-flex; align-items: center; gap: 6px; }
+  .author-row .top .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .author-row .top .rep { color: var(--bronze); font-variant-numeric: tabular-nums; }
+  .author-row input[type=range] { width: 100%; margin-top: 4px; accent-color: var(--bronze); }
+
+  /* weights table */
+  .wrow { display: flex; justify-content: space-between; gap: 8px; font-size: 10px;
+    padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .wrow .t { color: #c4bfb2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wrow .w { color: var(--bronze); font-variant-numeric: tabular-nums; flex: none; }
+  .wrow .a { color: #6b6658; flex: none; }
+
+  @media (max-width: 620px) {
+    #hud { top: auto; bottom: 70px; right: 12px; left: 12px; width: auto; }
+    #feed { display: none; }
+    .panel { left: 12px; right: 12px; width: auto; }
+  }
+  /* ---- pools mode: thin status bar (pools render as graph nodes) ---- */
+  #poolspanel {
+    position: fixed; top: 46px; left: 50%; transform: translateX(-50%); z-index: 7;
+    display: none; align-items: center; gap: 10px; font-family: var(--mono);
+    background: rgba(5,6,10,0.9); border: 1px solid rgba(216,175,110,0.28);
+    border-radius: 4px; backdrop-filter: blur(6px); padding: 6px 12px;
+  }
+  #poolspanel.open { display: flex; }
+  #poolspanel h2 { font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--bronze); margin: 0; font-weight: 500; }
+  #poolspanel .ph { display: contents; }
+  #poolspanel button { font-family: var(--mono); font-size: 9px; color: #8a8576; cursor: pointer;
+    background: rgba(12,14,20,0.82); border: 1px solid rgba(216,175,110,0.22); border-radius: 3px; padding: 4px 8px; }
+  #poolspanel button:hover { color: var(--ivory); border-color: rgba(216,175,110,0.4); }
+  #pools-list { display: none; }
+
+  @media (prefers-reduced-motion: reduce) { #feed .line { animation-duration: 6s; } }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="brand">
+    <div class="name">NOO<b>SPHERE</b></div>
+    <div class="sub">ДИАЛОГ С ИИ · ГРАФ · ОСЬ ВРЕМЕНИ</div>
+  </div>
+
+  <div id="topics">
+    <span class="lbl">Обсуждение</span>
+    <select id="topicsel"></select>
+  </div>
+
+  <div id="hud">
+    <span class="close" id="hud-close">✕</span>
+    <div class="eyebrow" id="hud-type">node</div>
+    <h1 id="hud-label">—</h1>
+    <div class="body" id="hud-content"></div>
+    <div class="meter">
+      <div class="row"><span class="k">PoI score</span><span class="v" id="hud-poi">0.00</span></div>
+      <div class="track"><div class="fill poi" id="hud-poi-fill"></div></div>
+    </div>
+    <div class="meter">
+      <div class="row"><span class="k">Centrality</span><span class="v" id="hud-conf">0.00</span></div>
+      <div class="track"><div class="fill" id="hud-conf-fill"></div></div>
+    </div>
+    <div class="meter">
+      <div class="row"><span class="k">Автор</span><span class="v" id="hud-author">—</span></div>
+      <div class="row"><span class="k">PoI автора в теме</span><span class="v" id="hud-rep">—</span></div>
+      <div class="row"><span class="k">Вес аргумента</span><span class="v" id="hud-weight">—</span></div>
+    </div>
+    <div id="hud-reactions">
+      <div class="rx-head">Реакции <span id="rx-summary"></span></div>
+      <div class="rx-act">
+        <select id="rx-author"></select>
+        <button id="rx-agree" class="rx-btn agree">👍 За</button>
+        <button id="rx-disagree" class="rx-btn disagree">👎 Против</button>
+      </div>
+      <div id="rx-hist"></div>
+    </div>
+    <button id="hud-reply" style="width:100%;margin-top:12px;font-family:var(--mono);font-size:11px;letter-spacing:0.1em;color:#05060a;background:var(--bronze);cursor:pointer;border:none;border-radius:3px;padding:9px">↳ Ответить на этот узел</button>
+  </div>
+
+  <div id="legend">
+    <span><i style="background:var(--green)"></i>за / поток</span>
+    <span><i style="background:var(--red)"></i>возражение</span>
+    <span><i style="background:var(--blue)"></i>уточнение</span>
+    <span style="opacity:.7">← → двигаться по времени · ЛКМ — узел</span>
+  </div>
+
+  <div id="feed"></div>
+
+  <!-- left toolbar -->
+  <div id="tools">
+    <button id="tab-add">+ Аргумент</button>
+    <button id="tab-test">Тест-панель</button>
+    <button id="tab-lens">Линза PoI</button>
+    <button id="tab-pools">Пулы (ИИ)</button>
+  </div>
+
+  <div id="lens-legend">
+    <span><i style="background:#57d98a"></i>высокий ≥70</span>
+    <span><i style="background:#e2933f"></i>средний 40–69</span>
+    <span><i style="background:#e25b56"></i>низкий &lt;40</span>
+    <span><i style="background:#555a66"></i>нет данных</span>
+  </div>
+
+  <!-- add-argument panel -->
+  <div id="addpanel" class="panel">
+    <h2 id="arg-h2">Добавить аргумент</h2>
+    <label>Текст аргумента</label>
+    <textarea id="arg-text" placeholder="Сформулируй тезис…"></textarea>
+
+    <label>Автор (персона)</label>
+    <select id="arg-author"></select>
+    <button id="arg-newauthor-toggle" class="seg" style="margin-top:6px;display:block;width:100%;cursor:pointer">+ новая персона</button>
+    <div id="arg-newauthor" style="display:none">
+      <label>Имя</label>
+      <input type="text" id="arg-newauthor-name" placeholder="Имя персоны" />
+      <label>Репутация (0–100)</label>
+      <input type="number" id="arg-newauthor-rep" min="0" max="100" value="50" />
+    </div>
+
+    <label>Куда добавить</label>
+    <div class="seg" id="arg-mode">
+      <button data-mode="branch" class="active">Новая ветка</button>
+      <button data-mode="reply">Ответ на узел</button>
+    </div>
+    <div id="arg-reply-opts" style="display:none">
+      <label>Тип связи</label>
+      <div class="seg" id="arg-rel">
+        <button data-rel="support" class="active">за</button>
+        <button data-rel="refute">против</button>
+        <button data-rel="qualify">уточнение</button>
+        <button data-rel="question">вопрос</button>
+      </div>
+      <div class="hint" id="arg-target">Цель: выбери узел кликом по графу.</div>
+    </div>
+
+    <button id="arg-submit" class="primary">Оценить и добавить</button>
+    <div class="status" id="arg-status"></div>
+    <div class="hint" id="arg-hint">PoI аргумента ставит LLM (нужен ANTHROPIC_API_KEY). Вес = качество самого аргумента.</div>
+  </div>
+
+  <!-- test panel: personas + live weights + reset -->
+  <div id="testpanel" class="panel">
+    <h2>Тест-режим</h2>
+    <h3>PoI персон · текущая тема</h3>
+    <div id="authors-list"></div>
+    <h3>Вес аргументов в теме</h3>
+    <div id="weights-list"></div>
+    <button id="reset-btn" class="primary" style="background:transparent;color:var(--bronze);border:1px solid rgba(216,175,110,0.4)">Сбросить граф (reseed)</button>
+    <div class="status" id="test-status"></div>
+  </div>
+
+  <!-- pools (Layer 2): AI-composed positions for the user-facing reading view -->
+  <div id="poolspanel">
+    <div class="ph">
+      <h2>Пулы позиций · <span id="pools-topic" style="color:#c4bfb2;letter-spacing:0;text-transform:none"></span></h2>
+      <div>
+        <button id="pools-refresh">↻ Пересчитать</button>
+        <button id="pools-close">✕ К графу</button>
+      </div>
+    </div>
+    <div id="pools-list"></div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

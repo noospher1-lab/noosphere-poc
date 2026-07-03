@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noosphere — PoI диалог</title>
+<style>
+  :root {
+    --bg:#05060a; --panel:#0b0d14; --panel2:#10131d; --line:#1e2230;
+    --ivory:#ece6d8; --dim:#8a8f9e; --bronze:#d8af6e; --green:#57d98a;
+    --red:#e25b56; --blue:#5aa9e6; --violet:#b98cff;
+    --mono:'JetBrains Mono',ui-monospace,'SFMono-Regular',Menlo,monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg); color:var(--ivory);
+    font-family:var(--mono); font-size:13px; }
+  a { color:var(--blue); text-decoration:none; }
+  header { display:flex; align-items:center; gap:14px; padding:10px 16px;
+    border-bottom:1px solid var(--line); background:var(--panel); }
+  header .brand { font-weight:600; letter-spacing:.08em; color:var(--bronze); }
+  header .spacer { flex:1; }
+  #wrap { max-width:720px; margin:0 auto; padding:20px 16px 60px; }
+  h1 { font-size:17px; margin:18px 0 6px; }
+  .muted { color:var(--dim); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    padding:14px 16px; margin:12px 0; }
+  .section-title { color:var(--dim); letter-spacing:.08em; text-transform:uppercase;
+    font-size:10px; margin-bottom:8px; }
+  button, textarea, input { font-family:var(--mono); font-size:13px; color:var(--ivory);
+    background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:6px 10px; }
+  button { cursor:pointer; }
+  button:hover { border-color:var(--bronze); }
+  button.primary { background:#1a1508; border-color:var(--bronze); color:var(--bronze); }
+  button.sel { border-color:var(--bronze); color:var(--bronze); }
+  button:disabled { opacity:.4; cursor:default; }
+  textarea { width:100%; min-height:80px; resize:vertical; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+  .hidden { display:none; }
+  /* chat */
+  #chat { display:flex; flex-direction:column; gap:10px; margin:14px 0; }
+  .turn { max-width:88%; padding:10px 12px; border-radius:8px; white-space:pre-wrap; line-height:1.5; }
+  .turn.ai { background:var(--panel); border:1px solid var(--line); align-self:flex-start; }
+  .turn.user { background:#15120a; border:1px solid #2a2214; align-self:flex-end; }
+  .turn .who { font-size:10px; color:var(--dim); text-transform:uppercase;
+    letter-spacing:.08em; margin-bottom:4px; }
+  .offer { border:1px solid var(--blue); border-radius:8px; padding:10px 12px;
+    align-self:flex-start; max-width:88%; }
+  .offer .who { color:var(--blue); font-size:10px; text-transform:uppercase; margin-bottom:4px; }
+  .counter { color:var(--dim); font-size:11px; }
+  .think { color:var(--dim); font-style:italic; }
+  /* results */
+  .total { font-size:40px; color:var(--bronze); font-weight:700; }
+  .crit { border-top:1px solid var(--line); padding:10px 0; }
+  .crit .bar { height:7px; background:var(--panel2); border-radius:4px; overflow:hidden; margin:6px 0; }
+  .crit .bar span { display:block; height:100%; background:var(--bronze); }
+  .crit .ev { color:var(--dim); font-size:12px; border-left:2px solid var(--line);
+    padding-left:8px; margin:4px 0; }
+  .err { color:var(--red); margin:8px 0; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">NOOSPHERE</span>
+  <span class="muted">PoI диалог</span>
+  <span class="spacer"></span>
+  <span id="user" class="muted"></span>
+  <a href="/">← к обсуждениям</a>
+</header>
+
+<div id="wrap">
+  <div id="err" class="err hidden"></div>
+
+  <!-- intro -->
+  <section id="s-intro" class="hidden">
+    <h1>Диалог, который раскрывает твоё мышление</h1>
+    <p class="muted">Четыре шага: стартовая позиция → диалог с ИИ-собеседником
+      (10–30 ходов, можно прерываться и возвращаться) → финальная позиция →
+      оценка по шести критериям. Результат становится твоим стартовым PoI
+      во всех темах — и его можно улучшать, продолжая диалог. Пересдач нет:
+      это не экзамен, это процесс.</p>
+    <div class="card">
+      <div class="section-title">тема</div>
+      <div id="introTopic"></div>
+    </div>
+    <button class="primary" id="startBtn">Начать →</button>
+  </section>
+
+  <!-- pre -->
+  <section id="s-pre" class="hidden">
+    <h1>Твоя стартовая позиция</h1>
+    <p class="muted">Она будет зафиксирована — так система увидит, как твоё
+      мышление развивается в диалоге.</p>
+    <div class="card"><div class="section-title">тема</div><div id="preTopic"></div></div>
+    <div class="card">
+      <div class="section-title">твой голос</div>
+      <div class="row">
+        <button data-v="yes" class="vote">ДА — поддерживаю</button>
+        <button data-v="no" class="vote">НЕТ — против</button>
+      </div>
+      <div class="section-title" style="margin-top:10px">аргументация (мин. 100 символов)</div>
+      <textarea id="preText" placeholder="Почему ты так считаешь? Главные аргументы твоей позиции."></textarea>
+      <div class="counter" id="preCount">0 / 100</div>
+      <div class="section-title" style="margin-top:10px">уверенность</div>
+      <div class="row">
+        <button data-c="leaning" class="conf">Склоняюсь</button>
+        <button data-c="confident" class="conf">Уверен</button>
+        <button data-c="very_sure" class="conf">Полностью уверен</button>
+      </div>
+    </div>
+    <button class="primary" id="lockBtn" disabled>Зафиксировать →</button>
+  </section>
+
+  <!-- dialogue -->
+  <section id="s-dlg" class="hidden">
+    <div class="card">
+      <div class="section-title">тема · твоя стартовая позиция</div>
+      <div id="dlgTopic"></div>
+      <div class="muted" id="dlgPre"></div>
+    </div>
+    <div id="chat"></div>
+    <div id="think" class="think hidden">собеседник думает…</div>
+    <div class="card">
+      <textarea id="msgText" placeholder="Твой ответ. Можно уточнять, спорить, спрашивать. (Ctrl+Enter — отправить)"></textarea>
+      <div class="row">
+        <button class="primary" id="sendBtn">Отправить →</button>
+        <button id="finalizeBtn" class="hidden">Подвести итог →</button>
+        <span class="counter" id="turnCounter"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- post -->
+  <section id="s-post" class="hidden">
+    <h1>Финальная позиция</h1>
+    <p class="muted">Она может совпадать со стартовой, быть уточнённой или другой —
+      важно, что она опирается на прожитый диалог.</p>
+    <div class="card">
+      <div class="section-title">финальный голос</div>
+      <div class="row">
+        <button data-v="yes" class="pvote">ДА — поддерживаю</button>
+        <button data-v="no" class="pvote">НЕТ — против</button>
+      </div>
+      <div class="section-title" style="margin-top:10px">финальная аргументация (мин. 100)</div>
+      <textarea id="postText"></textarea>
+      <div class="counter" id="postCount">0 / 100</div>
+      <div class="section-title" style="margin-top:10px">уверенность</div>
+      <div class="row">
+        <button data-c="leaning" class="pconf">Склоняюсь</button>
+        <button data-c="confident" class="pconf">Уверен</button>
+        <button data-c="very_sure" class="pconf">Полностью уверен</button>
+      </div>
+      <div class="section-title" style="margin-top:10px">рефлексия (мин. 50): что сдвинуло или не сдвинуло позицию?</div>
+      <textarea id="reflText" style="min-height:60px"></textarea>
+      <div class="counter" id="reflCount">0 / 50</div>
+    </div>
+    <div class="row">
+      <button class="primary" id="submitPostBtn" disabled>Оценить сессию →</button>
+      <button id="backToDlgBtn">← вернуться в диалог</button>
+    </div>
+  </section>
+
+  <!-- scoring -->
+  <section id="s-scoring" class="hidden">
+    <h1>Оцениваю сессию…</h1>
+    <p class="muted">Модель проходит по всему накопленному диалогу — стартовой
+      позиции, каждому обмену, финальной позиции и рефлексии. 20–40 секунд.</p>
+    <div class="think">думает…</div>
+  </section>
+
+  <!-- results -->
+  <section id="s-results" class="hidden">
+    <h1>Твой PoI</h1>
+    <div class="card" style="display:flex;align-items:center;gap:20px">
+      <div class="total" id="totalScore">—</div>
+      <div class="muted" id="overall"></div>
+    </div>
+    <div id="criteria"></div>
+    <div class="card hidden" id="metaBox">
+      <div class="section-title">мета-паттерны диалога</div>
+      <div id="metaList" class="muted"></div>
+    </div>
+    <div class="row">
+      <button class="primary" id="continueBtn">Продолжить диалог → (поднять PoI)</button>
+      <a href="/"><button>к обсуждениям</button></a>
+    </div>
+    <p class="muted" id="budgetNote"></p>
+  </section>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
+  return r.json();
+}
+function err(m) { const e = $("#err"); e.textContent = m; e.classList.remove("hidden");
+  setTimeout(() => e.classList.add("hidden"), 6000); }
+function show(id) {
+  for (const s of ["s-intro","s-pre","s-dlg","s-post","s-scoring","s-results"])
+    document.getElementById(s).classList.toggle("hidden", s !== id);
+  window.scrollTo(0, 0);
+}
+
+let D = null;   // dialogue state from the server
+let preVote = null, preConf = null, postVote = null, postConf = null;
+
+const CRIT_LABELS = {
+  problem_framing: ["Постановка проблемы", 20],
+  information_integration: ["Интеграция информации", 20],
+  reasoning_under_revision: ["Мышление под давлением", 20],
+  handling_disagreement: ["Работа с несогласием", 15],
+  cognitive_patterns: ["Когнитивные паттерны", 15],
+  decision_quality: ["Качество решения", 10],
+};
+
+function route() {
+  if (!D) { $("#introTopic").textContent = "…"; show("s-intro"); return; }
+  $("#introTopic").textContent = D.topic;
+  $("#preTopic").textContent = D.topic;
+  $("#dlgTopic").textContent = D.topic;
+  if (D.phase === "pre") show("s-pre");
+  else if (D.phase === "dialogue") { renderDlg(); show("s-dlg"); }
+  else if (D.phase === "post") { show("s-post"); }
+  else if (D.phase === "results") { renderResults(); show("s-results"); }
+}
+
+// ---- dialogue rendering
+function renderDlg() {
+  $("#dlgPre").textContent =
+    `твой голос: ${D.pre.vote === "yes" ? "ДА" : "НЕТ"} (${D.pre.confidence})`;
+  const chat = $("#chat");
+  chat.innerHTML = "";
+  for (const t of D.turns) {
+    if (t.content.startsWith("[")) continue;         // service messages
+    if (t.meta === "inform_offer_pending") {
+      const o = document.createElement("div");
+      o.className = "offer";
+      o.innerHTML = '<div class="who">💡 есть информация по теме</div><div class="tx"></div>' +
+        '<div class="row"><button data-a="1">да, поделись</button><button data-a="0">нет, продолжим</button></div>';
+      o.querySelector(".tx").textContent = t.content;
+      o.querySelectorAll("button").forEach(b =>
+        b.onclick = () => inform(b.dataset.a === "1"));
+      chat.appendChild(o);
+      continue;
+    }
+    const d = document.createElement("div");
+    d.className = "turn " + (t.role === "ai" ? "ai" : "user");
+    d.innerHTML = '<div class="who"></div><div class="tx"></div>';
+    d.querySelector(".who").textContent = t.role === "ai" ? "собеседник" : "ты";
+    d.querySelector(".tx").textContent = t.content;
+    chat.appendChild(d);
+  }
+  const n = D.user_turns;
+  $("#turnCounter").textContent = n >= D.min_turns
+    ? `ход ${n} из ${D.max_turns}` : `ход ${n} · итог доступен с ${D.min_turns}`;
+  $("#finalizeBtn").classList.toggle("hidden", n < D.min_turns);
+  const pending = D.turns.length && D.turns[D.turns.length - 1].meta === "inform_offer_pending";
+  $("#sendBtn").disabled = pending || n >= D.max_turns;
+  window.scrollTo(0, document.body.scrollHeight);
+}
+
+async function send() {
+  const text = $("#msgText").value.trim();
+  if (!text) return;
+  $("#sendBtn").disabled = true; $("#think").classList.remove("hidden");
+  try {
+    D = await api("/api/dialogue/message", { text });
+    $("#msgText").value = "";
+    renderDlg();
+  } catch (e) { err(e.message); }
+  finally { $("#think").classList.add("hidden"); $("#sendBtn").disabled = false; }
+}
+
+async function inform(accept) {
+  $("#think").classList.remove("hidden");
+  try { D = await api("/api/dialogue/inform", { accept }); renderDlg(); }
+  catch (e) { err(e.message); }
+  finally { $("#think").classList.add("hidden"); }
+}
+
+// ---- results
+function renderResults() {
+  const s = D.scores || {};
+  $("#totalScore").textContent = s.total ?? "—";
+  $("#overall").textContent = s.overall_summary || "";
+  const box = $("#criteria");
+  box.innerHTML = "";
+  for (const [key, [label, max]] of Object.entries(CRIT_LABELS)) {
+    const c = (s.criteria || {})[key];
+    if (!c) continue;
+    const d = document.createElement("div");
+    d.className = "crit card";
+    d.innerHTML = `<b>${label}</b> <span class="muted">${c.score} / ${max}</span>
+      <div class="bar"><span style="width:${(c.score / max) * 100}%"></span></div>
+      <div class="why"></div>`;
+    d.querySelector(".why").textContent = c.why || "";
+    for (const q of c.evidence || []) {
+      const ev = document.createElement("div");
+      ev.className = "ev"; ev.textContent = "«" + q + "»";
+      d.appendChild(ev);
+    }
+    if (c.what_would_raise_score) {
+      const w = document.createElement("div");
+      w.className = "muted"; w.style.marginTop = "6px";
+      w.textContent = "↑ что поднимет балл: " + c.what_would_raise_score;
+      d.appendChild(w);
+    }
+    box.appendChild(d);
+  }
+  const meta = s.meta_patterns || [];
+  $("#metaBox").classList.toggle("hidden", !meta.length);
+  $("#metaList").innerHTML = meta.map(() => "<div>· <span></span></div>").join("");
+  $$("#metaList span").forEach((el, i) => el.textContent = meta[i]);
+  const left = D.max_turns - D.user_turns;
+  $("#continueBtn").style.display = left > 0 ? "" : "none";
+  $("#budgetNote").textContent = left > 0
+    ? `осталось ${left} ходов бюджета — продолжение накапливает транскрипт, итог пересчитается`
+    : "бюджет ходов исчерпан — дальше PoI растёт через аргументы в темах";
+}
+
+// ---- wiring
+function bindChoice(sel, set) {
+  $$(sel).forEach(b => b.onclick = () => {
+    $$(sel).forEach(x => x.classList.remove("sel"));
+    b.classList.add("sel");
+    set(b.dataset.v || b.dataset.c);
+  });
+}
+function counter(taSel, countSel, min, check) {
+  $(taSel).addEventListener("input", () => {
+    const n = $(taSel).value.trim().length;
+    $(countSel).textContent = `${n} / ${min}`;
+    $(countSel).style.color = n >= min ? "var(--green)" : "var(--dim)";
+    check();
+  });
+}
+const checkPre = () => $("#lockBtn").disabled =
+  !(preVote && preConf && $("#preText").value.trim().length >= 100);
+const checkPost = () => $("#submitPostBtn").disabled =
+  !(postVote && postConf && $("#postText").value.trim().length >= 100 &&
+    $("#reflText").value.trim().length >= 50);
+
+bindChoice(".vote", v => { preVote = v; checkPre(); });
+bindChoice(".conf", c => { preConf = c; checkPre(); });
+bindChoice(".pvote", v => { postVote = v; checkPost(); });
+bindChoice(".pconf", c => { postConf = c; checkPost(); });
+counter("#preText", "#preCount", 100, checkPre);
+counter("#postText", "#postCount", 100, checkPost);
+counter("#reflText", "#reflCount", 50, checkPost);
+
+$("#startBtn").onclick = async () => {
+  try { D = await api("/api/dialogue/start", {}); route(); } catch (e) { err(e.message); }
+};
+$("#lockBtn").onclick = async () => {
+  if (!confirm("Зафиксировать стартовую позицию? Изменить её будет нельзя.")) return;
+  $("#lockBtn").disabled = true;
+  try {
+    D = await api("/api/dialogue/pre",
+      { vote: preVote, reasoning: $("#preText").value.trim(), confidence: preConf });
+    route();
+  } catch (e) { err(e.message); $("#lockBtn").disabled = false; }
+};
+$("#sendBtn").onclick = send;
+$("#msgText").addEventListener("keydown", e => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send();
+});
+$("#finalizeBtn").onclick = () => show("s-post");
+$("#backToDlgBtn").onclick = () => { renderDlg(); show("s-dlg"); };
+$("#submitPostBtn").onclick = async () => {
+  show("s-scoring");
+  try {
+    D = await api("/api/dialogue/finalize", {
+      vote: postVote, reasoning: $("#postText").value.trim(),
+      confidence: postConf, reflection: $("#reflText").value.trim(),
+    });
+    route();
+  } catch (e) { err(e.message); show("s-post"); }
+};
+$("#continueBtn").onclick = async () => {
+  try { D = await api("/api/dialogue/continue", {}); route(); } catch (e) { err(e.message); }
+};
+
+(async function boot() {
+  let me = null;
+  try { me = await api("/api/auth/me"); } catch (_) {}
+  if (!me) {
+    $("#user").textContent = "не авторизован";
+    $("#wrap").innerHTML = '<div class="card">Нужен аккаунт: <a href="/">войди на главной</a> и возвращайся.</div>';
+    return;
+  }
+  $("#user").textContent = me.name + (me.dialogue_poi ? ` · PoI диалога ${me.dialogue_poi}` : "");
+  try { D = await api("/api/dialogue"); } catch (_) { D = null; }
+  route();
+})();
+</script>
+</body>
+</html>

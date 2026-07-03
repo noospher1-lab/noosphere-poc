@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noosphere — Дерево обсуждений</title>
+<style>
+  :root {
+    --bg: #05060a;
+    --panel: #0b0d14;
+    --panel2: #10131d;
+    --line: #1e2230;
+    --ivory: #ece6d8;
+    --dim: #8a8f9e;
+    --bronze: #d8af6e;
+    --green: #57d98a;
+    --red: #e25b56;
+    --orange: #e2933f;
+    --blue: #5aa9e6;
+    --violet: #b98cff;
+    --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ivory);
+    font-family: var(--mono); font-size: 13px; }
+  a { color: var(--blue); text-decoration: none; }
+
+  header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header .brand { font-weight: 600; letter-spacing: .08em; color: var(--bronze); }
+  header .spacer { flex: 1; }
+  header label { color: var(--dim); }
+  select, button, input, textarea {
+    font-family: var(--mono); font-size: 12px; color: var(--ivory);
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 4px;
+    padding: 5px 8px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--bronze); }
+  button.primary { background: #1a1508; border-color: var(--bronze); color: var(--bronze); }
+  button.mini { padding: 2px 7px; font-size: 11px; }
+
+  #wrap { display: flex; height: calc(100% - 47px); }
+  #tree { width: 42%; min-width: 320px; overflow: auto; padding: 10px 6px;
+    border-right: 1px solid var(--line); }
+  #detail { flex: 1; overflow: auto; padding: 18px 22px; }
+
+  /* ---- tree ---- */
+  .row { display: flex; align-items: baseline; gap: 6px; padding: 3px 6px;
+    border-radius: 4px; cursor: pointer; line-height: 1.4; }
+  .row:hover { background: var(--panel2); }
+  .row.sel { background: #15120a; outline: 1px solid var(--bronze); }
+  .tw { width: 12px; flex: none; color: var(--dim); text-align: center; user-select: none; }
+  .rel { flex: none; font-size: 10px; padding: 0 4px; border-radius: 3px;
+    letter-spacing: .05em; opacity: .9; }
+  .rel.support { color: var(--green); border: 1px solid var(--green); }
+  .rel.refute  { color: var(--red);   border: 1px solid var(--red); }
+  .rel.qualify { color: var(--orange);border: 1px solid var(--orange); }
+  .rel.question{ color: var(--blue);  border: 1px solid var(--blue); }
+  .rel.root    { color: var(--bronze);border: 1px solid var(--bronze); }
+  .txt { flex: 1; }
+  .poi { flex: none; color: var(--dim); font-size: 11px; }
+  .poi b { color: var(--ivory); }
+  .who { flex: none; font-size: 11px; }
+  .children { margin-left: 16px; border-left: 1px solid var(--line); padding-left: 4px; }
+  .muted { color: var(--dim); }
+
+  /* ---- detail ---- */
+  h2 { font-size: 15px; margin: 0 0 4px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; margin-bottom: 14px; }
+  .crit { display: grid; grid-template-columns: 150px 1fr 34px; gap: 6px 10px;
+    align-items: center; margin-top: 8px; }
+  .bar { height: 7px; background: var(--panel2); border-radius: 4px; overflow: hidden; }
+  .bar > span { display: block; height: 100%; background: var(--bronze); }
+  .section-title { color: var(--dim); letter-spacing: .08em; text-transform: uppercase;
+    font-size: 10px; margin: 2px 0 8px; }
+  .buckets { display: flex; gap: 3px; align-items: flex-end; height: 46px; }
+  .bk { flex: 1; background: var(--panel2); border-radius: 2px 2px 0 0; position: relative; }
+  .bk.agree { background: var(--green); }
+  .bk.disagree { background: var(--red); }
+  .bklabel { display: flex; gap: 3px; margin-top: 3px; }
+  .bklabel span { flex: 1; text-align: center; font-size: 8px; color: var(--dim); }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px;
+    border: 1px solid var(--line); }
+  .stance-support { color: var(--green); border-color: var(--green); }
+  .stance-oppose  { color: var(--red);  border-color: var(--red); }
+  .stance-conclusion { color: var(--violet); border-color: var(--violet); }
+  .stance-mixed   { color: var(--dim); }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  textarea { width: 100%; min-height: 52px; resize: vertical; }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6);
+    display: flex; align-items: center; justify-content: center; z-index: 10; }
+  .modal-card { width: 320px; display: flex; flex-direction: column; gap: 8px; }
+  .modal-card input { width: 100%; }
+  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--bronze); color: var(--bronze);
+    padding: 8px 14px; border-radius: 6px; opacity: 0; transition: opacity .3s;
+    pointer-events: none; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">NOOSPHERE</span>
+  <span class="muted">дерево обсуждений</span>
+  <span class="spacer"></span>
+  <span id="user" class="muted"></span>
+  <button id="loginBtn" class="mini">войти</button>
+  <button id="logoutBtn" class="mini" style="display:none">выйти</button>
+  <button id="refresh" class="mini">↻ обновить</button>
+  <a href="/dialogue.html" title="PoI-диалог: заработай стартовый PoI">диалог PoI ▸</a>
+  <a href="/graph.html" title="Силовой граф (доп. режим)">граф ▸</a>
+</header>
+
+<div id="authModal" class="modal" style="display:none">
+  <div class="card modal-card">
+    <div class="section-title">вход / регистрация</div>
+    <input id="authUser" placeholder="логин (латиница, 3–32)" autocomplete="username">
+    <input id="authPass" type="password" placeholder="пароль (мин. 6)" autocomplete="current-password">
+    <input id="authName" placeholder="имя для отображения (при регистрации)">
+    <div class="actions">
+      <button id="doLogin" class="primary">войти</button>
+      <button id="doRegister">создать аккаунт</button>
+      <button id="authCancel">отмена</button>
+    </div>
+    <div id="authErr" class="muted" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<div id="wrap">
+  <div id="tree"><div class="muted" style="padding:10px">загрузка…</div></div>
+  <div id="detail"><div class="muted">выбери узел слева</div></div>
+</div>
+
+<div id="toast" class="toast"></div>
+<script src="/tree.js"></script>
+</body>
+</html>
