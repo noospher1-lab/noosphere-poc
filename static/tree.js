@@ -399,9 +399,11 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, switchLabe
     t.appendChild(el("b", null, "похоже, тип не совпадает. "));
     t.appendChild(document.createTextNode(rev.type_note || ""));
     hint.appendChild(t);
+    // the quality note and verdict were already computed for the suggested
+    // type (one LLM call covers both versions) — switching publishes right away
     const sw = el("button", "mini",
       "отправить как «" + (switchLabel || TYPE_LABEL[rev.suggested_type] || rev.suggested_type) + "»");
-    sw.onclick = () => onSwitch(rev.suggested_type);
+    sw.onclick = () => { hint.style.display = "none"; onSwitch(rev.suggested_type); };
     actions.appendChild(sw);
   }
 
@@ -476,7 +478,7 @@ function replyForm(parentId) {
     } catch (e) { toast("ошибка: " + e.message); }
   };
 
-  send.onclick = async () => {
+  const runReview = async () => {
     const text = ta.value.trim();
     if (!text) return;
     if (!requireAuth()) return;
@@ -490,9 +492,9 @@ function replyForm(parentId) {
     renderReview(hint, rev, {
       root,
       onSend: async () => { await doSend(ta.value.trim()); },
+      // advice on the card already applies to the suggested type — publish
       onSwitch: async (type) => {
         typeSel.value = type;
-        hint.style.display = "none";
         await doSend(ta.value.trim());
       },
       onSupport: async (pid) => {
@@ -502,6 +504,7 @@ function replyForm(parentId) {
       },
     });
   };
+  send.onclick = runReview;
   act.append(typeSel, send);
   card.appendChild(act);
   card.appendChild(hint);
@@ -548,7 +551,7 @@ function newTopicForm() {
     }
   };
 
-  send.onclick = async () => {
+  const runReview = async () => {
     const text = ta.value.trim();
     if (!text) return;
     if (!requireAuth()) return;
@@ -563,13 +566,14 @@ function newTopicForm() {
       root: null,
       switchLabel: rootKind === "question" ? "вопрос" : "тезис",
       onSend: async () => { await doCreate(ta.value.trim()); },
+      // advice on the card already applies to the suggested kind — publish
       onSwitch: async () => {
         kindSel.value = rootKind;
-        hint.style.display = "none";
         await doCreate(ta.value.trim());
       },
     });
   };
+  send.onclick = runReview;
   act.append(kindSel, send, cancel);
   card.appendChild(act);
   card.appendChild(hint);
