@@ -139,6 +139,89 @@ def precheck_draft(text, positions):
     return json.loads(cleaned)
 
 
+REVIEW_SYSTEM = (
+    "You are the AI navigator of an argument-graph platform. BEFORE a draft is "
+    "published you review it against the discussion and help the author make "
+    "the strongest possible contribution. You never gatekeep: everything you "
+    "return is a suggestion the author is free to ignore. Judge content only, "
+    "never the author. When unsure about overlap, prefer 'new' — a false "
+    "'covered' silences a person, a false 'new' merely adds a duplicate. "
+    "Write every note in the SAME LANGUAGE as the draft; when a note mentions "
+    "a contribution type, use its natural-language name in that language "
+    "(e.g. «против», «вопрос»), never the internal English code."
+)
+
+_REVIEW_TYPES = "support (за: supports the parent claim), refute (против: argues against it), qualify (уточнение: narrows or conditions it), question (вопрос: requests information exposing a weak point)"
+
+
+def review_draft(text, declared_type, parent, branch, positions):
+    """
+    The pre-publication draft review (vault: ai-navigator-draft-review) — one
+    LLM call that checks the draft's TYPE, suggests ONE quality improvement,
+    and compares it against the topic's nodes and positions.
+
+    declared_type: support|refute|qualify|question (or argument|question for
+    a new topic root). parent: {id, text}|None. branch: rows from
+    db.topic_subtree(). positions: [{id, headline, composed}].
+    Returns {"type_ok", "suggested_type", "type_note", "quality_note",
+             "verdict": "new|similar|covered|answered|countered",
+             "node_id", "position_id", "note"}
+    """
+    parts = []
+    if parent is not None:
+        parts.append(f"The draft replies to this node:\n\n{parent['text']}")
+    if branch:
+        listing = "\n".join(
+            f'{"  " * n["depth"]}[{n["id"]}] ({n["kind"]}'
+            + (f', {n["rel"]} -> {n["parent_id"]}' if n["parent_id"] else ", topic root")
+            + f') {n["text"]}' for n in branch)
+        parts.append(
+            "The discussion tree so far, one node per line as "
+            "[id] (kind, relation -> parent id) text:\n\n" + listing)
+    if positions:
+        plist = "\n".join(
+            f'[{p["id"]}] {p["headline"]}: {p["composed"]}' for p in positions)
+        parts.append("Composed POSITIONS of the discussion, as [id] headline: "
+                     "full text:\n\n" + plist)
+    parts.append(
+        f"The participant chose the contribution type '{declared_type}' "
+        f"(types: {_REVIEW_TYPES}; 'argument' means a standalone claim opening "
+        f"a topic) and drafted:\n\n{text}\n\n"
+        "Review it:\n"
+        "1. TYPE: does the text's form match the chosen type? An assertion "
+        "posted as 'question', or a supporting point posted as 'refute', is a "
+        "mismatch — suggest the type that fits what they actually wrote.\n"
+        "2. QUALITY: ONE concrete, actionable suggestion — but ONLY if the "
+        "draft has a genuinely important gap (a missing causal mechanism, a "
+        "bare unsupported claim, an obvious unaddressed counter). A solid "
+        "draft gets an empty string; most reasonable drafts should. Never "
+        "invent nitpicks or polish requests.\n"
+        "3. CONTEXT verdict, checked in this order:\n"
+        "   - 'answered': the draft is a question and an existing NODE already "
+        "answers it (set node_id);\n"
+        "   - 'countered': the draft makes a claim and an existing NODE already "
+        "objects to / addresses exactly that claim — the author should read it "
+        "first and perhaps reply there (set node_id);\n"
+        "   - 'covered': a POSITION already fully makes the point / answers the "
+        "question (set position_id);\n"
+        "   - 'similar': a POSITION overlaps but the draft may add something "
+        "(set position_id);\n"
+        "   - 'new': none of the above.\n"
+        "Respond with ONLY JSON:\n"
+        '{"type_ok": true|false, '
+        '"suggested_type": "support|refute|qualify|question" or null, '
+        '"type_note": "one sentence if type_ok is false, else empty", '
+        '"quality_note": "one concrete suggestion or empty", '
+        '"verdict": "new|similar|covered|answered|countered", '
+        '"node_id": <id or null>, "position_id": <id or null>, '
+        '"note": "one sentence: what exists and what the draft would add, '
+        'empty if verdict is new"}'
+    )
+    raw = poi.complete(REVIEW_SYSTEM, "\n\n---\n\n".join(parts), max_tokens=1024)
+    cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    return json.loads(cleaned)
+
+
 CONCLUDE_SYSTEM = (
     "You advance a reasoning chain. Given a position (a 'star') and the questions, "
     "clarifications and details raised around it (its 'orbit'), you write the "

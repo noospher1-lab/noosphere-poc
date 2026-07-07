@@ -332,7 +332,7 @@ async def get_children(node_id, limit=20, offset=0):
 
 # ---------------------------------------------------------------- authors
 # public author shape — password_hash never leaves the DB layer
-_AUTHOR_COLS = "id, name, reputation, color, username, created_at"
+_AUTHOR_COLS = "id, name, reputation, color, username, created_at, dialogue_poi"
 
 
 async def list_authors():
@@ -733,6 +733,35 @@ async def topic_root_of(node_id):
             """, node_id)
 
 
+async def topic_subtree(topic_root_id, limit=80):
+    """
+    The whole discussion under a root — the AI navigator's reading context for
+    the pre-publication draft review. Bounded and breadth-first (shallow nodes
+    first): at PoC scale the LLM reads the full topic; embeddings-based
+    candidate selection replaces this cap when topics outgrow it.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH RECURSIVE down AS (
+                SELECT n.id, n.text, n.kind,
+                       NULL::int AS parent_id, NULL::text AS rel, 0 AS depth
+                FROM nodes n WHERE n.id = $1
+                UNION ALL
+                SELECT n.id, n.text, n.kind,
+                       e.target_id, e.type, down.depth + 1
+                FROM down
+                JOIN edges e ON e.target_id = down.id
+                JOIN nodes n ON n.id = e.source_id
+                WHERE down.depth < 50
+            )
+            SELECT id, text, kind, parent_id, rel, depth
+            FROM down ORDER BY depth, id LIMIT $2
+            """, topic_root_id, limit)
+    return [dict(r) for r in rows]
+
+
 async def parent_of(node_id):
     """The node this one points to (its single outgoing edge), or None."""
     pool = _pool_or_raise()
@@ -867,13 +896,13 @@ async def list_topics():
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT n.id, n.text, n.poi_score, a.name AS author, a.color AS author_color,
+            SELECT n.id, n.text, n.poi_score, n.kind, a.name AS author, a.color AS author_color,
                    (SELECT count(*) FROM edges e2
                     JOIN nodes cn ON cn.id = e2.source_id
                     WHERE e2.target_id = n.id) AS reply_count
             FROM nodes n
             LEFT JOIN authors a ON a.id = n.author_id
-            WHERE n.kind = 'argument'
+            WHERE n.kind IN ('argument', 'question')
               AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_id = n.id)
             ORDER BY n.id
             """)

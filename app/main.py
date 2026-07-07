@@ -16,6 +16,7 @@ so it never stalls the event loop.
 
 import asyncio
 import json
+import os
 import re
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
@@ -27,6 +28,15 @@ from pathlib import Path
 from . import auth, db, dialogue as dialogue_mod, poi, voteweight, pools as pools_mod
 
 app = FastAPI(title="Noosphere PoC", version="0.2.0")
+
+# Dev tools (reset, personas, manual PoI/reputation, raw edges) are opt-in via
+# DEV_TOOLS=1 in .env — they must never be reachable through a public tunnel.
+DEV_TOOLS = os.environ.get("DEV_TOOLS") == "1"
+
+
+def dev_only():
+    if not DEV_TOOLS:
+        raise HTTPException(403, "дев-инструмент отключён (DEV_TOOLS=1 включает)")
 
 
 class EventHub:
@@ -240,7 +250,8 @@ async def me(request: Request):
 class ArgumentIn(BaseModel):
     text: str
     connect_to: int | None = None         # optional: target node id (None = new branch / root)
-    edge_type: str | None = "support"     # support / refute / qualify
+    edge_type: str | None = "support"     # support / refute / qualify / question
+    kind: str | None = "argument"         # "question" marks a question node (a root can be one)
 
 
 class EdgeIn(BaseModel):
@@ -303,22 +314,30 @@ async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
             raise HTTPException(404, f"connect_to node {arg.connect_to} not found")
         root_id = parent.get("topic_root_id") or await db.topic_root_of(arg.connect_to)
 
+    # a question is a first-class contribution anywhere — as a reply
+    # (edge_type=question) or as a topic root (kind=question, no edge)
+    kind = "question" if (arg.kind == "question" or arg.edge_type == "question") else "argument"
+
     # 1. persist the node RIGHT AWAY, unscored (poi_score = NULL)
-    node_id = await db.add_node(arg.text, author_id=author["id"], topic_root_id=root_id)
+    node_id = await db.add_node(arg.text, author_id=author["id"], kind=kind,
+                                topic_root_id=root_id)
 
     # 2. optional typed edge to an existing node (None = a new root branch)
     edge = None
     if arg.connect_to is not None:
-        await db.add_edge(node_id, arg.connect_to, arg.edge_type or "support")
+        edge_type = "question" if kind == "question" else (arg.edge_type or "support")
+        await db.add_edge(node_id, arg.connect_to, edge_type)
         edge = {
             "source_id": node_id,
             "target_id": arg.connect_to,
-            "type": arg.edge_type or "support",
+            "type": edge_type,
         }
 
     # 3. scoring AND pool assignment happen in the background
-    _spawn(_score_later(node_id, arg.text))
-    _spawn(_assign_position_later(node_id, arg.text))
+    # (questions get the QUESTION rubric and never join position pools)
+    _spawn(_score_later(node_id, arg.text, kind))
+    if kind == "argument":
+        _spawn(_assign_position_later(node_id, arg.text))
 
     node = await db.get_node(node_id)
     node["weight"] = 0.0                       # unscored contributes zero weight
@@ -342,7 +361,7 @@ async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
     return node
 
 
-@app.post("/api/edge")
+@app.post("/api/edge", dependencies=[Depends(dev_only)])
 async def add_edge(edge: EdgeIn):
     for nid in (edge.source_id, edge.target_id):
         if await db.get_node(nid) is None:
@@ -373,7 +392,7 @@ async def get_authors():
     return await db.list_authors()
 
 
-@app.post("/api/authors")
+@app.post("/api/authors", dependencies=[Depends(dev_only)])
 async def create_author(author: AuthorIn):
     if not author.name.strip():
         raise HTTPException(400, "author name is empty")
@@ -381,7 +400,7 @@ async def create_author(author: AuthorIn):
     return await db.get_author(author_id)
 
 
-@app.patch("/api/authors/{author_id}")
+@app.patch("/api/authors/{author_id}", dependencies=[Depends(dev_only)])
 async def set_reputation(author_id: int, body: ReputationIn):
     if not await db.update_author_reputation(author_id, body.reputation):
         raise HTTPException(404, f"author {author_id} not found")
@@ -465,7 +484,7 @@ async def get_topic_poi(topic_root_id: int):
 
 # Dev tool: sets the PRIOR (P₀) — the stand-in for the onboarding dialogue's
 # score. The current poi is then recomputed by the formula (retroactive).
-@app.patch("/api/topic_poi/{topic_root_id}/{author_id}")
+@app.patch("/api/topic_poi/{topic_root_id}/{author_id}", dependencies=[Depends(dev_only)])
 async def set_topic_prior(topic_root_id: int, author_id: int, body: TopicPoiIn):
     if await db.get_author(author_id) is None:
         raise HTTPException(404, f"author {author_id} not found")
@@ -726,7 +745,7 @@ async def vote_position(position_id: int, body: PositionVoteIn,
     return await _position_payload(pos)
 
 
-@app.post("/api/reset")
+@app.post("/api/reset", dependencies=[Depends(dev_only)])
 async def reset_graph():
     """Wipe and re-seed the graph — a clean slate between test runs."""
     from . import seed
@@ -959,6 +978,74 @@ async def precheck_draft(topic_root_id: int, body: PrecheckIn,
         "headline": known[pid]["headline"],
         "note": result.get("note", ""),
     }
+
+
+# Draft review (vault: ai-navigator-draft-review): the navigator's full
+# pre-publication pass — type fit, one quality suggestion, and overlap with the
+# topic's NODES (answered/countered) and POSITIONS (similar/covered). Replaces
+# precheck in the reply/new-topic forms; a suggestion, never a block — fail-open
+# on any error, and every id the LLM names is validated server-side.
+class DraftReviewIn(BaseModel):
+    text: str
+    connect_to: int | None = None         # reply target (None = new topic root)
+    edge_type: str | None = None          # reply type: support/refute/qualify/question
+    kind: str | None = None               # root type: argument/question
+
+
+_REVIEW_CLEAN = {
+    "type_ok": True, "suggested_type": None, "type_note": "",
+    "quality_note": "", "verdict": "new", "node_id": None,
+    "position_id": None, "headline": "", "target_text": "", "note": "",
+}
+_REVIEW_TYPES = {"support", "refute", "qualify", "question"}
+
+
+@app.post("/api/draft/review")
+async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
+    text = body.text.strip()
+    if not text:
+        return _REVIEW_CLEAN
+    parent, branch, positions = None, [], []
+    if body.connect_to is not None:
+        parent = await db.get_node(body.connect_to)
+        if parent is None:
+            raise HTTPException(404, f"connect_to node {body.connect_to} not found")
+        root_id = parent.get("topic_root_id") or await db.topic_root_of(body.connect_to)
+        branch = await db.topic_subtree(root_id)
+        positions = await db.list_positions(root_id)
+        declared = body.edge_type or "support"
+    else:
+        declared = body.kind or "argument"
+    try:
+        result = await asyncio.to_thread(
+            pools_mod.review_draft, text, declared, parent, branch,
+            [{"id": p["id"], "headline": p["headline"], "composed": p["composed"]}
+             for p in positions])
+    except Exception:
+        return dict(_REVIEW_CLEAN)        # fail-open: never stand in the way
+    out = dict(_REVIEW_CLEAN)
+    sug = result.get("suggested_type")
+    # a topic root can only be a thesis or a question — fold reply types back
+    if body.connect_to is None and sug in _REVIEW_TYPES:
+        sug = "question" if sug == "question" else "argument"
+    if result.get("type_ok") is False and sug in (_REVIEW_TYPES | {"argument"}) and sug != declared:
+        out.update(type_ok=False, suggested_type=sug,
+                   type_note=str(result.get("type_note") or ""))
+    out["quality_note"] = str(result.get("quality_note") or "")
+    verdict = result.get("verdict")
+    nid, pid = result.get("node_id"), result.get("position_id")
+    nodes = {n["id"]: n for n in branch}
+    known = {p["id"]: p for p in positions}
+    # the parent itself is what the draft replies to — pointing at it is noise
+    if verdict in ("answered", "countered") and nid in nodes and nid != body.connect_to:
+        out.update(verdict=verdict, node_id=nid,
+                   target_text=nodes[nid]["text"],
+                   note=str(result.get("note") or ""))
+    elif verdict in ("similar", "covered") and pid in known:
+        out.update(verdict=verdict, position_id=pid,
+                   headline=known[pid]["headline"],
+                   note=str(result.get("note") or ""))
+    return out
 
 
 # The append-only event log (audit layer, Layer 1): every argument and every

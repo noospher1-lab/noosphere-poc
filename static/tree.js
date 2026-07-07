@@ -38,11 +38,22 @@ let selectedId = null;
 // ---- auth: the author of every write is the session, not a dropdown
 function renderAuthUI() {
   const u = $("#user");
+  const badge = $("#poiBadge");
+  badge.innerHTML = "";
   if (ME) {
     u.textContent = ME.name + " (@" + ME.username + ")";
     if (ME.color) u.style.color = ME.color;
     $("#loginBtn").style.display = "none";
     $("#logoutBtn").style.display = "";
+    // vault: the UI must show "PoI 10 · пройди диалог или аргументируй"
+    if (ME.dialogue_poi == null) {
+      const a = el("a", null, "PoI 10 · пройди диалог PoI ▸");
+      a.href = "/dialogue.html";
+      a.title = "стартовый PoI = 10; пройди диалог или аргументируй, чтобы его поднять";
+      badge.appendChild(a);
+    } else {
+      badge.textContent = "PoI диалога: " + Math.round(ME.dialogue_poi);
+    }
   } else {
     u.textContent = "наблюдатель";
     u.style.color = "";
@@ -136,6 +147,8 @@ function nodeRow(node, type) {
   tw.onclick = (e) => { e.stopPropagation(); toggleExpand(node.id); };
   row.appendChild(tw);
   row.appendChild(el("span", "rel " + type, relLabel(type)));
+  if (type === "root" && node.kind === "question")
+    row.appendChild(el("span", "rel question", "вопрос"));
   const txt = el("span", "txt", node.text);
   row.appendChild(txt);
   if (hasKids) row.appendChild(el("span", "poi", "(" + node.reply_count + ")"));
@@ -243,6 +256,14 @@ async function selectNode(id) {
     pc.appendChild(pbody);
     d.appendChild(pc);
     loadPositions(root, pbody);
+
+    // the PoI lens: who argues here and with what understanding of the topic
+    const ac = el("div", "card");
+    ac.appendChild(el("div", "section-title", "участники · PoI в теме"));
+    const abody = el("div"); abody.textContent = "загрузка…";
+    ac.appendChild(abody);
+    d.appendChild(ac);
+    loadTopicPoi(root, abody);
   }
 }
 
@@ -293,6 +314,32 @@ async function loadReactions(id, root, target) {
   } catch (e) { target.textContent = "ошибка: " + e.message; }
 }
 
+async function loadTopicPoi(root, target) {
+  try {
+    const rows = await api(`/api/topic_poi/${root}`);
+    // the endpoint returns EVERY author, defaulted to 10 — keep only those who
+    // left a trace in this topic (a prior or a recomputed PoI). Known trade-off:
+    // a participant whose computed PoI is exactly 10 with no prior is hidden.
+    const active = rows.filter((r) => r.prior != null || r.poi !== 10);
+    active.sort((a, b) => (b.poi ?? 0) - (a.poi ?? 0));
+    target.innerHTML = "";
+    if (!active.length) {
+      target.appendChild(el("div", "muted", "пока все на стартовом PoI 10"));
+      return;
+    }
+    for (const r of active) {
+      const line = el("div", "row");
+      const nm = el("span", "txt", r.name);
+      if (r.color) nm.style.color = r.color;
+      line.appendChild(nm);
+      const poi = el("span", "poi");
+      poi.innerHTML = "PoI <b>" + Math.round(r.poi) + "</b>";
+      line.appendChild(poi);
+      target.appendChild(line);
+    }
+  } catch (e) { target.textContent = "ошибка: " + e.message; }
+}
+
 async function react(id, root, stance) {
   if (!requireAuth()) return;
   try {
@@ -316,6 +363,89 @@ async function precheck(root, text) {
   } catch (_) { return { verdict: "new" }; }   // fail-open
 }
 
+// ---- AI navigator, full pass (vault: ai-navigator-draft-review): BEFORE a
+// draft is published, one call checks its type, suggests one improvement and
+// looks for existing answers/counters in the graph. A suggestion, never a
+// block — fail-open: any error means "post as is".
+async function reviewDraft(payload) {
+  try {
+    return await api("/api/draft/review", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (_) { return null; }
+}
+
+function reviewHasNotes(rev) {
+  return !!rev && (!rev.type_ok || !!rev.quality_note || rev.verdict !== "new");
+}
+
+const TYPE_LABEL = { support: "за", refute: "против", qualify: "уточнение", question: "вопрос" };
+
+// Renders the navigator's suggestions into `hint`. The author stays in charge:
+// callbacks wire "switch type", "go to the node", "support the position",
+// "post as is" and "cancel"; editing the draft and resending re-reviews it.
+function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, switchLabel }) {
+  hint.innerHTML = "";
+  hint.style.display = "";
+  hint.className = "card";
+  hint.style.borderColor = "var(--bronze)";
+  hint.appendChild(el("div", "section-title", "ИИ-навигатор — подсказка перед публикацией"));
+
+  const actions = el("div", "actions");
+
+  if (!rev.type_ok && rev.suggested_type) {
+    const t = el("div");
+    t.appendChild(el("b", null, "похоже, тип не совпадает. "));
+    t.appendChild(document.createTextNode(rev.type_note || ""));
+    hint.appendChild(t);
+    const sw = el("button", "mini",
+      "отправить как «" + (switchLabel || TYPE_LABEL[rev.suggested_type] || rev.suggested_type) + "»");
+    sw.onclick = () => onSwitch(rev.suggested_type);
+    actions.appendChild(sw);
+  }
+
+  if (rev.verdict === "answered" || rev.verdict === "countered") {
+    hint.appendChild(el("div", "section-title",
+      rev.verdict === "answered" ? "на этот вопрос уже есть ответ"
+                                 : "на этот тезис уже есть возражение"));
+    hint.appendChild(el("b", null, rev.target_text || ""));
+    if (rev.note) hint.appendChild(el("div", "muted", rev.note));
+    const go = el("button", "mini", "перейти к узлу");
+    go.onclick = () => {
+      hint.style.display = "none";
+      if (root != null) ROOT.set(rev.node_id, root);
+      selectNode(rev.node_id);
+    };
+    actions.appendChild(go);
+  } else if (rev.verdict === "similar" || rev.verdict === "covered") {
+    hint.appendChild(el("div", "section-title",
+      rev.verdict === "covered" ? "это уже есть в обсуждении" : "похожая позиция уже есть"));
+    hint.appendChild(el("b", null, rev.headline || ""));
+    if (rev.note) hint.appendChild(el("div", "muted", rev.note));
+    if (onSupport) {
+      const supp = el("button", "mini", "▲ поддержать её");
+      supp.onclick = () => onSupport(rev.position_id);
+      actions.appendChild(supp);
+    }
+  }
+
+  if (rev.quality_note) {
+    const q = el("div");
+    q.appendChild(el("b", null, "как усилить: "));
+    q.appendChild(document.createTextNode(rev.quality_note));
+    hint.appendChild(q);
+    hint.appendChild(el("div", "muted", "поправь текст и нажми «отправить» ещё раз — навигатор перечитает"));
+  }
+
+  const anyway = el("button", "mini", "отправить как есть");
+  anyway.onclick = () => { hint.style.display = "none"; onSend(); };
+  const cancel = el("button", "mini", "отмена");
+  cancel.onclick = () => { hint.style.display = "none"; };
+  actions.append(anyway, cancel);
+  hint.appendChild(actions);
+}
+
 function replyForm(parentId) {
   const card = el("div", "card");
   card.appendChild(el("div", "section-title", "ответить (создаёт дочерний узел)"));
@@ -324,7 +454,7 @@ function replyForm(parentId) {
   card.appendChild(ta);
   const act = el("div", "actions");
   const typeSel = el("select");
-  for (const [v, l] of [["support", "за"], ["refute", "против"], ["qualify", "уточнение"]])
+  for (const [v, l] of [["support", "за"], ["refute", "против"], ["qualify", "уточнение"], ["question", "вопрос"]])
     typeSel.appendChild(new Option(l, v));
   const send = el("button", "primary", "отправить");
   const hint = el("div");                       // the navigator's suggestion box
@@ -350,39 +480,101 @@ function replyForm(parentId) {
     const text = ta.value.trim();
     if (!text) return;
     if (!requireAuth()) return;
-    send.disabled = true; send.textContent = "смотрю, нет ли похожего…";
+    send.disabled = true; send.textContent = "ИИ читает черновик…";
     const root = ROOT.get(parentId) ?? parentId;
-    const pre = await precheck(root, text);
+    const rev = await reviewDraft({ text, connect_to: parentId, edge_type: typeSel.value });
     send.disabled = false; send.textContent = "отправить";
-    if (pre.verdict === "new") { await doSend(text); return; }
+    // nothing to suggest (or the navigator is down) → publish silently
+    if (!reviewHasNotes(rev)) { hint.style.display = "none"; await doSend(text); return; }
 
-    // similar/covered: show what exists, offer to support it or post anyway
-    hint.innerHTML = "";
-    hint.style.display = "";
-    hint.className = "card";
-    hint.style.borderColor = "var(--bronze)";
-    hint.appendChild(el("div", "section-title",
-      pre.verdict === "covered" ? "это уже есть в обсуждении" : "похожая позиция уже есть"));
-    hint.appendChild(el("b", null, pre.headline || ""));
-    if (pre.note) hint.appendChild(el("div", "muted", pre.note));
-    const hactions = el("div", "actions");
-    const supp = el("button", "mini", "▲ поддержать её");
-    supp.onclick = async () => {
-      hint.style.display = "none";
-      ta.value = "";
-      await positionVote(pre.position_id, root, "agree");
-    };
-    const anyway = el("button", "mini", "отправить всё равно");
-    anyway.onclick = async () => { hint.style.display = "none"; await doSend(text); };
-    const cancel = el("button", "mini", "отмена");
-    cancel.onclick = () => { hint.style.display = "none"; };
-    hactions.append(supp, anyway, cancel);
-    hint.appendChild(hactions);
+    renderReview(hint, rev, {
+      root,
+      onSend: async () => { await doSend(ta.value.trim()); },
+      onSwitch: async (type) => {
+        typeSel.value = type;
+        hint.style.display = "none";
+        await doSend(ta.value.trim());
+      },
+      onSupport: async (pid) => {
+        hint.style.display = "none";
+        ta.value = "";
+        await positionVote(pid, root, "agree");
+      },
+    });
   };
   act.append(typeSel, send);
   card.appendChild(act);
   card.appendChild(hint);
   return card;
+}
+
+// ---- new topic: a root node, opened straight from the header
+function newTopicForm() {
+  selectedId = null;
+  renderTree();
+  const d = $("#detail");
+  d.innerHTML = "";
+  const card = el("div", "card");
+  card.appendChild(el("div", "section-title", "новая тема (корень обсуждения)"));
+  const ta = el("textarea");
+  ta.placeholder = "тезис или вопрос, открывающий обсуждение…";
+  card.appendChild(ta);
+  const act = el("div", "actions");
+  const kindSel = el("select");
+  kindSel.appendChild(new Option("тезис", "argument"));
+  kindSel.appendChild(new Option("вопрос", "question"));
+  const send = el("button", "primary", "создать тему");
+  const cancel = el("button", "mini", "отмена");
+  cancel.onclick = () => { d.innerHTML = '<div class="muted">выбери узел слева</div>'; };
+  const hint = el("div");                       // the navigator's suggestion box
+  hint.style.display = "none";
+
+  const doCreate = async (text) => {
+    send.disabled = true; send.textContent = "создаю…";
+    try {
+      // no connect_to => a new root; the review has no topic to compare
+      // against yet, so only the type/quality checks apply here
+      const node = await api("/api/argument", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text, kind: kindSel.value }),
+      });
+      toast("тема создана — PoI оценивается в фоне…");
+      ROOT.set(node.id, node.id);
+      await loadTopics();
+      selectNode(node.id);
+    } catch (e) {
+      toast("ошибка: " + e.message);
+      send.disabled = false; send.textContent = "создать тему";
+    }
+  };
+
+  send.onclick = async () => {
+    const text = ta.value.trim();
+    if (!text) return;
+    if (!requireAuth()) return;
+    send.disabled = true; send.textContent = "ИИ читает черновик…";
+    const rev = await reviewDraft({ text, kind: kindSel.value });
+    send.disabled = false; send.textContent = "создать тему";
+    if (!reviewHasNotes(rev)) { hint.style.display = "none"; await doCreate(text); return; }
+
+    // a root is a thesis or a question — map the suggested reply-type onto that
+    const rootKind = rev.suggested_type === "question" ? "question" : "argument";
+    renderReview(hint, rev, {
+      root: null,
+      switchLabel: rootKind === "question" ? "вопрос" : "тезис",
+      onSend: async () => { await doCreate(ta.value.trim()); },
+      onSwitch: async () => {
+        kindSel.value = rootKind;
+        hint.style.display = "none";
+        await doCreate(ta.value.trim());
+      },
+    });
+  };
+  act.append(kindSel, send, cancel);
+  card.appendChild(act);
+  card.appendChild(hint);
+  d.appendChild(card);
+  ta.focus();
 }
 
 // ---- positions
@@ -391,11 +583,12 @@ async function loadPositions(root, target) {
     const data = await api(`/api/positions/${root}`);
     target.innerHTML = "";
     if (!data.positions.length) { target.appendChild(el("div", "muted", "нет позиций")); return; }
-    for (const p of data.positions) target.appendChild(positionCard(p, root));
+    const byId = new Map(data.positions.map((p) => [p.id, p]));
+    for (const p of data.positions) target.appendChild(positionCard(p, root, byId, data.links || []));
   } catch (e) { target.textContent = "ошибка: " + e.message; }
 }
 
-function positionCard(p, root) {
+function positionCard(p, root, byId, links) {
   const box = el("div"); box.style.borderTop = "1px solid var(--line)";
   box.style.padding = "10px 0";
   const head = el("div");
@@ -407,6 +600,17 @@ function positionCard(p, root) {
   box.appendChild(el("div", "muted", `сторонников: ${sup.count} · Σ PoI ${sup.weight}`));
   if (sup.count) box.appendChild(bucketRow(sup, "agree"));
 
+  // inter-position links, both directions (oppose / conclusion)
+  const LINK_OUT = { oppose: "⚔ оспаривает: ", conclusion: "✦ вывод из: " };
+  const LINK_IN = { oppose: "⚔ оспорена: ", conclusion: "→ есть вывод: " };
+  for (const l of links || []) {
+    let label = null, other = null;
+    if (l.from_position === p.id) { label = LINK_OUT[l.type]; other = byId.get(l.to_position); }
+    else if (l.to_position === p.id) { label = LINK_IN[l.type]; other = byId.get(l.from_position); }
+    if (!label || !other) continue;  // link to a position dropped by a re-cluster
+    box.appendChild(el("div", "muted", label + "«" + (other.headline || "позиция #" + other.id) + "»"));
+  }
+
   const act = el("div", "actions");
   const vote = el("button", "mini", "▲ поддержать");
   vote.onclick = () => positionVote(p.id, root, "agree");
@@ -417,6 +621,23 @@ function positionCard(p, root) {
   const q = el("button", "mini", "вопрос");
   q.onclick = () => positionText(p.id, root, "question", "острый вопрос к позиции:");
   act.append(vote, cont, opp, q);
+  if (p.stance !== "conclusion") {
+    const concl = el("button", "mini", "сделать вывод");
+    concl.onclick = async () => {
+      if (!requireAuth()) return;
+      if (!confirm("ИИ синтезирует вывод из позиции и её веток. Продолжить?")) return;
+      concl.disabled = true; concl.textContent = "ИИ делает вывод…";
+      try {
+        await api(`/api/positions/${p.id}/conclude`, { method: "POST" });
+        toast("вывод создан");
+        selectNode(root);   // re-renders positions; no new tree node appears
+      } catch (e) {
+        toast("ошибка: " + e.message);
+        concl.disabled = false; concl.textContent = "сделать вывод";
+      }
+    };
+    act.append(concl);
+  }
   box.appendChild(act);
 
   if (p.planets && p.planets.length) {
@@ -482,6 +703,10 @@ function listenEvents() {
       if (data.type === "position_updated" && selectedId != null) {
         selectNode(selectedId); // re-render positions with the composed headline
       }
+      if (data.type === "topic_poi_updated" && selectedId != null
+          && ROOT.get(selectedId) === data.topic_root_id) {
+        selectNode(selectedId); // participants card shows fresh per-topic PoI
+      }
       clearTimeout(listenEvents._t);
       listenEvents._t = setTimeout(() => refreshVisible(), 500);
     };
@@ -490,6 +715,7 @@ function listenEvents() {
 
 // ---- boot
 $("#refresh").onclick = () => refreshVisible();
+$("#newTopic").onclick = () => newTopicForm();
 $("#loginBtn").onclick = () => openAuth();
 $("#logoutBtn").onclick = () => doLogout();
 $("#doLogin").onclick = () => doAuth("/api/auth/login");
