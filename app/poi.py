@@ -47,10 +47,11 @@ SYSTEM_PROMPT = (
 )
 
 
-def complete(system, user, max_tokens=1024, timeout=90):
+def complete(system, user, max_tokens=1024, timeout=90, temperature=None):
     """Generic Anthropic call: (system, user) -> concatenated text. Key from env."""
     return complete_messages(system, [{"role": "user", "content": user}],
-                             max_tokens=max_tokens, timeout=timeout)
+                             max_tokens=max_tokens, timeout=timeout,
+                             temperature=temperature)
 
 
 def complete_messages(system, messages, max_tokens=1024, timeout=120,
@@ -93,36 +94,82 @@ def _call_llm(argument_text):
 
 # A QUESTION is judged on its own merits, not as an argument — a sharp question
 # that exposes a real weak point is high quality even though it asserts nothing.
-QUESTION_CRITERIA = {
-    "relevance":     0.25,  # does it bear on the position / topic?
+#
+# relevance only makes sense when the question responds to something — a root
+# question that OPENS a topic has nothing external to be relevant to (it IS
+# the topic), so that criterion is dropped for roots rather than scored
+# against nothing. The remaining weights are renormalized to still sum to 1.
+QUESTION_CRITERIA_REPLY = {
+    "relevance":     0.25,  # does it bear on the specific claim it responds to?
     "incisiveness":  0.30,  # does it expose a real weak point or hidden assumption?
     "depth":         0.20,  # does it open meaningful inquiry, not surface trivia?
     "clarity":       0.15,  # is it clearly posed and answerable?
     "generativity":  0.10,  # does it move the dialogue forward (not rhetorical/lazy)?
 }
+_root_weights = {k: v for k, v in QUESTION_CRITERIA_REPLY.items() if k != "relevance"}
+_root_weight_sum = sum(_root_weights.values())
+QUESTION_CRITERIA_ROOT = {k: v / _root_weight_sum for k, v in _root_weights.items()}
 
-QUESTION_SYSTEM_PROMPT = (
-    "You evaluate the QUALITY OF A QUESTION asked about a claim in a debate. You "
-    "do NOT judge it as an argument — a question asserts nothing. A sharp question "
-    "that exposes a real weakness, hidden assumption, or missing evidence is "
-    "high quality; a lazy, rhetorical, off-topic or trivial question is low. "
-    "Score each criterion 0 to 100. Be calibrated: 50 is an average question, "
-    "80+ genuinely sharp, 90+ rare. "
-    "Also extract a 'topic': a 2-4 word noun phrase naming what the question "
-    "probes, in the SAME LANGUAGE as the question. "
-    "Respond with ONLY a JSON object, no markdown, of the form: "
+QUESTION_SYSTEM_PROMPT_REPLY = (
+    "You evaluate the QUALITY OF A QUESTION asked in response to a specific "
+    "claim in a debate. You do NOT judge it as an argument — a question "
+    "asserts nothing. You will be given the CLAIM the question responds to, "
+    "then the QUESTION itself. A sharp question that exposes a real weakness, "
+    "hidden assumption, or missing evidence IN THAT CLAIM is high quality; a "
+    "question that is off-topic to the claim, lazy, rhetorical or trivial is "
+    "low. Score each criterion 0 to 100: relevance (does it actually engage "
+    "with THIS claim, not just the general topic), incisiveness, depth, "
+    "clarity, generativity. Be calibrated: 50 is an average question, 80+ "
+    "genuinely sharp, 90+ rare. Also extract a 'topic': a 2-4 word noun "
+    "phrase naming what the question probes, in the SAME LANGUAGE as the "
+    "question. Respond with ONLY a JSON object, no markdown, of the form: "
     '{"relevance": int, "incisiveness": int, "depth": int, "clarity": int, '
     '"generativity": int, "topic": "short theme", "comment": "one sentence"}'
 )
 
+QUESTION_SYSTEM_PROMPT_ROOT = (
+    "You evaluate the QUALITY OF A QUESTION that OPENS a NEW discussion "
+    "topic — the question IS the topic, it does not respond to any prior "
+    "claim, so do NOT judge its relevance to anything external. A sharp "
+    "opening question exposes a real tension, hidden assumption, or "
+    "genuinely contestable issue worth debating; a lazy, rhetorical, or "
+    "trivial yes/no question is low quality. Score each criterion 0 to 100: "
+    "incisiveness (does it expose a real weak point or hidden assumption "
+    "worth debating), depth (does it open meaningful inquiry, not surface "
+    "trivia), clarity (is it clearly posed and answerable), generativity "
+    "(does it invite substantive argument, not a one-word answer). Be "
+    "calibrated: 50 is an average question, 80+ genuinely sharp, 90+ rare. "
+    "Also extract a 'topic': a 2-4 word noun phrase naming what the question "
+    "probes, in the SAME LANGUAGE as the question. Respond with ONLY a JSON "
+    'object, no markdown, of the form: {"incisiveness": int, "depth": int, '
+    '"clarity": int, "generativity": int, "topic": "short theme", '
+    '"comment": "one sentence"}'
+)
 
-def score_question(question_text):
-    """Returns (composite_score, breakdown_dict) using the question rubric."""
-    raw = complete(QUESTION_SYSTEM_PROMPT, f"Question to evaluate:\n\n{question_text}", max_tokens=1024)
+
+def score_question(question_text, parent_text=None):
+    """
+    Returns (composite_score, breakdown_dict) using the question rubric.
+
+    parent_text: the claim this question responds to. None means the question
+    OPENS a new topic (it IS the topic) — relevance is dropped, not scored.
+    """
+    if parent_text:
+        system = QUESTION_SYSTEM_PROMPT_REPLY
+        user = (f"Claim being questioned:\n\n{parent_text}\n\n"
+                f"Question to evaluate:\n\n{question_text}")
+        criteria = QUESTION_CRITERIA_REPLY
+    else:
+        system = QUESTION_SYSTEM_PROMPT_ROOT
+        user = (f"Question to evaluate (this OPENS the discussion — it IS "
+                f"the topic):\n\n{question_text}")
+        criteria = QUESTION_CRITERIA_ROOT
+
+    raw = complete(system, user, max_tokens=1024)
     parsed = _parse(raw)
     composite = 0.0
     breakdown = {}
-    for criterion, weight in QUESTION_CRITERIA.items():
+    for criterion, weight in criteria.items():
         sub = float(parsed.get(criterion, 0))
         breakdown[criterion] = sub
         composite += sub * weight

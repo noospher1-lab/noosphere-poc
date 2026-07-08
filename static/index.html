@@ -48,7 +48,7 @@
   #detail { flex: 1; overflow: auto; padding: 18px 22px; }
 
   /* ---- tree ---- */
-  .row { display: flex; align-items: baseline; gap: 6px; padding: 3px 6px;
+  .row { display: flex; align-items: flex-start; gap: 6px; padding: 3px 6px;
     border-radius: 4px; cursor: pointer; line-height: 1.4; }
   .row:hover { background: var(--panel2); }
   .row.sel { background: #15120a; outline: 1px solid var(--bronze); }
@@ -60,7 +60,8 @@
   .rel.qualify { color: var(--orange);border: 1px solid var(--orange); }
   .rel.question{ color: var(--blue);  border: 1px solid var(--blue); }
   .rel.root    { color: var(--bronze);border: 1px solid var(--bronze); }
-  .txt { flex: 1; }
+  .txt { flex: 1; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3; overflow: hidden; }
   .poi { flex: none; color: var(--dim); font-size: 11px; }
   .poi b { color: var(--ivory); }
   .who { flex: none; font-size: 11px; }

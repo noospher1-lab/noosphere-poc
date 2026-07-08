@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noosphere — диалоги (dev)</title>
+<style>
+  :root {
+    --bg:#05060a; --panel:#0b0d14; --panel2:#10131d; --line:#1e2230;
+    --ivory:#ece6d8; --dim:#8a8f9e; --bronze:#d8af6e; --green:#57d98a;
+    --red:#e25b56; --blue:#5aa9e6; --violet:#b98cff;
+    --mono:'JetBrains Mono',ui-monospace,'SFMono-Regular',Menlo,monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ivory);
+    font-family:var(--mono); font-size:13px; }
+  a { color:var(--blue); text-decoration:none; }
+  header { display:flex; align-items:center; gap:14px; padding:10px 16px;
+    border-bottom:1px solid var(--line); background:var(--panel); }
+  header .brand { font-weight:600; letter-spacing:.08em; color:var(--bronze); }
+  header .spacer { flex:1; }
+  .muted { color:var(--dim); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    padding:14px 16px; margin:12px 0; }
+  .section-title { color:var(--dim); letter-spacing:.08em; text-transform:uppercase;
+    font-size:10px; margin-bottom:8px; }
+  #layout { display:flex; height:calc(100% - 41px); }
+  #sidebar { width:300px; flex:none; border-right:1px solid var(--line);
+    overflow-y:auto; background:var(--panel); }
+  #main { flex:1; overflow-y:auto; padding:20px 24px 60px; }
+  .drow { padding:10px 14px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .drow:hover { background:var(--panel2); }
+  .drow.sel { background:#1a1508; border-left:3px solid var(--bronze); }
+  .drow .u { font-weight:600; }
+  .drow .meta { color:var(--dim); font-size:11px; margin-top:2px; }
+  .phase-badge { display:inline-block; padding:1px 6px; border-radius:4px;
+    font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+  .phase-pre { background:#2a2214; color:var(--bronze); }
+  .phase-dialogue { background:#0f2233; color:var(--blue); }
+  .phase-post { background:#2a1a33; color:var(--violet); }
+  .phase-results { background:#123322; color:var(--green); }
+  /* chat (mirrors dialogue.html) */
+  #chat { display:flex; flex-direction:column; gap:10px; margin:14px 0; }
+  .turn { max-width:88%; padding:10px 12px; border-radius:8px; white-space:pre-wrap; line-height:1.5; }
+  .turn.ai { background:var(--panel); border:1px solid var(--line); align-self:flex-start; }
+  .turn.user { background:#15120a; border:1px solid #2a2214; align-self:flex-end; }
+  .turn .who { font-size:10px; color:var(--dim); text-transform:uppercase;
+    letter-spacing:.08em; margin-bottom:4px; }
+  .offer { border:1px solid var(--blue); border-radius:8px; padding:10px 12px;
+    align-self:flex-start; max-width:88%; }
+  .offer .who { color:var(--blue); font-size:10px; text-transform:uppercase; margin-bottom:4px; }
+  /* results */
+  .total { font-size:40px; color:var(--bronze); font-weight:700; }
+  .crit { border-top:1px solid var(--line); padding:10px 0; }
+  .crit .bar { height:7px; background:var(--panel2); border-radius:4px; overflow:hidden; margin:6px 0; }
+  .crit .bar span { display:block; height:100%; background:var(--bronze); }
+  .crit .ev { color:var(--dim); font-size:12px; border-left:2px solid var(--line);
+    padding-left:8px; margin:4px 0; }
+  .err { color:var(--red); margin:8px 0; }
+  .empty { color:var(--dim); padding:40px; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">NOOSPHERE</span>
+  <span class="muted">диалоги · dev</span>
+  <span class="spacer"></span>
+  <a href="/">← к обсуждениям</a>
+</header>
+
+<div id="layout">
+  <div id="sidebar"></div>
+  <div id="main"><div class="empty">выбери пользователя слева</div></div>
+</div>
+
+<script>
+const $ = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => [...r.querySelectorAll(s)];
+
+function getToken() {
+  let t = localStorage.getItem("admin_token");
+  if (!t) {
+    t = prompt("X-Admin-Token (из .env сервера, ADMIN_TOKEN):") || "";
+    if (t) localStorage.setItem("admin_token", t);
+  }
+  return t;
+}
+
+async function api(path) {
+  const r = await fetch(path, { headers: { "X-Admin-Token": getToken() } });
+  if (r.status === 403) {
+    localStorage.removeItem("admin_token");   // stale/wrong token — ask again next call
+  }
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || String(r.status));
+  return r.json();
+}
+
+const CRIT_LABELS = {
+  problem_framing: ["Постановка проблемы", 20],
+  information_integration: ["Интеграция информации", 20],
+  reasoning_under_revision: ["Мышление под давлением", 20],
+  handling_disagreement: ["Работа с несогласием", 15],
+  cognitive_patterns: ["Когнитивные паттерны", 15],
+  decision_quality: ["Качество решения", 10],
+};
+
+let selectedId = null;
+
+function fmtDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleString("ru-RU", { day:"2-digit", month:"2-digit", year:"numeric",
+    hour:"2-digit", minute:"2-digit" });
+}
+
+async function loadList() {
+  const box = $("#sidebar");
+  try {
+    const items = await api("/api/dev/dialogues");
+    box.innerHTML = "";
+    if (!items.length) { box.innerHTML = '<div class="empty">диалогов пока нет</div>'; return; }
+    for (const it of items) {
+      const row = document.createElement("div");
+      row.className = "drow";
+      row.dataset.id = it.author_id;
+      row.innerHTML = `<div class="u"></div>
+        <div class="meta"><span class="phase-badge phase-${it.phase}"></span>
+        · ход ${it.n_turns ?? 0} · <span class="upd"></span></div>`;
+      row.querySelector(".u").textContent = it.name || it.username || ("#" + it.author_id);
+      row.querySelector(".phase-badge").textContent = it.phase;
+      row.querySelector(".upd").textContent = fmtDate(it.updated_at);
+      row.onclick = () => selectDialogue(it.author_id);
+      box.appendChild(row);
+    }
+  } catch (e) {
+    box.innerHTML = `<div class="empty err">ошибка: ${e.message}
+      <div class="muted" style="margin-top:10px">
+        <a href="#" id="retryToken">ввести токен заново</a>
+      </div></div>`;
+    const retry = $("#retryToken");
+    if (retry) retry.onclick = (ev) => { ev.preventDefault(); loadList(); };
+  }
+}
+
+async function selectDialogue(authorId) {
+  selectedId = authorId;
+  $$(".drow").forEach(r => r.classList.toggle("sel", +r.dataset.id === authorId));
+  const main = $("#main");
+  main.innerHTML = '<div class="empty">загрузка…</div>';
+  try {
+    const d = await api(`/api/dev/dialogues/${authorId}`);
+    renderDialogue(d);
+  } catch (e) {
+    main.innerHTML = `<div class="empty err">${e.message}</div>`;
+  }
+}
+
+function voteLabel(v) { return v === "yes" ? "ДА — поддерживаю" : "НЕТ — против"; }
+
+function renderDialogue(d) {
+  const main = $("#main");
+  main.innerHTML = "";
+
+  const head = document.createElement("div");
+  head.className = "card";
+  head.innerHTML = `<div class="section-title">тема</div><div>${d.topic}</div>
+    <div class="muted" style="margin-top:6px">
+      фаза: <span class="phase-badge phase-${d.phase}">${d.phase}</span>
+      · ход ${d.user_turns} из ${d.max_turns} (итог доступен с ${d.min_turns})
+    </div>`;
+  main.appendChild(head);
+
+  if (d.pre) {
+    const pre = document.createElement("div");
+    pre.className = "card";
+    pre.innerHTML = `<div class="section-title">стартовая позиция</div>
+      <div>${voteLabel(d.pre.vote)} · <span class="muted">${d.pre.confidence}</span></div>
+      <div class="muted" style="margin-top:6px; white-space:pre-wrap"></div>`;
+    pre.querySelector("div:last-child").textContent = d.pre.reasoning;
+    main.appendChild(pre);
+  }
+
+  const chatWrap = document.createElement("div");
+  chatWrap.innerHTML = '<div class="section-title">диалог</div>';
+  const chat = document.createElement("div");
+  chat.id = "chat";
+  for (const t of (d.turns || [])) {
+    if (t.content.startsWith("[")) continue;
+    if (t.meta === "inform_offer_pending") {
+      const o = document.createElement("div");
+      o.className = "offer";
+      o.innerHTML = '<div class="who">💡 предложение информации (не отвечено)</div><div class="tx"></div>';
+      o.querySelector(".tx").textContent = t.content;
+      chat.appendChild(o);
+      continue;
+    }
+    const el = document.createElement("div");
+    el.className = "turn " + (t.role === "ai" ? "ai" : "user");
+    el.innerHTML = '<div class="who"></div><div class="tx"></div>';
+    el.querySelector(".who").textContent = t.role === "ai" ? "собеседник" : "пользователь";
+    el.querySelector(".tx").textContent = t.content;
+    chat.appendChild(el);
+  }
+  chatWrap.appendChild(chat);
+  main.appendChild(chatWrap);
+
+  if (d.post) {
+    const post = document.createElement("div");
+    post.className = "card";
+    post.innerHTML = `<div class="section-title">финальная позиция</div>
+      <div>${voteLabel(d.post.vote)} · <span class="muted">${d.post.confidence}</span></div>
+      <div class="muted reasoning" style="margin-top:6px; white-space:pre-wrap"></div>
+      <div class="section-title" style="margin-top:10px">рефлексия</div>
+      <div class="reflection" style="white-space:pre-wrap"></div>`;
+    post.querySelector(".reasoning").textContent = d.post.reasoning;
+    post.querySelector(".reflection").textContent = d.post.reflection;
+    main.appendChild(post);
+  }
+
+  if (d.scores) {
+    const s = d.scores;
+    const res = document.createElement("div");
+    res.innerHTML = '<div class="section-title" style="margin-top:16px">результаты</div>';
+    const totalCard = document.createElement("div");
+    totalCard.className = "card";
+    totalCard.style.cssText = "display:flex;align-items:center;gap:20px";
+    totalCard.innerHTML = `<div class="total">${s.total ?? "—"}</div>
+      <div class="muted"></div>`;
+    totalCard.querySelector(".muted").textContent = s.overall_summary || "";
+    res.appendChild(totalCard);
+
+    for (const [key, [label, max]] of Object.entries(CRIT_LABELS)) {
+      const c = (s.criteria || {})[key];
+      if (!c) continue;
+      const cd = document.createElement("div");
+      cd.className = "crit card";
+      cd.innerHTML = `<b>${label}</b> <span class="muted">${c.score} / ${max}</span>
+        <div class="bar"><span style="width:${(c.score / max) * 100}%"></span></div>
+        <div class="why"></div>`;
+      cd.querySelector(".why").textContent = c.why || "";
+      for (const q of c.evidence || []) {
+        const ev = document.createElement("div");
+        ev.className = "ev"; ev.textContent = "«" + q + "»";
+        cd.appendChild(ev);
+      }
+      if (c.what_would_raise_score) {
+        const w = document.createElement("div");
+        w.className = "muted"; w.style.marginTop = "6px";
+        w.textContent = "↑ что подняло бы балл: " + c.what_would_raise_score;
+        cd.appendChild(w);
+      }
+      res.appendChild(cd);
+    }
+
+    const meta = s.meta_patterns || [];
+    if (meta.length) {
+      const mbox = document.createElement("div");
+      mbox.className = "card";
+      mbox.innerHTML = '<div class="section-title">мета-паттерны</div>';
+      for (const m of meta) {
+        const p = document.createElement("div");
+        p.className = "muted"; p.textContent = "· " + m;
+        mbox.appendChild(p);
+      }
+      res.appendChild(mbox);
+    }
+    main.appendChild(res);
+  } else if (d.phase !== "results") {
+    const note = document.createElement("div");
+    note.className = "card muted";
+    note.textContent = "Итог ещё не подведён — пользователь не завершил finalize.";
+    main.appendChild(note);
+  }
+}
+
+loadList();
+</script>
+</body>
+</html>

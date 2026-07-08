@@ -19,7 +19,41 @@ import json
 
 from . import poi
 
-TOPIC = "Должна ли ядерная энергетика стать центральной в переходе к чистой энергии?"
+# Several topics to choose from (vault: poi-accrual-onboarding — was a single
+# hardcoded topic; a tester expecting a choice flagged it). Picked for range
+# across domains and for genuinely mixing facts and values, so different
+# people's reasoning styles surface rather than everyone converging on the
+# same tribal answer. Deliberately avoids Noosphere's own governance thesis
+# as a topic — the platform shouldn't calibrate PoI on agreement with itself.
+TOPICS = [
+    {"id": "nuclear", "title":
+        "Должна ли ядерная энергетика стать центральной в переходе к чистой энергии?"},
+    {"id": "ai-regulation", "title":
+        "Должны ли государства жёстко регулировать разработку продвинутого ИИ, "
+        "даже ценой замедления инноваций?"},
+    {"id": "ubi", "title":
+        "Должен ли безусловный базовый доход заменить адресную систему "
+        "социальной поддержки?"},
+    {"id": "gene-editing", "title":
+        "Допустимо ли редактирование генома эмбрионов человека для устранения "
+        "наследственных болезней?"},
+    {"id": "content-moderation", "title":
+        "Должны ли платформы модерировать дезинформацию, даже если это "
+        "ограничивает свободу слова?"},
+    {"id": "climate-reparations", "title":
+        "Должны ли развитые страны платить репарации развивающимся за "
+        "исторические выбросы CO₂?"},
+]
+TOPIC = TOPICS[0]["title"]     # back-compat default
+
+
+def topic_by_id(topic_id):
+    """Look up a topic's title by id. Returns None if unknown."""
+    for t in TOPICS:
+        if t["id"] == topic_id:
+            return t["title"]
+    return None
+
 
 MIN_TURNS_TO_FINALIZE = 10
 MAX_TURNS = 30

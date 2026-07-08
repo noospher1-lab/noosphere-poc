@@ -5,3 +5,4 @@ noosphere.db
 .env
 .pytest_cache/
 uvicorn.log
+dialogue_*_turns.json

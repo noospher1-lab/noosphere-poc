@@ -18,8 +18,11 @@ import asyncio
 import json
 import os
 import re
+import secrets
+import time
+from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -37,6 +40,17 @@ DEV_TOOLS = os.environ.get("DEV_TOOLS") == "1"
 def dev_only():
     if not DEV_TOOLS:
         raise HTTPException(403, "дев-инструмент отключён (DEV_TOOLS=1 включает)")
+
+
+# Separate from DEV_TOOLS on purpose: the admin dialogue viewer is read-only
+# but exposes testers' full transcripts, and the server may sit behind a
+# public tunnel while DEV_TOOLS stays off. Gated by its own bearer secret.
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN")
+
+
+def admin_only(x_admin_token: str | None = Header(default=None)):
+    if not ADMIN_TOKEN or not x_admin_token or not secrets.compare_digest(x_admin_token, ADMIN_TOKEN):
+        raise HTTPException(403, "нужен верный заголовок X-Admin-Token (ADMIN_TOKEN в .env)")
 
 
 class EventHub:
@@ -94,10 +108,13 @@ _SCORERS = {"question": poi.score_question, "proposal": poi.score_proposal,
             "exploration": poi.score_exploration}
 
 
-async def _score_later(node_id: int, text: str, kind: str = "argument"):
+async def _score_later(node_id: int, text: str, kind: str = "argument", parent_text: str | None = None):
     fn = _SCORERS.get(kind, poi.score_argument)
     try:
-        score, breakdown = await asyncio.to_thread(fn, text)
+        if kind == "question":
+            score, breakdown = await asyncio.to_thread(fn, text, parent_text)
+        else:
+            score, breakdown = await asyncio.to_thread(fn, text)
     except Exception as e:
         # score stays NULL ("unscored"); the client just keeps showing "…"
         hub.publish({"type": "node_score_failed", "node_id": node_id, "error": str(e)})
@@ -257,6 +274,7 @@ class ArgumentIn(BaseModel):
     connect_to: int | None = None         # optional: target node id (None = new branch / root)
     edge_type: str | None = "support"     # support / refute / qualify / question
     kind: str | None = "argument"         # "question" marks a question node (a root can be one)
+    title: str | None = None              # required when this opens a new topic (connect_to is None)
 
 
 class EdgeIn(BaseModel):
@@ -313,11 +331,19 @@ async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
 
     # 0. resolve the discussion this argument joins (None = it opens a new topic)
     root_id = None
+    title = None
+    parent_text = None
     if arg.connect_to is not None:
         parent = await db.get_node(arg.connect_to)
         if parent is None:
             raise HTTPException(404, f"connect_to node {arg.connect_to} not found")
         root_id = parent.get("topic_root_id") or await db.topic_root_of(arg.connect_to)
+        parent_text = parent["text"]
+    else:
+        # a new topic root needs a short title distinct from the body text
+        title = (arg.title or "").strip()
+        if not title:
+            raise HTTPException(400, "title is required to open a new topic")
 
     # questions, proposals and explorations are first-class contributions
     # anywhere — as a reply (edge_type) or as a topic root (kind, no edge)
@@ -327,7 +353,7 @@ async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
 
     # 1. persist the node RIGHT AWAY, unscored (poi_score = NULL)
     node_id = await db.add_node(arg.text, author_id=author["id"], kind=kind,
-                                topic_root_id=root_id)
+                                topic_root_id=root_id, title=title)
 
     # 2. optional typed edge to an existing node (None = a new root branch)
     edge = None
@@ -342,7 +368,7 @@ async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
 
     # 3. scoring AND pool assignment happen in the background
     # (questions get the QUESTION rubric and never join position pools)
-    _spawn(_score_later(node_id, arg.text, kind))
+    _spawn(_score_later(node_id, arg.text, kind, parent_text))
     if kind == "argument":
         _spawn(_assign_position_later(node_id, arg.text))
 
@@ -671,7 +697,7 @@ async def branch_node(node_id: int, body: BranchIn, author=Depends(current_autho
                             position_id=pid,
                             topic_root_id=parent.get("topic_root_id"))
     await db.add_edge(nid, node_id, "question" if kind == "question" else "qualify")
-    _spawn(_score_later(nid, body.text, kind))
+    _spawn(_score_later(nid, body.text, kind, parent["text"]))
     pos = await db.get_position(pid) if pid else None
     return await _position_payload(pos) if pos else {"ok": True}
 
@@ -735,11 +761,13 @@ async def question_position(position_id: int, body: PositionArgIn,
         raise HTTPException(404, f"position {position_id} not found")
     # A question is a planet (not a position), scored with the QUESTION rubric —
     # a sharp question that exposes a weak point scores high. Scored in the bg.
+    rep_id = await _rep_member(position_id, pos["topic_root_id"])
+    rep_node = await db.get_node(rep_id)
     nid = await db.add_node(body.text, author_id=author["id"], kind="question",
                             position_id=position_id,
                             topic_root_id=pos["topic_root_id"])
-    await db.add_edge(nid, await _rep_member(position_id, pos["topic_root_id"]), "question")
-    _spawn(_score_later(nid, body.text, "question"))
+    await db.add_edge(nid, rep_id, "question")
+    _spawn(_score_later(nid, body.text, "question", rep_node["text"] if rep_node else None))
     return await _position_payload(await db.get_position(position_id))
 
 
@@ -794,18 +822,23 @@ def _dlg_user_turns(d):
                if t["role"] == "user" and not t["content"].startswith("["))
 
 
+def _turn_ts():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 def _ingest_ai_reply(turns, raw):
     """Split an interlocutor reply into turns; an INFORM_OFFER becomes a
     pending offer turn the user must accept or decline."""
+    ts = _turn_ts()
     m = re.search(r"\[INFORM_OFFER\]([\s\S]*?)\[/INFORM_OFFER\]", raw)
     if m:
         rest = (raw[:m.start()] + raw[m.end():]).strip()
         if rest:
-            turns.append({"role": "ai", "content": rest})
+            turns.append({"role": "ai", "content": rest, "ts": ts})
         turns.append({"role": "ai", "content": m.group(1).strip(),
-                      "meta": "inform_offer_pending"})
+                      "ts": ts, "meta": "inform_offer_pending"})
     else:
-        turns.append({"role": "ai", "content": raw.strip()})
+        turns.append({"role": "ai", "content": raw.strip(), "ts": ts})
 
 
 def _dlg_meta(d):
@@ -821,9 +854,21 @@ async def get_dialogue_state(author=Depends(current_author)):
     return _dlg_meta(d) if d else None
 
 
+@app.get("/api/dialogue/topics")
+async def list_dialogue_topics(author=Depends(current_author)):
+    return [{"id": t["id"], "title": t["title"]} for t in dialogue_mod.TOPICS]
+
+
+class DialogueStartIn(BaseModel):
+    topic_id: str
+
+
 @app.post("/api/dialogue/start")
-async def start_dialogue(author=Depends(current_author)):
-    d = await db.start_dialogue(author["id"], dialogue_mod.TOPIC)
+async def start_dialogue(body: DialogueStartIn, author=Depends(current_author)):
+    title = dialogue_mod.topic_by_id(body.topic_id)
+    if title is None:
+        raise HTTPException(400, f"unknown topic_id {body.topic_id!r}")
+    d = await db.start_dialogue(author["id"], title)
     return _dlg_meta(d)
 
 
@@ -866,7 +911,8 @@ async def dialogue_message(body: DialogueMsgIn, author=Depends(current_author)):
     if _dlg_user_turns(d) >= dialogue_mod.MAX_TURNS:
         raise HTTPException(409, "бюджет ходов исчерпан — подведи итог")
     turns = d["turns"]
-    turns.append({"role": "user", "content": body.text.strip()})
+    turns.append({"role": "user", "content": body.text.strip(),
+                  "ts": _turn_ts()})
     try:
         reply = await asyncio.to_thread(
             dialogue_mod.interlocutor_reply, d["topic"], d["pre"], turns)
@@ -891,7 +937,8 @@ async def dialogue_inform(body: DialogueInformIn, author=Depends(current_author)
     pending["meta"] = "inform_offer_accepted" if body.accept else "inform_offer_declined"
     turns.append({"role": "user", "content":
                   "[User accepted the information offer. Provide the information now.]"
-                  if body.accept else "[User declined the information offer.]"})
+                  if body.accept else "[User declined the information offer.]",
+                  "ts": _turn_ts()})
     if body.accept:
         try:
             reply = await asyncio.to_thread(
@@ -948,6 +995,19 @@ async def dialogue_continue(author=Depends(current_author)):
         raise HTTPException(409, "бюджет ходов исчерпан")
     await db.update_dialogue(author["id"], phase="dialogue")
     return _dlg_meta(await db.get_dialogue(author["id"]))
+
+
+@app.get("/api/dev/dialogues", dependencies=[Depends(admin_only)])
+async def dev_list_dialogues():
+    return await db.list_dialogues()
+
+
+@app.get("/api/dev/dialogues/{author_id}", dependencies=[Depends(admin_only)])
+async def dev_get_dialogue(author_id: int):
+    d = await db.get_dialogue(author_id)
+    if d is None:
+        raise HTTPException(404, "у этого автора нет диалога")
+    return _dlg_meta(d)
 
 
 # ---------------------------------------------------------------- AI navigator
@@ -1013,6 +1073,36 @@ _REVIEW_TYPES = {"support", "refute", "qualify", "question",
 _ROOT_KINDS = {"argument", "question", "proposal", "exploration"}
 _SPLIT_TYPES = {"support", "refute", "qualify", "question", "proposal"}
 
+# The LLM classifies the draft's actual_type from the TEXT alone (vault:
+# ai-navigator-type-loop — feeding the author's declared type into the prompt
+# made the classification itself depend on it, so switching to the suggested
+# type could flip the verdict back the other way, an oscillating loop with no
+# way to land). Caching keyed on (connect_to, text) means flipping the type
+# dropdown and resending the same draft compares locally against the same
+# cached actual_type instead of re-asking the LLM — the comparison is what
+# changes, not the classification.
+_REVIEW_CACHE: dict[tuple, tuple[float, dict]] = {}
+_REVIEW_CACHE_TTL = 300
+_REVIEW_CACHE_MAX = 500
+
+
+def _review_cache_get(key):
+    hit = _REVIEW_CACHE.get(key)
+    if hit is None:
+        return None
+    ts, result = hit
+    if time.monotonic() - ts > _REVIEW_CACHE_TTL:
+        _REVIEW_CACHE.pop(key, None)
+        return None
+    return result
+
+
+def _review_cache_set(key, result):
+    if len(_REVIEW_CACHE) >= _REVIEW_CACHE_MAX:
+        oldest = min(_REVIEW_CACHE, key=lambda k: _REVIEW_CACHE[k][0])
+        _REVIEW_CACHE.pop(oldest, None)
+    _REVIEW_CACHE[key] = (time.monotonic(), result)
+
 
 @app.post("/api/draft/review")
 async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
@@ -1030,20 +1120,24 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         declared = body.edge_type or "support"
     else:
         declared = body.kind or "argument"
-    try:
-        result = await asyncio.to_thread(
-            pools_mod.review_draft, text, declared, parent, branch,
-            [{"id": p["id"], "headline": p["headline"], "composed": p["composed"]}
-             for p in positions])
-    except Exception:
-        return dict(_REVIEW_CLEAN)        # fail-open: never stand in the way
+    cache_key = (body.connect_to, text)
+    result = _review_cache_get(cache_key)
+    if result is None:
+        try:
+            result = await asyncio.to_thread(
+                pools_mod.review_draft, text, parent, branch,
+                [{"id": p["id"], "headline": p["headline"], "composed": p["composed"]}
+                 for p in positions])
+        except Exception:
+            return dict(_REVIEW_CLEAN)    # fail-open: never stand in the way
+        _review_cache_set(cache_key, result)
     out = dict(_REVIEW_CLEAN)
-    sug = result.get("suggested_type")
+    actual = result.get("actual_type")
     # a topic root has kinds, not reply types — fold the reply types back
-    if body.connect_to is None and sug in _REVIEW_TYPES:
-        sug = sug if sug in _ROOT_KINDS else "argument"
-    if result.get("type_ok") is False and sug in (_REVIEW_TYPES | _ROOT_KINDS) and sug != declared:
-        out.update(type_ok=False, suggested_type=sug,
+    if body.connect_to is None and actual in _REVIEW_TYPES:
+        actual = actual if actual in _ROOT_KINDS else "argument"
+    if actual in (_REVIEW_TYPES | _ROOT_KINDS) and actual != declared:
+        out.update(type_ok=False, suggested_type=actual,
                    type_note=str(result.get("type_note") or ""))
     out["quality_note"] = str(result.get("quality_note") or "")
     # split: exactly two non-empty parts of different reply types, replies only

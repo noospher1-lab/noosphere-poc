@@ -113,6 +113,11 @@ _SCHEMA = [
     )
     """,
     "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS topic_root_id INTEGER",
+    # title: short, author-supplied label for a TOPIC ROOT (question/proposal/
+    # exploration/thesis that opens a discussion). NULL for replies — they are
+    # not discussions in their own right, so the tree falls back to an excerpt
+    # of their text. Required at creation time for new roots (see main.py).
+    "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS title TEXT",
     # atom_group marks a node CUT OUT of an exploration (vault:
     # exploration-atomization): non-NULL = "this is an atom of a разбор,
     # grouped under this heading, NOT a position its author has taken".
@@ -244,18 +249,18 @@ async def wipe():
 # ---------------------------------------------------------------- nodes
 async def add_node(text, poi_score=None, poi_breakdown=None, author_id=None,
                    kind="argument", position_id=None, topic_root_id=None,
-                   atom_group=None):
+                   atom_group=None, title=None):
     """topic_root_id=None means the node IS a new topic root (points to itself)."""
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         async with conn.transaction():
             node_id = await conn.fetchval(
                 "INSERT INTO nodes (text, poi_score, poi_breakdown, author_id, kind, "
-                "position_id, topic_root_id, atom_group) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
+                "position_id, topic_root_id, atom_group, title) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
                 text, poi_score,
                 json.dumps(poi_breakdown) if poi_breakdown else None,
-                author_id, kind, position_id, topic_root_id, atom_group,
+                author_id, kind, position_id, topic_root_id, atom_group, title,
             )
             if topic_root_id is None:
                 await conn.execute(
@@ -465,6 +470,27 @@ async def get_dialogue(author_id):
         row = await conn.fetchrow(
             "SELECT * FROM dialogues WHERE author_id = $1", author_id)
     return _parse_dialogue(row)
+
+
+async def list_dialogues():
+    """All dialogues with their author, newest first (dev admin viewer)."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT a.id AS author_id, a.username, a.name, a.dialogue_poi,
+                   d.topic, d.phase, jsonb_array_length(d.turns) AS n_turns,
+                   d.updated_at
+            FROM dialogues d JOIN authors a ON a.id = d.author_id
+            ORDER BY d.updated_at DESC
+            """)
+    out = []
+    for row in rows:
+        r = dict(row)
+        if r.get("updated_at") is not None:
+            r["updated_at"] = r["updated_at"].isoformat()
+        out.append(r)
+    return out
 
 
 async def start_dialogue(author_id, topic):
@@ -909,7 +935,8 @@ async def list_topics():
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT n.id, n.text, n.poi_score, n.kind, a.name AS author, a.color AS author_color,
+            SELECT n.id, n.text, n.title, n.poi_score, n.kind,
+                   a.name AS author, a.color AS author_color,
                    (SELECT count(*) FROM edges e2
                     JOIN nodes cn ON cn.id = e2.source_id
                     WHERE e2.target_id = n.id) AS reply_count

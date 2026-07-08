@@ -161,19 +161,37 @@ _REVIEW_TYPES = ("support (за: supports the parent claim), refute (проти�
                  "position)")
 
 
-def review_draft(text, declared_type, parent, branch, positions):
+_ROOT_KINDS_DESC = ("argument (standalone claim opening a topic), question "
+                    "(вопрос), proposal (предложение), exploration "
+                    "(исследование/разбор: a LARGE unsettled investigation "
+                    "mixing за, против and open questions, the author has NOT "
+                    "taken a position)")
+
+
+def review_draft(text, parent, branch, positions):
     """
     The pre-publication draft review (vault: ai-navigator-draft-review) — one
-    LLM call that checks the draft's TYPE, suggests ONE quality improvement,
-    and compares it against the topic's nodes and positions.
+    LLM call that determines the draft's ACTUAL type, suggests ONE quality
+    improvement, and compares it against the topic's nodes and positions.
 
-    declared_type: support|refute|qualify|question (or argument|question for
-    a new topic root). parent: {id, text}|None. branch: rows from
-    db.topic_subtree(). positions: [{id, headline, composed}].
-    Returns {"type_ok", "suggested_type", "type_note", "quality_note",
+    Deliberately does NOT take the author's declared type as input: the type,
+    quality and split analysis is a property of the TEXT alone. Feeding the
+    declared type into the prompt made the verdict depend on what the caller
+    passed in, so the same text could be told "you should switch to A" and,
+    once the author switched, "no, actually switch to B" — an oscillating
+    loop with no way to land (vault: ai-navigator-type-loop). The caller
+    compares the returned actual_type against whatever the author currently
+    has selected, so the comparison — not the classification — is what
+    changes when the author flips the dropdown.
+
+    parent: {id, text}|None (None = drafting a new topic root).
+    branch: rows from db.topic_subtree(). positions: [{id, headline, composed}].
+    Returns {"actual_type", "type_note", "quality_note",
              "verdict": "new|similar|covered|answered|countered",
-             "node_id", "position_id", "note"}
+             "node_id", "position_id", "note", "split"}
     """
+    is_root = parent is None
+    type_vocab = _ROOT_KINDS_DESC if is_root else _REVIEW_TYPES
     parts = []
     if parent is not None:
         parts.append(f"The draft replies to this node:\n\n{parent['text']}")
@@ -191,23 +209,22 @@ def review_draft(text, declared_type, parent, branch, positions):
         parts.append("Composed POSITIONS of the discussion, as [id] headline: "
                      "full text:\n\n" + plist)
     parts.append(
-        f"The participant chose the contribution type '{declared_type}' "
-        f"(types: {_REVIEW_TYPES}; 'argument' means a standalone claim opening "
-        f"a topic) and drafted:\n\n{text}\n\n"
-        "Review it:\n"
-        "1. TYPE: does the text's form match the chosen type? An assertion "
-        "posted as 'question', or a supporting point posted as 'refute', is a "
-        "mismatch — suggest the type that fits what they actually wrote.\n"
+        f"The draft (this is a {'new topic root' if is_root else 'reply'}), "
+        f"types available: {type_vocab}:\n\n{text}\n\n"
+        "Review it. You are NOT told what type the author declared — judge "
+        "the text purely on its own form:\n"
+        "1. TYPE: which type does the text's own form actually fit? Write "
+        "actual_type and, in type_note, ONE sentence describing what the "
+        "text reads as and why (e.g. it opens with partial agreement before "
+        "asking something, so it reads as a conditioned qualification rather "
+        "than a plain question). Never phrase the note as a correction of a "
+        "specific wrong type — you don't know which one the author picked.\n"
         "GENRE RULE: a LONG text (several paragraphs) that mixes claims, "
         "questions, additions and proposals in an unsettled, investigative "
-        "way is an EXPLORATION — suggest type 'exploration' and do NOT split "
-        "it; atomization happens later with the author's consent. Never "
-        "suggest 'exploration' for a short reply or for a text that clearly "
-        "argues one side at length.\n"
-        "IMPORTANT: whenever the declared type mismatches, do steps 2 and 3 "
-        "for the type the text ACTUALLY is (your suggested_type) — one review "
-        "must stay valid after the author switches the type. Never advise how "
-        "to become a better specimen of the wrongly-declared type.\n"
+        "way is an EXPLORATION — actual_type 'exploration', do NOT split it; "
+        "atomization happens later with the author's consent. Never use "
+        "'exploration' for a short reply or for a text that clearly argues "
+        "one side at length.\n"
         "2. QUALITY: ONE concrete, actionable suggestion — but ONLY if the "
         "draft has a genuinely important gap (a missing causal mechanism, a "
         "bare unsupported claim, an obvious unaddressed counter). A solid "
@@ -224,18 +241,19 @@ def review_draft(text, declared_type, parent, branch, positions):
         "   - 'similar': a POSITION overlaps but the draft may add something "
         "(set position_id);\n"
         "   - 'new': none of the above.\n"
-        "4. SPLIT: ONLY when the draft is SHORT and glues together exactly "
-        "TWO contributions of DIFFERENT types (e.g. a question plus a claim), "
-        "provide 'split': the two parts, each with its own type. CUT, do not "
-        "rewrite — reuse the author's own words with minimal glue; invent "
-        "nothing. A long single-type text, however many points it makes, is "
-        "NOT a split candidate. When you provide split, type_ok concerns the "
-        "whole draft as submitted, and suggested_type (if any) must be the "
-        "type of the dominant part — NEVER 'exploration' for a short draft.\n"
+        "4. SPLIT: this is a property of the text, independent of steps 1-3 — "
+        "always check it. ONLY when the draft is SHORT and glues together "
+        "exactly TWO contributions of DIFFERENT types (e.g. a question plus "
+        "a claim), provide 'split': the two parts, each with its own type. "
+        "CUT, do not rewrite — reuse the author's own words with minimal "
+        "glue; invent nothing. A long single-type text, however many points "
+        "it makes, is NOT a split candidate. When you provide split, "
+        "actual_type must be the type of the dominant part — NEVER "
+        "'exploration' for a short draft.\n"
         "Respond with ONLY JSON:\n"
-        '{"type_ok": true|false, '
-        '"suggested_type": "support|refute|qualify|question|proposal|exploration" or null, '
-        '"type_note": "one sentence if type_ok is false, else empty", '
+        '{"actual_type": "support|refute|qualify|question|proposal|exploration" '
+        '(or "argument|question|proposal|exploration" for a topic root), '
+        '"type_note": "one sentence, see above", '
         '"quality_note": "one concrete suggestion or empty", '
         '"verdict": "new|similar|covered|answered|countered", '
         '"node_id": <id or null>, "position_id": <id or null>, '
@@ -244,7 +262,8 @@ def review_draft(text, declared_type, parent, branch, positions):
         '"split": [{"type": "support|refute|qualify|question|proposal", '
         '"text": "..."}, {...}] or null}'
     )
-    raw = poi.complete(REVIEW_SYSTEM, "\n\n---\n\n".join(parts), max_tokens=1024)
+    raw = poi.complete(REVIEW_SYSTEM, "\n\n---\n\n".join(parts),
+                       max_tokens=1024, temperature=0)
     cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(cleaned)
 

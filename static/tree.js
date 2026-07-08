@@ -141,6 +141,16 @@ function relLabel(type) {
            proposal: "предл.", exploration: "разбор", atom: "атом", root: "тема" }[type] || type;
 }
 const KIND_CHIP = { question: "вопрос", proposal: "предложение", exploration: "разбор" };
+// one-sentence label for the tree row (shown in full, wraps up to 3 lines via CSS);
+// full text lives in the detail panel. Only a safety cap for sentences without
+// punctuation (or absurdly long ones) — normal sentences are never cut.
+function shortLabel(text, safetyMax = 320) {
+  if (!text) return "";
+  const firstSentence = text.match(/^.*?[.!?](?=\s|$)/);
+  let s = firstSentence ? firstSentence[0] : text;
+  if (s.length > safetyMax) s = s.slice(0, safetyMax - 1).trimEnd() + "…";
+  return s;
+}
 function nodeRow(node, type) {
   const row = el("div", "row" + (node.id === selectedId ? " sel" : ""));
   row.dataset.id = node.id;
@@ -151,7 +161,10 @@ function nodeRow(node, type) {
   row.appendChild(el("span", "rel " + type, relLabel(type)));
   if (type === "root" && KIND_CHIP[node.kind])
     row.appendChild(el("span", "rel question", KIND_CHIP[node.kind]));
-  const txt = el("span", "txt", node.text);
+  // a topic root shows its own short title; replies fall back to a text excerpt
+  const label = type === "root" ? (node.title || shortLabel(node.text)) : shortLabel(node.text);
+  const txt = el("span", "txt", label);
+  txt.title = node.text;
   row.appendChild(txt);
   if (hasKids) row.appendChild(el("span", "poi", "(" + node.reply_count + ")"));
   const poi = el("span", "poi");
@@ -217,9 +230,17 @@ async function selectNode(id) {
   const d = $("#detail");
   d.innerHTML = "";
 
-  // node card
+  // node card — a topic root has a short title (heading) distinct from its
+  // body text; a reply has no title, so the heading is its own text
   const card = el("div", "card");
-  card.appendChild(el("h2", null, node.text));
+  if (isRoot && node.title) {
+    card.appendChild(el("h2", null, node.title));
+    const body = el("div", null, node.text);
+    body.style.marginBottom = "8px";
+    card.appendChild(body);
+  } else {
+    card.appendChild(el("h2", null, node.text));
+  }
   const meta = el("div", "muted");
   // an atom of an exploration is a point under investigation: it carries no
   // LLM base score (the разбор was scored as a whole) and no taken position
@@ -664,6 +685,12 @@ function newTopicForm() {
   d.innerHTML = "";
   const card = el("div", "card");
   card.appendChild(el("div", "section-title", "новая тема (корень обсуждения)"));
+  const titleIn = el("input");
+  titleIn.type = "text";
+  titleIn.placeholder = "название темы — коротко, одним предложением";
+  titleIn.style.width = "100%";
+  titleIn.style.marginBottom = "8px";
+  card.appendChild(titleIn);
   const ta = el("textarea");
   ta.placeholder = "тезис, вопрос, предложение или разбор, открывающий обсуждение…";
   card.appendChild(ta);
@@ -680,13 +707,15 @@ function newTopicForm() {
   hint.style.display = "none";
 
   const doCreate = async (text) => {
+    const title = titleIn.value.trim();
+    if (!title) { toast("укажи название темы"); titleIn.focus(); return; }
     send.disabled = true; send.textContent = "создаю…";
     try {
       // no connect_to => a new root; the review has no topic to compare
       // against yet, so only the type/quality checks apply here
       const node = await api("/api/argument", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text, kind: kindSel.value }),
+        body: JSON.stringify({ text, kind: kindSel.value, title }),
       });
       toast("тема создана — PoI оценивается в фоне…");
       ROOT.set(node.id, node.id);
@@ -701,6 +730,7 @@ function newTopicForm() {
   const runReview = async () => {
     const text = ta.value.trim();
     if (!text) return;
+    if (!titleIn.value.trim()) { toast("укажи название темы"); titleIn.focus(); return; }
     if (!requireAuth()) return;
     send.disabled = true; send.textContent = "ИИ читает черновик…";
     const rev = await reviewDraft({ text, kind: kindSel.value });

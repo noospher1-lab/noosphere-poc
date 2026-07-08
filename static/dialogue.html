@@ -79,10 +79,10 @@
       во всех темах — и его можно улучшать, продолжая диалог. Пересдач нет:
       это не экзамен, это процесс.</p>
     <div class="card">
-      <div class="section-title">тема</div>
-      <div id="introTopic"></div>
+      <div class="section-title">выбери тему</div>
+      <div class="row" id="topicList"></div>
     </div>
-    <button class="primary" id="startBtn">Начать →</button>
+    <button class="primary" id="startBtn" disabled>Начать →</button>
   </section>
 
   <!-- pre -->
@@ -208,6 +208,27 @@ function show(id) {
 
 let D = null;   // dialogue state from the server
 let preVote = null, preConf = null, postVote = null, postConf = null;
+let topics = null, selectedTopicId = null;
+
+async function renderTopicPicker() {
+  if (topics === null) {
+    try { topics = await api("/api/dialogue/topics"); } catch (e) { err(e.message); topics = []; }
+  }
+  const box = $("#topicList");
+  box.innerHTML = "";
+  for (const t of topics) {
+    const b = document.createElement("button");
+    b.textContent = t.title;
+    if (t.id === selectedTopicId) b.classList.add("sel");
+    b.onclick = () => {
+      selectedTopicId = t.id;
+      for (const c of box.children) c.classList.remove("sel");
+      b.classList.add("sel");
+      $("#startBtn").disabled = false;
+    };
+    box.appendChild(b);
+  }
+}
 
 const CRIT_LABELS = {
   problem_framing: ["Постановка проблемы", 20],
@@ -219,8 +240,7 @@ const CRIT_LABELS = {
 };
 
 function route() {
-  if (!D) { $("#introTopic").textContent = "…"; show("s-intro"); return; }
-  $("#introTopic").textContent = D.topic;
+  if (!D) { renderTopicPicker(); show("s-intro"); return; }
   $("#preTopic").textContent = D.topic;
   $("#dlgTopic").textContent = D.topic;
   if (D.phase === "pre") show("s-pre");
@@ -354,7 +374,9 @@ counter("#postText", "#postCount", 100, checkPost);
 counter("#reflText", "#reflCount", 50, checkPost);
 
 $("#startBtn").onclick = async () => {
-  try { D = await api("/api/dialogue/start", {}); route(); } catch (e) { err(e.message); }
+  if (!selectedTopicId) return;
+  try { D = await api("/api/dialogue/start", { topic_id: selectedTopicId }); route(); }
+  catch (e) { err(e.message); }
 };
 $("#lockBtn").onclick = async () => {
   if (!confirm("Зафиксировать стартовую позицию? Изменить её будет нельзя.")) return;
