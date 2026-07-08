@@ -137,8 +137,10 @@ async function refreshVisible() {
 
 // ---- tree render
 function relLabel(type) {
-  return { support: "за", refute: "против", qualify: "уточн.", question: "вопрос", root: "тема" }[type] || type;
+  return { support: "за", refute: "против", qualify: "уточн.", question: "вопрос",
+           proposal: "предл.", exploration: "разбор", atom: "атом", root: "тема" }[type] || type;
 }
+const KIND_CHIP = { question: "вопрос", proposal: "предложение", exploration: "разбор" };
 function nodeRow(node, type) {
   const row = el("div", "row" + (node.id === selectedId ? " sel" : ""));
   row.dataset.id = node.id;
@@ -147,8 +149,8 @@ function nodeRow(node, type) {
   tw.onclick = (e) => { e.stopPropagation(); toggleExpand(node.id); };
   row.appendChild(tw);
   row.appendChild(el("span", "rel " + type, relLabel(type)));
-  if (type === "root" && node.kind === "question")
-    row.appendChild(el("span", "rel question", "вопрос"));
+  if (type === "root" && KIND_CHIP[node.kind])
+    row.appendChild(el("span", "rel question", KIND_CHIP[node.kind]));
   const txt = el("span", "txt", node.text);
   row.appendChild(txt);
   if (hasKids) row.appendChild(el("span", "poi", "(" + node.reply_count + ")"));
@@ -219,16 +221,24 @@ async function selectNode(id) {
   const card = el("div", "card");
   card.appendChild(el("h2", null, node.text));
   const meta = el("div", "muted");
+  // an atom of an exploration is a point under investigation: it carries no
+  // LLM base score (the разбор was scored as a whole) and no taken position
   meta.append(
     "автор: ", node.author || "—",
-    "  ·  PoI: " + (node.poi_score != null ? node.poi_score : "оценивается…"),
+    "  ·  PoI: " + (node.poi_score != null ? node.poi_score
+                    : node.atom_group ? "— (атом разбора, живёт реакциями)" : "оценивается…"),
     "  ·  тип: " + (node.kind || "argument"),
+    ...(node.atom_group ? ["  ·  из разбора · " + node.atom_group] : []),
     "  ·  ответов: " + (node.reply_count ?? 0),
     "  ·  #" + node.id
   );
   card.appendChild(meta);
   if (node.poi_breakdown && !node.poi_breakdown.seed) card.appendChild(critBreakdown(node.poi_breakdown));
   d.appendChild(card);
+
+  // atomization: the author of an exploration can cut it into atoms
+  if (node.kind === "exploration" && ME && node.author_id === ME.id)
+    d.appendChild(atomizeCard(node));
 
   // reactions
   const rc = el("div", "card");
@@ -284,6 +294,94 @@ function critBreakdown(bd) {
     box.appendChild(c);
   }
   return box;
+}
+
+// ---- atomization (vault: exploration-atomization): the AI proposes groups
+// and atoms cut from the разбор in the author's own words; the author edits,
+// unchecks, and confirms — nothing reaches the graph without their consent.
+const ATOM_LABEL = { argument: "тезис", question: "вопрос",
+                     detail: "дополнение", proposal: "предложение" };
+
+function atomizeCard(node) {
+  const card = el("div", "card");
+  card.appendChild(el("div", "section-title", "атомизация разбора"));
+  card.appendChild(el("div", "muted",
+    "ИИ предложит разбить разбор на группы и атомы (тезисы, вопросы, " +
+    "дополнения, предложения) твоими же словами; ты правишь и подтверждаешь — " +
+    "без подтверждения в граф ничего не попадает."));
+  const act = el("div", "actions");
+  const go = el("button", "mini", "⚛ предложить атомизацию");
+  const box = el("div");
+  box.style.display = "none";
+  go.onclick = async () => {
+    go.disabled = true; go.textContent = "ИИ читает разбор…";
+    let pre;
+    try { pre = await api(`/api/nodes/${node.id}/atomize`, { method: "POST" }); }
+    catch (e) {
+      toast("ошибка: " + e.message);
+      go.disabled = false; go.textContent = "⚛ предложить атомизацию";
+      return;
+    }
+    go.disabled = false; go.textContent = "⚛ предложить заново";
+    renderAtomPreview(box, node, pre.groups || []);
+  };
+  act.appendChild(go);
+  card.appendChild(act);
+  card.appendChild(box);
+  return card;
+}
+
+function renderAtomPreview(box, node, groups) {
+  box.innerHTML = "";
+  box.style.display = "";
+  if (!groups.length) {
+    box.appendChild(el("div", "muted", "ИИ не нашёл, что атомизировать"));
+    return;
+  }
+  const rows = [];
+  for (const g of groups) {
+    box.appendChild(el("div", "section-title", "группа: " + g.title));
+    for (const a of g.atoms) {
+      const line = el("div");
+      const chk = el("input");
+      chk.type = "checkbox"; chk.checked = true; chk.title = "включить этот атом";
+      line.appendChild(chk);
+      line.appendChild(el("span", "rel " + (a.type === "question" ? "question" : "qualify"),
+                          ATOM_LABEL[a.type] || a.type));
+      const ta = el("textarea");
+      ta.value = a.text; ta.rows = 2;
+      line.appendChild(ta);
+      box.appendChild(line);
+      rows.push({ chk, ta, type: a.type, group: g.title });
+    }
+  }
+  const act = el("div", "actions");
+  const make = el("button", "primary", "создать атомы");
+  make.onclick = async () => {
+    const atoms = rows.filter((r) => r.chk.checked && r.ta.value.trim())
+      .map((r) => ({ type: r.type, text: r.ta.value.trim(), group: r.group }));
+    if (!atoms.length) { toast("не выбран ни один атом"); return; }
+    make.disabled = true; make.textContent = "создаю…";
+    try {
+      const res = await api(`/api/nodes/${node.id}/atomize/confirm`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ atoms }),
+      });
+      toast("создано атомов: " + res.created.length);
+      box.style.display = "none";
+      expanded.add(node.id);
+      await fetchChildren(node.id);
+      await loadTopics();
+      selectNode(node.id);
+    } catch (e) {
+      toast("ошибка: " + e.message);
+      make.disabled = false; make.textContent = "создать атомы";
+    }
+  };
+  const cancel = el("button", "mini", "отмена");
+  cancel.onclick = () => { box.style.display = "none"; };
+  act.append(make, cancel);
+  box.appendChild(act);
 }
 
 function bucketRow(data, cls) {
@@ -380,12 +478,13 @@ function reviewHasNotes(rev) {
   return !!rev && (!rev.type_ok || !!rev.quality_note || rev.verdict !== "new");
 }
 
-const TYPE_LABEL = { support: "за", refute: "против", qualify: "уточнение", question: "вопрос" };
+const TYPE_LABEL = { support: "за", refute: "против", qualify: "уточнение",
+                     question: "вопрос", proposal: "предложение", exploration: "разбор" };
 
 // Renders the navigator's suggestions into `hint`. The author stays in charge:
 // callbacks wire "switch type", "go to the node", "support the position",
 // "post as is" and "cancel"; editing the draft and resending re-reviews it.
-function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, switchLabel }) {
+function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit, switchLabel }) {
   hint.innerHTML = "";
   hint.style.display = "";
   hint.className = "card";
@@ -432,6 +531,34 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, switchLabe
     }
   }
 
+  // two contributions glued together: editable split preview — the parts are
+  // the author's own words, each will be its own node under its own rubric
+  if (rev.split && onSplit) {
+    hint.appendChild(el("div", "section-title", "похоже, здесь два вклада"));
+    const parts = [];
+    for (const p of rev.split) {
+      const line = el("div");
+      line.appendChild(el("span", "rel " + (p.type === "question" ? "question" : p.type),
+                          TYPE_LABEL[p.type] || p.type));
+      const pta = el("textarea");
+      pta.value = p.text; pta.rows = 2;
+      line.appendChild(pta);
+      hint.appendChild(line);
+      parts.push({ type: p.type, ta: pta });
+    }
+    hint.appendChild(el("div", "muted",
+      "каждая часть станет отдельным узлом и получит оценку по своей рубрике"));
+    const both = el("button", "mini", "опубликовать оба");
+    both.onclick = () => {
+      const out = parts.map((p) => ({ type: p.type, text: p.ta.value.trim() }))
+                       .filter((p) => p.text);
+      if (out.length < 2) { toast("обе части должны быть непустыми"); return; }
+      hint.style.display = "none";
+      onSplit(out);
+    };
+    actions.appendChild(both);
+  }
+
   if (rev.quality_note) {
     const q = el("div");
     q.appendChild(el("b", null, "как усилить: "));
@@ -456,7 +583,8 @@ function replyForm(parentId) {
   card.appendChild(ta);
   const act = el("div", "actions");
   const typeSel = el("select");
-  for (const [v, l] of [["support", "за"], ["refute", "против"], ["qualify", "уточнение"], ["question", "вопрос"]])
+  for (const [v, l] of [["support", "за"], ["refute", "против"], ["qualify", "уточнение"],
+                        ["question", "вопрос"], ["proposal", "предложение"], ["exploration", "разбор"]])
     typeSel.appendChild(new Option(l, v));
   const send = el("button", "primary", "отправить");
   const hint = el("div");                       // the navigator's suggestion box
@@ -502,6 +630,23 @@ function replyForm(parentId) {
         ta.value = "";
         await positionVote(pid, root, "agree");
       },
+      // two glued contributions, approved by the author → two sibling nodes
+      onSplit: async (parts) => {
+        try {
+          for (const p of parts) {
+            await api("/api/argument", {
+              method: "POST", headers: { "content-type": "application/json" },
+              body: JSON.stringify({ text: p.text, connect_to: parentId, edge_type: p.type }),
+            });
+          }
+          toast("добавлено " + parts.length + " узла — PoI оценивается в фоне…");
+          ta.value = "";
+          expanded.add(parentId);
+          await fetchChildren(parentId);
+          await loadTopics();
+          selectNode(parentId);
+        } catch (e) { toast("ошибка: " + e.message); }
+      },
     });
   };
   send.onclick = runReview;
@@ -520,12 +665,14 @@ function newTopicForm() {
   const card = el("div", "card");
   card.appendChild(el("div", "section-title", "новая тема (корень обсуждения)"));
   const ta = el("textarea");
-  ta.placeholder = "тезис или вопрос, открывающий обсуждение…";
+  ta.placeholder = "тезис, вопрос, предложение или разбор, открывающий обсуждение…";
   card.appendChild(ta);
   const act = el("div", "actions");
   const kindSel = el("select");
   kindSel.appendChild(new Option("тезис", "argument"));
   kindSel.appendChild(new Option("вопрос", "question"));
+  kindSel.appendChild(new Option("предложение", "proposal"));
+  kindSel.appendChild(new Option("разбор", "exploration"));
   const send = el("button", "primary", "создать тему");
   const cancel = el("button", "mini", "отмена");
   cancel.onclick = () => { d.innerHTML = '<div class="muted">выбери узел слева</div>'; };
@@ -560,11 +707,11 @@ function newTopicForm() {
     send.disabled = false; send.textContent = "создать тему";
     if (!reviewHasNotes(rev)) { hint.style.display = "none"; await doCreate(text); return; }
 
-    // a root is a thesis or a question — map the suggested reply-type onto that
-    const rootKind = rev.suggested_type === "question" ? "question" : "argument";
+    // a root is a thesis, question, proposal or exploration — map onto kinds
+    const rootKind = KIND_CHIP[rev.suggested_type] ? rev.suggested_type : "argument";
     renderReview(hint, rev, {
       root: null,
-      switchLabel: rootKind === "question" ? "вопрос" : "тезис",
+      switchLabel: KIND_CHIP[rootKind] || "тезис",
       onSend: async () => { await doCreate(ta.value.trim()); },
       // advice on the card already applies to the suggested kind — publish
       onSwitch: async () => {

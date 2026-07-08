@@ -89,8 +89,13 @@ def _spawn(coro):
     t.add_done_callback(_bg_tasks.discard)
 
 
+# each kind is judged by its own rubric — never by another kind's shape
+_SCORERS = {"question": poi.score_question, "proposal": poi.score_proposal,
+            "exploration": poi.score_exploration}
+
+
 async def _score_later(node_id: int, text: str, kind: str = "argument"):
-    fn = poi.score_question if kind == "question" else poi.score_argument
+    fn = _SCORERS.get(kind, poi.score_argument)
     try:
         score, breakdown = await asyncio.to_thread(fn, text)
     except Exception as e:
@@ -314,9 +319,11 @@ async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
             raise HTTPException(404, f"connect_to node {arg.connect_to} not found")
         root_id = parent.get("topic_root_id") or await db.topic_root_of(arg.connect_to)
 
-    # a question is a first-class contribution anywhere — as a reply
-    # (edge_type=question) or as a topic root (kind=question, no edge)
-    kind = "question" if (arg.kind == "question" or arg.edge_type == "question") else "argument"
+    # questions, proposals and explorations are first-class contributions
+    # anywhere — as a reply (edge_type) or as a topic root (kind, no edge)
+    _SPECIAL = {"question", "proposal", "exploration"}
+    kind = (arg.kind if arg.kind in _SPECIAL
+            else arg.edge_type if arg.edge_type in _SPECIAL else "argument")
 
     # 1. persist the node RIGHT AWAY, unscored (poi_score = NULL)
     node_id = await db.add_node(arg.text, author_id=author["id"], kind=kind,
@@ -325,7 +332,7 @@ async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
     # 2. optional typed edge to an existing node (None = a new root branch)
     edge = None
     if arg.connect_to is not None:
-        edge_type = "question" if kind == "question" else (arg.edge_type or "support")
+        edge_type = kind if kind in _SPECIAL else (arg.edge_type or "support")
         await db.add_edge(node_id, arg.connect_to, edge_type)
         edge = {
             "source_id": node_id,
@@ -548,7 +555,10 @@ async def _recompute_positions(topic_root_id):
     """Full re-cluster: rebuild a topic's positions from its argument nodes."""
     graph = await db.get_graph()
     nodes = _topic_nodes(graph, topic_root_id)
-    arg_nodes = [n for n in nodes if (n.get("kind") or "argument") == "argument"]
+    # atoms cut from explorations are points under investigation, not taken
+    # positions — they never join the position pools
+    arg_nodes = [n for n in nodes if (n.get("kind") or "argument") == "argument"
+                 and not n.get("atom_group")]
     await db.clear_positions(topic_root_id)
     if not arg_nodes:
         return
@@ -996,8 +1006,12 @@ _REVIEW_CLEAN = {
     "type_ok": True, "suggested_type": None, "type_note": "",
     "quality_note": "", "verdict": "new", "node_id": None,
     "position_id": None, "headline": "", "target_text": "", "note": "",
+    "split": None,
 }
-_REVIEW_TYPES = {"support", "refute", "qualify", "question"}
+_REVIEW_TYPES = {"support", "refute", "qualify", "question",
+                 "proposal", "exploration"}
+_ROOT_KINDS = {"argument", "question", "proposal", "exploration"}
+_SPLIT_TYPES = {"support", "refute", "qualify", "question", "proposal"}
 
 
 @app.post("/api/draft/review")
@@ -1025,13 +1039,21 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         return dict(_REVIEW_CLEAN)        # fail-open: never stand in the way
     out = dict(_REVIEW_CLEAN)
     sug = result.get("suggested_type")
-    # a topic root can only be a thesis or a question — fold reply types back
+    # a topic root has kinds, not reply types — fold the reply types back
     if body.connect_to is None and sug in _REVIEW_TYPES:
-        sug = "question" if sug == "question" else "argument"
-    if result.get("type_ok") is False and sug in (_REVIEW_TYPES | {"argument"}) and sug != declared:
+        sug = sug if sug in _ROOT_KINDS else "argument"
+    if result.get("type_ok") is False and sug in (_REVIEW_TYPES | _ROOT_KINDS) and sug != declared:
         out.update(type_ok=False, suggested_type=sug,
                    type_note=str(result.get("type_note") or ""))
     out["quality_note"] = str(result.get("quality_note") or "")
+    # split: exactly two non-empty parts of different reply types, replies only
+    sp = result.get("split")
+    if body.connect_to is not None and isinstance(sp, list) and len(sp) == 2:
+        parts = [{"type": p.get("type"), "text": str(p.get("text") or "").strip()}
+                 for p in sp if isinstance(p, dict)]
+        if (len(parts) == 2 and all(p["type"] in _SPLIT_TYPES and p["text"] for p in parts)
+                and parts[0]["type"] != parts[1]["type"]):
+            out["split"] = parts
     verdict = result.get("verdict")
     nid, pid = result.get("node_id"), result.get("position_id")
     nodes = {n["id"]: n for n in branch}
@@ -1046,6 +1068,80 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
                    headline=known[pid]["headline"],
                    note=str(result.get("note") or ""))
     return out
+
+
+# Atomization (vault: exploration-atomization): an EXPLORATION is cut — with
+# the author's consent — into typed atoms grouped by theme, so the community
+# can engage each point separately. Two steps: /atomize proposes a preview
+# (nothing written), the author edits it client-side, /atomize/confirm
+# materializes the approved atoms. Atoms carry NO LLM base score — the
+# exploration was scored as a whole and the accrual formula averages rather
+# than sums, so unscored atoms neither farm nor drag PoI; they live on
+# community reactions. atom_group marks them as points under investigation,
+# not positions the author has taken.
+class AtomIn(BaseModel):
+    type: str                              # argument / question / detail / proposal
+    text: str
+    group: str | None = None
+
+
+class AtomizeConfirmIn(BaseModel):
+    atoms: list[AtomIn]
+
+
+_ATOM_KINDS = {"argument", "question", "detail", "proposal"}
+
+
+async def _own_exploration_or_403(node_id: int, author):
+    node = await db.get_node(node_id)
+    if node is None:
+        raise HTTPException(404, f"node {node_id} not found")
+    if node.get("kind") != "exploration":
+        raise HTTPException(400, "атомизация применима только к исследованию")
+    if node.get("author_id") != author["id"]:
+        raise HTTPException(403, "атомизировать разбор может только его автор")
+    return node
+
+
+@app.post("/api/nodes/{node_id}/atomize")
+async def atomize_preview(node_id: int, author=Depends(current_author)):
+    node = await _own_exploration_or_403(node_id, author)
+    try:
+        result = await asyncio.to_thread(pools_mod.atomize, node["text"])
+    except Exception as e:
+        raise HTTPException(502, f"атомизация не удалась: {e}")
+    groups = []
+    for g in (result.get("groups") or []):
+        atoms = [{"type": a.get("type"), "text": str(a.get("text") or "").strip()}
+                 for a in (g.get("atoms") or []) if isinstance(a, dict)]
+        atoms = [a for a in atoms if a["type"] in _ATOM_KINDS and a["text"]]
+        if atoms:
+            groups.append({"title": str(g.get("title") or "").strip() or "разбор",
+                           "atoms": atoms})
+    return {"groups": groups}
+
+
+@app.post("/api/nodes/{node_id}/atomize/confirm")
+async def atomize_confirm(node_id: int, body: AtomizeConfirmIn,
+                          author=Depends(current_author)):
+    node = await _own_exploration_or_403(node_id, author)
+    if not (1 <= len(body.atoms) <= 24):
+        raise HTTPException(400, "нужно от 1 до 24 атомов")
+    for a in body.atoms:
+        if a.type not in _ATOM_KINDS or not a.text.strip():
+            raise HTTPException(400, "каждый атом: непустой текст и тип "
+                                     "argument/question/detail/proposal")
+    root_id = node.get("topic_root_id") or await db.topic_root_of(node_id)
+    created = []
+    for a in body.atoms:
+        nid = await db.add_node(a.text.strip(), author_id=author["id"],
+                                kind=a.type, topic_root_id=root_id,
+                                atom_group=(a.group or "разбор").strip() or "разбор")
+        await db.add_edge(nid, node_id, "atom")
+        created.append(nid)
+    hub.publish({"type": "atoms_created", "node_id": node_id,
+                 "count": len(created)})
+    return {"created": created}
 
 
 # The append-only event log (audit layer, Layer 1): every argument and every

@@ -23,7 +23,8 @@ import math
 
 K = 3.0                 # prior strength (pseudo-observations)
 DEFAULT_PRIOR = 10.0    # start before onboarding/seed — near-zero influence
-WEIGHTS = {"argument": 1.0, "question": 0.5, "detail": 0.5}
+WEIGHTS = {"argument": 1.0, "question": 0.5, "detail": 0.5,
+           "proposal": 1.0, "exploration": 1.0}
 REACTION_CAP = 5.0      # reactions can never move PoI by more than this
 REACTION_SCALE = 200.0  # net weighted reactions for ~76% of the cap
 

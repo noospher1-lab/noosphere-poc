@@ -151,7 +151,14 @@ REVIEW_SYSTEM = (
     "(e.g. «против», «вопрос»), never the internal English code."
 )
 
-_REVIEW_TYPES = "support (за: supports the parent claim), refute (против: argues against it), qualify (уточнение: narrows or conditions it), question (вопрос: requests information exposing a weak point)"
+_REVIEW_TYPES = ("support (за: supports the parent claim), refute (против: "
+                 "argues against it), qualify (уточнение: narrows, conditions "
+                 "or supplements it), question (вопрос: requests information "
+                 "exposing a weak point), proposal (предложение: constructs — "
+                 "'let's do X' — rather than reacting to a claim), exploration "
+                 "(исследование/разбор: a LARGE unsettled investigation mixing "
+                 "за, против and open questions, the author has NOT taken a "
+                 "position)")
 
 
 def review_draft(text, declared_type, parent, branch, positions):
@@ -191,6 +198,12 @@ def review_draft(text, declared_type, parent, branch, positions):
         "1. TYPE: does the text's form match the chosen type? An assertion "
         "posted as 'question', or a supporting point posted as 'refute', is a "
         "mismatch — suggest the type that fits what they actually wrote.\n"
+        "GENRE RULE: a LONG text (several paragraphs) that mixes claims, "
+        "questions, additions and proposals in an unsettled, investigative "
+        "way is an EXPLORATION — suggest type 'exploration' and do NOT split "
+        "it; atomization happens later with the author's consent. Never "
+        "suggest 'exploration' for a short reply or for a text that clearly "
+        "argues one side at length.\n"
         "IMPORTANT: whenever the declared type mismatches, do steps 2 and 3 "
         "for the type the text ACTUALLY is (your suggested_type) — one review "
         "must stay valid after the author switches the type. Never advise how "
@@ -211,15 +224,25 @@ def review_draft(text, declared_type, parent, branch, positions):
         "   - 'similar': a POSITION overlaps but the draft may add something "
         "(set position_id);\n"
         "   - 'new': none of the above.\n"
+        "4. SPLIT: ONLY when the draft is SHORT and glues together exactly "
+        "TWO contributions of DIFFERENT types (e.g. a question plus a claim), "
+        "provide 'split': the two parts, each with its own type. CUT, do not "
+        "rewrite — reuse the author's own words with minimal glue; invent "
+        "nothing. A long single-type text, however many points it makes, is "
+        "NOT a split candidate. When you provide split, type_ok concerns the "
+        "whole draft as submitted, and suggested_type (if any) must be the "
+        "type of the dominant part — NEVER 'exploration' for a short draft.\n"
         "Respond with ONLY JSON:\n"
         '{"type_ok": true|false, '
-        '"suggested_type": "support|refute|qualify|question" or null, '
+        '"suggested_type": "support|refute|qualify|question|proposal|exploration" or null, '
         '"type_note": "one sentence if type_ok is false, else empty", '
         '"quality_note": "one concrete suggestion or empty", '
         '"verdict": "new|similar|covered|answered|countered", '
         '"node_id": <id or null>, "position_id": <id or null>, '
         '"note": "one sentence: what exists and what the draft would add, '
-        'empty if verdict is new"}'
+        'empty if verdict is new", '
+        '"split": [{"type": "support|refute|qualify|question|proposal", '
+        '"text": "..."}, {...}] or null}'
     )
     raw = poi.complete(REVIEW_SYSTEM, "\n\n---\n\n".join(parts), max_tokens=1024)
     cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
@@ -247,5 +270,46 @@ def conclude(star_text, planet_texts):
         'Respond with ONLY JSON: {"headline":"short title (3-7 words)","composed":"the conclusion"}'
     )
     raw = poi.complete(CONCLUDE_SYSTEM, user, max_tokens=2048)
+    cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    return json.loads(cleaned)
+
+
+ATOMIZE_SYSTEM = (
+    "You atomize an EXPLORATION (разбор) — a text where the author "
+    "investigates a topic without having settled on a position — into its "
+    "constituent contributions, so a community can engage each one "
+    "separately. You CUT, you never rewrite: every atom must reuse the "
+    "author's own words with at most minimal glue for grammar; invent "
+    "nothing, add nothing, sharpen nothing. Atoms from an exploration are "
+    "points under investigation, NOT positions the author has taken. "
+    "Everything you produce is a PROPOSAL the author will edit and approve "
+    "or reject. Write group titles in the SAME LANGUAGE as the text."
+)
+
+
+def atomize(text):
+    """
+    Propose an atomization of an exploration (vault: exploration-atomization):
+    thematic GROUPS, each holding ATOMS typed as claim/question/detail/
+    proposal. A preview for the author to edit — nothing is published here.
+    Returns {"groups": [{"title": str, "atoms": [{"type", "text"}]}]}
+    """
+    user = (
+        f"The exploration to atomize:\n\n{text}\n\n"
+        "Break it into thematic GROUPS (2-6, each a short title) and, inside "
+        "each group, ATOMS — the individual contributions the text contains. "
+        "Each atom gets a type:\n"
+        "- 'argument': a claim / thesis the text advances or examines;\n"
+        "- 'question': an open question the author poses;\n"
+        "- 'detail': an addition, qualification or piece of context;\n"
+        "- 'proposal': a constructive 'let's do X'.\n"
+        "Use the author's own words (trim, do not rephrase). Skip filler; not "
+        "every sentence must become an atom. 3-12 atoms total is typical.\n"
+        "Respond with ONLY JSON:\n"
+        '{"groups": [{"title": "short group title", '
+        '"atoms": [{"type": "argument|question|detail|proposal", '
+        '"text": "the atom, in the author\'s words"}]}]}'
+    )
+    raw = poi.complete(ATOMIZE_SYSTEM, user, max_tokens=4096)
     cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(cleaned)

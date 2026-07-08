@@ -24,7 +24,8 @@ DATABASE_URL = os.environ.get(
     "DATABASE_URL", "postgresql://noosphere:noosphere@localhost/noosphere"
 )
 
-EDGE_TYPES = ("support", "refute", "qualify", "question")
+EDGE_TYPES = ("support", "refute", "qualify", "question",
+              "proposal", "exploration", "atom")
 
 _pool: asyncpg.Pool | None = None
 
@@ -112,14 +113,23 @@ _SCHEMA = [
     )
     """,
     "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS topic_root_id INTEGER",
+    # atom_group marks a node CUT OUT of an exploration (vault:
+    # exploration-atomization): non-NULL = "this is an atom of a разбор,
+    # grouped under this heading, NOT a position its author has taken".
+    "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS atom_group TEXT",
     """
     CREATE TABLE IF NOT EXISTS edges (
         id        SERIAL PRIMARY KEY,
         source_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
         target_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-        type      TEXT NOT NULL CHECK (type IN ('support','refute','qualify','question'))
+        type      TEXT NOT NULL CHECK (type IN
+            ('support','refute','qualify','question','proposal','exploration','atom'))
     )
     """,
+    # existing databases carry the four-type CHECK — recreate it (idempotent pair)
+    "ALTER TABLE edges DROP CONSTRAINT IF EXISTS edges_type_check",
+    """ALTER TABLE edges ADD CONSTRAINT edges_type_check CHECK (type IN
+       ('support','refute','qualify','question','proposal','exploration','atom'))""",
     # poi = the CURRENT computed value (poiformula.topic_poi over the event-
     # logged history). prior = P₀: onboarding-dialogue score / seeded test
     # value; NULL means the default prior (10).
@@ -233,17 +243,19 @@ async def wipe():
 
 # ---------------------------------------------------------------- nodes
 async def add_node(text, poi_score=None, poi_breakdown=None, author_id=None,
-                   kind="argument", position_id=None, topic_root_id=None):
+                   kind="argument", position_id=None, topic_root_id=None,
+                   atom_group=None):
     """topic_root_id=None means the node IS a new topic root (points to itself)."""
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         async with conn.transaction():
             node_id = await conn.fetchval(
                 "INSERT INTO nodes (text, poi_score, poi_breakdown, author_id, kind, "
-                "position_id, topic_root_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+                "position_id, topic_root_id, atom_group) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
                 text, poi_score,
                 json.dumps(poi_breakdown) if poi_breakdown else None,
-                author_id, kind, position_id, topic_root_id,
+                author_id, kind, position_id, topic_root_id, atom_group,
             )
             if topic_root_id is None:
                 await conn.execute(
@@ -251,7 +263,8 @@ async def add_node(text, poi_score=None, poi_breakdown=None, author_id=None,
             await _log(conn, "node_added",
                        {"node_id": node_id, "text": text, "kind": kind,
                         "position_id": position_id, "poi_score": poi_score,
-                        "topic_root_id": topic_root_id or node_id},
+                        "topic_root_id": topic_root_id or node_id,
+                        "atom_group": atom_group},
                        author_id)
     return node_id
 
@@ -317,7 +330,7 @@ async def get_children(node_id, limit=20, offset=0):
             "SELECT count(*) FROM edges WHERE target_id = $1", node_id)
         rows = await conn.fetch(
             """
-            SELECT n.id, n.text, n.poi_score, n.kind, e.type AS rel,
+            SELECT n.id, n.text, n.poi_score, n.kind, n.atom_group, e.type AS rel,
                    a.name AS author, a.color AS author_color,
                    (SELECT count(*) FROM edges e2 WHERE e2.target_id = n.id) AS reply_count
             FROM edges e
@@ -902,7 +915,7 @@ async def list_topics():
                     WHERE e2.target_id = n.id) AS reply_count
             FROM nodes n
             LEFT JOIN authors a ON a.id = n.author_id
-            WHERE n.kind IN ('argument', 'question')
+            WHERE n.kind IN ('argument', 'question', 'proposal', 'exploration')
               AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_id = n.id)
             ORDER BY n.id
             """)
