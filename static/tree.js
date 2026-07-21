@@ -201,11 +201,38 @@ async function doLogout() {
   toast("вышел");
 }
 
+// Дерево — рабочий экран, а не каталог всего: показываются темы, которые
+// человек держит у себя. Искать — работа карты. Гость подборки не имеет,
+// поэтому видит все темы (и по умолчанию попадает на карту).
+let WS_IDS = new Set();          // что уже в подборке — для кнопок на карте
+let PREVIEW = null;              // открытая, но НЕ добавленная тема
+
 async function loadTopics() {
-  TOPICS = await api("/api/topics");
+  if (ME) {
+    TOPICS = await api("/api/workspace");
+    WS_IDS = new Set(TOPICS.map(t => t.id));
+  } else {
+    TOPICS = await api("/api/topics");
+    WS_IDS = new Set();
+  }
+  // Тема, открытая с карты без добавления, живёт в дереве до ухода со
+  // страницы — иначе прочитать её было бы негде, а тихо добавлять всё,
+  // во что заглянули, значит обессмыслить подборку.
+  if (PREVIEW && !WS_IDS.has(PREVIEW.id)) TOPICS = [PREVIEW, ...TOPICS];
   for (const t of TOPICS) ROOT.set(t.id, t.id); // a root is its own topic
   renderTree();
   await openDeepLink();
+}
+
+async function workspaceToggle(id, want) {
+  try {
+    await api(`/api/workspace/${id}`, { method: want ? "POST" : "DELETE" });
+    if (want) { WS_IDS.add(id); if (PREVIEW && PREVIEW.id === id) PREVIEW = null; }
+    else WS_IDS.delete(id);
+    await loadTopics();
+    if (typeof MapView !== "undefined") MapView.syncWorkspace(WS_IDS);
+    toast(want ? "тема в рабочем дереве" : "убрал из дерева");
+  } catch (e) { toast("не вышло: " + e.message); }
 }
 
 // ?topic=N и ?view=map — вход по ссылке извне. Внутри приложения виды
@@ -281,6 +308,22 @@ function nodeRow(node, type) {
   if (node.author_color) who.style.color = node.author_color;
   else who.classList.add("muted");
   row.appendChild(who);
+
+  // Управление подборкой — только у корней и только у вошедшего.
+  if (type === "root" && ME) {
+    if (PREVIEW && PREVIEW.id === node.id) {
+      row.classList.add("preview");
+      const keep = el("span", "ws keep", "оставить у себя");
+      keep.title = "Сейчас тема открыта на просмотр и исчезнет при перезагрузке";
+      keep.onclick = (e) => { e.stopPropagation(); workspaceToggle(node.id, true); };
+      row.appendChild(keep);
+    } else {
+      const drop = el("span", "ws", "−");
+      drop.title = "Убрать из рабочего дерева";
+      drop.onclick = (e) => { e.stopPropagation(); workspaceToggle(node.id, false); };
+      row.appendChild(drop);
+    }
+  }
   row.onclick = () => selectNode(node.id);
   return row;
 }
@@ -1239,7 +1282,9 @@ function showView(v) {
     b.classList.toggle("on", b.dataset.view === v));
   if (map) {
     MapView.open($("#mapView"), {
-      onOpenTopic: (id) => { showView("tree"); openTopic(id); },
+      workspace: WS_IDS,
+      onOpenTopic: (id, topic) => { showView("tree"); openTopic(id, topic); },
+      onToggleWorkspace: (id, want) => workspaceToggle(id, want),
     });
   }
   history.replaceState(null, "", map ? "?view=map" : location.pathname);
@@ -1249,7 +1294,18 @@ document.querySelectorAll("#viewSeg .seg-i").forEach(b => {
 });
 
 // Открыть тему из карты: раскрыть и выделить, без перезагрузки страницы.
-async function openTopic(id) {
+// Если темы нет в подборке — она показывается как временная, а не добавляется
+// молча: открыть и оставить у себя должны остаться разными действиями.
+async function openTopic(id, topic) {
+  if (ME && !WS_IDS.has(id)) {
+    PREVIEW = topic
+      ? { id, title: topic.title, text: topic.text || topic.title,
+          kind: "argument", poi_score: null, reply_count: topic.nodes || 0,
+          author: topic.author || null, author_color: null }
+      : (await api(`/api/nodes/${id}`).catch(() => null));
+    if (PREVIEW) PREVIEW.id = id;
+    await loadTopics();
+  }
   expanded.add(id);
   await fetchChildren(id).catch(() => {});
   selectNode(id);
@@ -1271,6 +1327,10 @@ $("#authPass").addEventListener("keydown", (e) => {
     await loadMe();
     await loadTopics();
     listenEvents();
+    // Гостю показываем карту: рабочего дерева у него нет, а карта честно
+    // отвечает «вот что здесь есть» — это лучший первый экран.
+    // Явная ссылка (?topic= / ?view=) сильнее умолчания и уже отработала.
+    if (!ME && !location.search) showView("map");
   } catch (e) {
     $("#tree").innerHTML = '<div class="muted" style="padding:10px">' +
       "не удалось загрузить: " + e.message + "<br>Postgres запущен? seed выполнен?</div>";

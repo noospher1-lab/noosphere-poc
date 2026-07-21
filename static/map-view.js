@@ -10,6 +10,7 @@
 
 const MapView = (() => {
   let host = null, loaded = false, facets = null, hooks = {};
+  let WS = new Set();                       // что уже в рабочем дереве
   let mode = localStorage.getItem("mapMode") || "catalog";
   let cv = null, ctx = null, nodes = [], view = { x:0, y:0, k:0.8 };
   let hover = null, dragging = false, last = null;
@@ -250,12 +251,21 @@ const MapView = (() => {
         ...t.geo.slice(0, 4).map(g => `<span class="mv-tag">📍 ${g}</span>`),
         ...t.tags.map(x => `<span class="mv-tag">#${x}</span>`),
       ].join("");
+      // «+ в дерево» — отдельное действие от «открыть». Если бы открытие само
+      // добавляло, подборка забилась бы всем, во что человек заглянул.
+      const inWs = WS.has(t.id);
+      const btn = hooks.onToggleWorkspace && t.id > 0
+        ? `<span class="mv-ws${inWs ? " on" : ""}" data-ws="${t.id}"
+             title="${inWs ? "Убрать из рабочего дерева" : "Добавить в рабочее дерево"}"
+           >${inWs ? "✓ в дереве" : "+ в дерево"}</span>`
+        : "";
       return `<div class="mv-card" data-id="${t.id}">
         <div class="mv-top">
           <span class="mv-dot" style="background:${d.color}"></span>
           <span class="mv-dom" style="color:${d.color}">${d.name}</span>
           ${t.sub ? `<span class="mv-sub">· ${t.sub}</span>` : ""}
           ${t.unsorted ? `<span class="mv-warn">без рубрики</span>` : ""}
+          ${btn}
         </div>
         <div class="mv-title">${hl(t.title)}</div>
         <div class="mv-bot">${meta}
@@ -265,7 +275,16 @@ const MapView = (() => {
       </div>`;
     }).join("");
     box.querySelectorAll(".mv-card").forEach(c => {
-      c.onclick = () => hooks.onOpenTopic && hooks.onOpenTopic(+c.dataset.id);
+      const id = +c.dataset.id;
+      c.onclick = () => hooks.onOpenTopic &&
+        hooks.onOpenTopic(id, MAP_TOPICS.find(t => t.id === id));
+    });
+    box.querySelectorAll("[data-ws]").forEach(el => {
+      el.onclick = (e) => {
+        e.stopPropagation();               // «+» не должен открывать тему
+        const id = +el.dataset.ws;
+        hooks.onToggleWorkspace(id, !WS.has(id));
+      };
     });
   }
 
@@ -283,6 +302,7 @@ const MapView = (() => {
   // ------------------------------------------------------------ публичное
   async function open(el, h) {
     host = el; hooks = h || {};
+    if (hooks.workspace) WS = hooks.workspace;
     host.style.display = "";
     if (!loaded) {
       host.innerHTML = `<div class="mv-none">загружаю карту…</div>`;
@@ -309,5 +329,12 @@ const MapView = (() => {
     refresh();
   }
 
-  return { open, reload, close: () => { if (host) host.style.display = "none"; } };
+  // Дерево — источник правды о подборке; карта только перерисовывает кнопки.
+  function syncWorkspace(ids) {
+    WS = ids || new Set();
+    if (loaded && mode === "catalog") renderRows();
+  }
+
+  return { open, reload, syncWorkspace,
+           close: () => { if (host) host.style.display = "none"; } };
 })();

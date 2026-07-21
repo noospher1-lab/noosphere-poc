@@ -166,3 +166,10 @@
 .mv-stats b { color:var(--dim,#9aa0b0); font-weight:500; }
 .mv-none { color:var(--dim2,#6f7688); text-align:center; padding:60px 20px; font-size:14px; }
 .mv-facets { display:flex; flex-direction:column; min-height:0; flex:1 1 auto; }
+
+/* кнопка подборки на карточке карты */
+.mv-ws { margin-left:auto; font-size:12px; color:var(--dim,#9aa0b0); cursor:pointer;
+  border:1px solid var(--line2,#333a49); border-radius:99px; padding:2px 10px;
+  white-space:nowrap; }
+.mv-ws:hover { border-color:var(--bronze,#e0b878); color:var(--bronze,#e0b878); }
+.mv-ws.on { border-color:var(--green,#5fd18f); color:var(--green,#5fd18f); }

@@ -417,6 +417,21 @@ _SCHEMA = [
         payload   JSONB NOT NULL DEFAULT '{}'::jsonb
     )
     """,
+    # Рабочее дерево: какие темы человек держит у себя. Дерево перестало быть
+    # каталогом всего (это работа карты) и стало личной подборкой — иначе на
+    # сотне участников оно превращается в простыню из сотен корней.
+    """
+    CREATE TABLE IF NOT EXISTS workspace (
+        author_id     INTEGER NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
+        topic_root_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        added_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (author_id, topic_root_id)
+    )
+    """,
+    # Отличает «никогда не было подборки» от «человек всё вычистил сам».
+    # Без этого флага засев при первом входе возвращался бы после каждой
+    # уборки, и «убрать» переставало бы работать как убрать.
+    "ALTER TABLE authors ADD COLUMN IF NOT EXISTS workspace_seeded BOOLEAN NOT NULL DEFAULT FALSE",
     # Рубрикация темы. Отдельной таблицей, а не колонками в nodes: рубрика
     # есть только у КОРНЯ обсуждения, и держать её на всех узлах значило бы
     # хранить пустоту в 99% строк.
@@ -1820,6 +1835,97 @@ async def get_graph():
             for e in edge_rows
         ],
     }
+
+
+async def workspace_add(author_id, topic_root_id):
+    """Положить тему в рабочее дерево. Идемпотентно — повторный клик не ошибка."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO workspace (author_id, topic_root_id) VALUES ($1, $2)
+            ON CONFLICT DO NOTHING
+            """, author_id, topic_root_id)
+
+
+async def workspace_remove(author_id, topic_root_id):
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM workspace WHERE author_id = $1 AND topic_root_id = $2",
+            author_id, topic_root_id)
+
+
+async def workspace_ids(author_id):
+    """Только идентификаторы — карте нужно лишь знать, что уже добавлено."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT topic_root_id FROM workspace WHERE author_id = $1", author_id)
+    return [r["topic_root_id"] for r in rows]
+
+
+async def workspace_topics(author_id):
+    """Темы рабочего дерева — той же формы, что list_topics, плюс added_at.
+
+    Свежие сверху: сортировка по id ставила бы наверх самые старые темы, а
+    внизу экрана оказывалось бы то, где спор идёт прямо сейчас.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT n.id, n.text, n.title, n.poi_score, n.kind,
+                   a.name AS author, a.color AS author_color,
+                   w.added_at,
+                   (SELECT count(*) FROM edges e2
+                    JOIN nodes cn ON cn.id = e2.source_id
+                    WHERE e2.target_id = n.id) AS reply_count,
+                   (SELECT max(c.created_at) FROM nodes c
+                    WHERE c.topic_root_id = n.id) AS last_at
+            FROM workspace w
+            JOIN nodes n ON n.id = w.topic_root_id
+            LEFT JOIN authors a ON a.id = n.author_id
+            WHERE w.author_id = $1
+            ORDER BY COALESCE((SELECT max(c.created_at) FROM nodes c
+                               WHERE c.topic_root_id = n.id), w.added_at) DESC
+            """, author_id)
+    return [dict(r) for r in rows]
+
+
+async def seed_workspace_once(author_id, limit=5):
+    """Первый вход: положить в подборку несколько самых живых тем.
+
+    Один раз за всё время аккаунта — флаг снимается сразу и в той же
+    транзакции, поэтому вычищенная подборка не зарастает обратно.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            seeded = await conn.fetchval(
+                "SELECT workspace_seeded FROM authors WHERE id = $1 FOR UPDATE",
+                author_id)
+            if seeded is None or seeded:
+                return []
+            rows = await conn.fetch(
+                """
+                SELECT n.id
+                FROM nodes n
+                WHERE n.id = n.topic_root_id
+                ORDER BY (SELECT count(*) FROM nodes c
+                          WHERE c.topic_root_id = n.id) DESC, n.id DESC
+                LIMIT $1
+                """, limit)
+            ids = [r["id"] for r in rows]
+            if ids:
+                await conn.executemany(
+                    """
+                    INSERT INTO workspace (author_id, topic_root_id) VALUES ($1, $2)
+                    ON CONFLICT DO NOTHING
+                    """, [(author_id, i) for i in ids])
+            await conn.execute(
+                "UPDATE authors SET workspace_seeded = TRUE WHERE id = $1", author_id)
+            return ids
 
 
 async def set_topic_facets(topic_root_id, domain, sub, geo_closure, tags,

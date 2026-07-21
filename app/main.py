@@ -532,6 +532,41 @@ async def get_topics():
     return await db.list_topics()
 
 
+@app.get("/api/workspace")
+async def get_workspace(author=Depends(current_author)):
+    """Рабочее дерево — личная подборка тем, а не каталог всего.
+
+    При первом обращении подборка засеивается самыми живыми темами: пустое
+    дерево на входе неотличимо от сломанного, человек не понимает, он чего-то
+    не сделал или оно не работает.
+    """
+    await db.seed_workspace_once(author["id"])
+    return await db.workspace_topics(author["id"])
+
+
+@app.get("/api/workspace/ids")
+async def get_workspace_ids(author=Depends(current_author)):
+    """Что уже добавлено — карте нужно только это, чтобы нарисовать «+» или «✓»."""
+    return {"ids": await db.workspace_ids(author["id"])}
+
+
+@app.post("/api/workspace/{topic_root_id}")
+async def add_to_workspace(topic_root_id: int, author=Depends(current_author)):
+    node = await db.get_node(topic_root_id)
+    if node is None:
+        raise HTTPException(404, f"тема {topic_root_id} не найдена")
+    if node.get("topic_root_id") != topic_root_id:
+        raise HTTPException(400, "в дерево кладётся тема, а не узел внутри неё")
+    await db.workspace_add(author["id"], topic_root_id)
+    return {"ok": True, "topic": topic_root_id, "in_workspace": True}
+
+
+@app.delete("/api/workspace/{topic_root_id}")
+async def drop_from_workspace(topic_root_id: int, author=Depends(current_author)):
+    await db.workspace_remove(author["id"], topic_root_id)
+    return {"ok": True, "topic": topic_root_id, "in_workspace": False}
+
+
 @app.get("/api/taxonomy")
 async def get_taxonomy():
     """Направления, подветви и география — один источник для карты и формы.
@@ -647,6 +682,11 @@ async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
         dom, sub, geo, tags = facets
         await db.set_topic_facets(node_id, dom, sub,
                                   sorted(taxonomy.geo_closure(geo)), tags)
+
+    # 1c. участие само кладёт тему в рабочее дерево. Убирать приходится
+    # осознанно, добавляется по факту участия — иначе человек написал ответ и
+    # потерял ветку, потому что забыл подписаться.
+    await db.workspace_add(author["id"], root_id or node_id)
 
     # 2. optional typed edge to an existing node (None = a new root branch)
     edge = None
