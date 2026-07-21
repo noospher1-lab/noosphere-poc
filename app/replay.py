@@ -12,7 +12,7 @@ Run:  python -m app.replay
 import asyncio
 import math
 
-from . import db, voteweight
+from . import db, poiformula, voteweight
 
 
 def rebuild_state(events):
@@ -36,6 +36,7 @@ def rebuild_state(events):
                 "kind": p.get("kind", "argument"),
                 "poi_score": p.get("poi_score"),
                 "author_id": a,
+                "atom_group": p.get("atom_group"),
             }
         elif t == "node_scored":
             if p["node_id"] in st["nodes"]:
@@ -51,11 +52,64 @@ def rebuild_state(events):
     return st
 
 
+def recompute_topic_poi_from_log(events):
+    """
+    Recompute EVERY author's topic PoI from first principles over the event log
+    alone — prior + scored contributions + FROZEN reaction weights — using the
+    same pure formula the app uses. Returns {(author, topic_root): poi}.
+
+    This is the real proof the path-dependency is gone: the result depends only
+    on what is in the log, never on the ORDER in which authors were recomputed.
+    It is possible only because reaction_set now carries the reactor's frozen
+    weight; with live reactor PoI this recomputation would be circular.
+    """
+    nodes = {}                 # id -> {author, kind, topic, poi_score}
+    dialogue_poi = {}          # author -> P₀ from the onboarding dialogue
+    prior = {}                 # (author, topic) -> explicit per-topic P₀
+    reactions = {}             # (reactor, node) -> (stance, frozen_weight); LWW
+    for e in events:
+        p, a, t = e["payload"], e["author_id"], e["type"]
+        if t == "node_added":
+            nodes[p["node_id"]] = {"author": a, "kind": p.get("kind", "argument"),
+                                   "topic": p.get("topic_root_id") or p["node_id"],
+                                   "poi_score": p.get("poi_score")}
+        elif t == "node_scored" and p["node_id"] in nodes:
+            nodes[p["node_id"]]["poi_score"] = p["poi_score"]
+        elif t == "dialogue_poi_set":
+            dialogue_poi[a] = p["dialogue_poi"]
+        elif t == "topic_prior_set":
+            prior[(a, p["topic_root_id"])] = p["prior"]
+        elif t == "reaction_set":
+            reactions[(a, p["node_id"])] = (p["stance"], p.get("reactor_weight"))
+
+    # which (author, topic) pairs have any state at all
+    pairs = {(n["author"], n["topic"]) for n in nodes.values() if n["author"]}
+    pairs |= set(prior)
+    for (reactor, node_id), _ in reactions.items():
+        n = nodes.get(node_id)
+        if n and n["author"]:
+            pairs.add((n["author"], n["topic"]))
+
+    out = {}
+    for (author, topic) in pairs:
+        # prior precedence mirrors the SQL: explicit per-topic > dialogue > None
+        p0 = prior.get((author, topic), dialogue_poi.get(author))
+        contribs = [(n["poi_score"], n["kind"]) for n in nodes.values()
+                    if n["author"] == author and n["topic"] == topic]
+        reacts = [(w, stance) for (reactor, node_id), (stance, w) in reactions.items()
+                  if reactor != author
+                  and (n := nodes.get(node_id)) is not None
+                  and n["author"] == author and n["topic"] == topic]
+        out[(author, topic)] = poiformula.topic_poi(p0, contribs, reacts)
+    return out
+
+
 async def read_table_state():
     """The same shape, read from the live tables."""
     pool = db._pool_or_raise()
     async with pool.acquire() as conn:
-        nodes = await conn.fetch("SELECT id, kind, poi_score, author_id FROM nodes")
+        nodes = await conn.fetch(
+            "SELECT id, kind, poi_score, author_id, atom_group FROM nodes")
         edges = await conn.fetch("SELECT source_id, target_id, type FROM edges")
         reactions = await conn.fetch("SELECT author_id, node_id, stance FROM reactions")
         pvotes = await conn.fetch(
@@ -64,7 +118,8 @@ async def read_table_state():
         authors = await conn.fetch("SELECT id FROM authors")
     return {
         "nodes": {r["id"]: {"kind": r["kind"], "poi_score": r["poi_score"],
-                            "author_id": r["author_id"]} for r in nodes},
+                            "author_id": r["author_id"],
+                            "atom_group": r["atom_group"]} for r in nodes},
         "edges": {(r["source_id"], r["target_id"], r["type"]) for r in edges},
         "reactions": {(r["author_id"], r["node_id"]): r["stance"] for r in reactions},
         "position_votes": {(r["author_id"], r["position_id"]): r["stance"] for r in pvotes},
@@ -73,16 +128,21 @@ async def read_table_state():
     }
 
 
-async def verify():
-    """Compare replayed state to table state; returns a list of mismatches."""
-    events = []
-    after = 0
+async def _all_events():
+    """Read the whole append-only log in order."""
+    events, after = [], 0
     while True:
         page = await db.get_events(after, 1000)
         if not page:
             break
         events.extend(page)
         after = page[-1]["id"]
+    return events
+
+
+async def verify():
+    """Compare replayed state to table state; returns a list of mismatches."""
+    events = await _all_events()
     replayed = rebuild_state(events)
     actual = await read_table_state()
 
@@ -91,15 +151,28 @@ async def verify():
         if replayed[key] != actual[key]:
             problems.append(
                 f"{key}: replay {len(replayed[key])} items != tables {len(actual[key])}")
+
+    # Stronger than the echo check above: recompute topic PoI from the formula
+    # over the log and confirm it reproduces the stored table. If this holds,
+    # the stored value is a pure function of the log — order-independent.
+    recomputed = recompute_topic_poi_from_log(events)
+    for key, stored in actual["topic_poi"].items():
+        rv = recomputed.get(key)
+        if rv is None or abs(rv - float(stored)) > 0.05:
+            problems.append(
+                f"topic_poi {key}: recomputed {rv} != stored {stored} "
+                f"(formula not reproducible from log)")
     return problems, replayed
 
 
 def total_weight(state, formula=voteweight.vote_weight):
     """Aggregate vote weight under ANY formula — this is the replay payoff:
-    swap `formula` and the whole history is re-scored without touching data."""
+    swap `formula` and the whole history is re-scored without touching data.
+    Same predicate as the live endpoint: only taken positions (arguments,
+    non-atoms) carry weight."""
     return round(sum(
         formula(n["poi_score"]) for n in state["nodes"].values()
-        if n["kind"] == "argument"), 3)
+        if voteweight.carries_vote_weight(n)), 3)
 
 
 async def main():
@@ -110,9 +183,12 @@ async def main():
         for p in problems:
             print("  -", p)
     else:
+        recomputed = recompute_topic_poi_from_log(await _all_events())
         print(f"OK — состояние полностью восстановимо из лога "
               f"({len(replayed['nodes'])} узлов, {len(replayed['edges'])} рёбер, "
               f"{len(replayed['reactions'])} реакций).")
+        print(f"     топик-PoI пересчитан из формулы по логу и совпал со стором "
+              f"({len(recomputed)} пар автор×тема) — путезависимости нет.")
         # Demo: the same history under two formulas, no migration required.
         current = total_weight(replayed)
         linear = total_weight(

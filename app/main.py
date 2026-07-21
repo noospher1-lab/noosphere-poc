@@ -15,24 +15,41 @@ so it never stalls the event loop.
 """
 
 import asyncio
+import hashlib
 import json
+import logging
 import os
 import re
 import secrets
 import time
+from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
 
-from . import auth, db, dialogue as dialogue_mod, poi, voteweight, pools as pools_mod
+from . import (auth, db, dialogue as dialogue_mod, material, poi, voteweight,
+               votedialogue, pools as pools_mod)
 
-app = FastAPI(title="Noosphere PoC", version="0.2.0")
 
-# Dev tools (reset, personas, manual PoI/reputation, raw edges) are opt-in via
+@asynccontextmanager
+async def lifespan(app):
+    # startup: open the pool, ensure schema, bind the SSE hub to this loop
+    await db.init_pool()
+    await db.init_db()
+    hub.bind_loop(asyncio.get_running_loop())
+    yield
+    # shutdown
+    await db.close_pool()
+
+
+app = FastAPI(title="Noosphere PoC", version="0.2.0", lifespan=lifespan)
+
+# Dev tools (reset, personas, manual PoI priors, raw edges) are opt-in via
 # DEV_TOOLS=1 in .env — they must never be reachable through a public tunnel.
 DEV_TOOLS = os.environ.get("DEV_TOOLS") == "1"
 
@@ -105,13 +122,15 @@ def _spawn(coro):
 
 # each kind is judged by its own rubric — never by another kind's shape
 _SCORERS = {"question": poi.score_question, "proposal": poi.score_proposal,
-            "exploration": poi.score_exploration}
+            "exploration": poi.score_exploration, "detail": poi.score_detail}
+# rubrics that judge a contribution against the claim it attaches to
+_PARENTED_KINDS = {"question", "detail"}
 
 
 async def _score_later(node_id: int, text: str, kind: str = "argument", parent_text: str | None = None):
     fn = _SCORERS.get(kind, poi.score_argument)
     try:
-        if kind == "question":
+        if kind in _PARENTED_KINDS:
             score, breakdown = await asyncio.to_thread(fn, text, parent_text)
         else:
             score, breakdown = await asyncio.to_thread(fn, text)
@@ -139,13 +158,17 @@ async def _assign_position_later(node_id: int, text: str):
     Background, incremental clustering (scaling draft: the full topic re-cluster
     never runs on a write). The LLM sees only the topic's POSITIONS (a handful),
     decides "belongs to #N / is new", and — when it joins an existing pool —
-    re-composes that one pool to integrate the new point. Cost per argument is
-    flat no matter how large the topic grows. Full re-cluster stays available
-    as an explicit, rare operation (GET /api/positions/{root}?recompute=true).
+    re-composes that one pool to integrate the new point. The assign step is
+    bounded by the NUMBER OF POSITIONS (a handful), not by the topic's size; the
+    re-compose that follows a join grows with that one pool's membership, not the
+    topic. Full re-cluster stays an explicit, rare op (?recompute=true).
     """
     try:
         root = await db.topic_root_of(node_id)
-        positions = await db.list_positions(root)
+        # a dissent position is one author's pinned verbatim stance — never a
+        # merge candidate, or a new argument could re-enter someone's own pool
+        positions = [p for p in await db.list_positions(root)
+                     if p.get("stance") != "dissent"]
         if not positions:
             return          # first read of the topic runs the initial clustering
         result = await asyncio.to_thread(
@@ -172,22 +195,17 @@ async def _assign_position_later(node_id: int, text: str):
                      "error": str(e)})
 
 
-@app.on_event("startup")
-async def _startup():
-    await db.init_pool()
-    await db.init_db()
-    hub.bind_loop(asyncio.get_running_loop())
-
-
-@app.on_event("shutdown")
-async def _shutdown():
-    await db.close_pool()
-
-
 # ---------------------------------------------------------------- accounts
 # The author of EVERY write comes from the session (HTTP-only cookie), never
 # from the request body — the client cannot claim to be someone else. Reads
 # stay public (observer mode). Seeded personas (username=NULL) cannot log in.
+log = logging.getLogger("noosphere")
+
+# Base URL used to build links that leave the server (password resets). Set it
+# to the real origin once the PoC is deployed, or the link a tester receives
+# points at localhost.
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "http://localhost:8000").rstrip("/")
+
 SESSION_COOKIE = "session"
 SESSION_DAYS = 30
 
@@ -205,15 +223,109 @@ async def current_author(request: Request):
     raise HTTPException(401, "требуется вход")
 
 
+# Set COOKIE_SECURE=1 once the PoC is served over HTTPS (a tunnel or a real
+# host). Off by default so plain http://localhost still logs in.
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE") == "1"
+
+
 def _set_session(response: Response, token: str):
     response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax",
+                        secure=COOKIE_SECURE,
                         max_age=SESSION_DAYS * 86400, path="/")
+
+
+# ---- LLM budget: per-author sliding window over every endpoint that spends an
+# LLM call. Behind a public tunnel each such endpoint is an open tap on the API
+# key; the budget caps the burn without getting in an honest tester's way
+# (posting + chatting stays well under the default 10/min).
+LLM_BUDGET = int(os.environ.get("LLM_BUDGET_PER_MIN", "10"))
+LLM_WINDOW = 60.0
+_llm_calls: dict[int, deque] = defaultdict(deque)
+
+# What a new account is granted, in USD, to spend on the shared key. The
+# rate limit above caps the burn per minute; this caps it per tester for the
+# whole test. Raise for one person with PUT /api/dev/authors/{id}/balance —
+# no restart needed.
+DEFAULT_BALANCE_USD = float(os.environ.get("DEFAULT_BALANCE_USD", "3"))
+
+
+def _llm_budget_check(author_id: int):
+    q = _llm_calls[author_id]
+    now = time.monotonic()
+    while q and now - q[0] > LLM_WINDOW:
+        q.popleft()
+    if len(q) >= LLM_BUDGET:
+        raise HTTPException(
+            429, f"не больше {LLM_BUDGET} ИИ-запросов в минуту — подожди немного")
+    q.append(now)
+
+
+# ---- brute-force brake on the unauthenticated endpoints. The LLM budget
+# above is keyed by author, which is useless here: whoever is guessing a
+# password has no session yet. Keyed by client IP instead.
+LOGIN_TRIES = int(os.environ.get("LOGIN_TRIES_PER_MIN", "10"))
+_login_calls: dict[str, deque] = defaultdict(deque)
+
+
+def _login_throttle(request: Request, bucket: str):
+    ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+          or (request.client.host if request.client else "?"))
+    q = _login_calls[f"{bucket}:{ip}"]
+    now = time.monotonic()
+    while q and now - q[0] > 60.0:
+        q.popleft()
+    if len(q) >= LOGIN_TRIES:
+        raise HTTPException(429, "слишком много попыток — подожди минуту")
+    q.append(now)
+
+
+async def spend_llm(author):
+    """Charge one LLM call to this account: rate limit, then grant, then bind
+    the key the call will be billed to.
+
+    Split out of the llm_budget dependency for the one endpoint that decides
+    mid-handler whether it is really going to call the model — a draft review
+    served from cache must cost neither a rate-limit slot nor a cent.
+    """
+    _llm_budget_check(author["id"])
+    key = await db.author_api_key(author["id"])
+    if not key:
+        # No key of their own: the shared ANTHROPIC_API_KEY pays, so the grant
+        # in balance_usd is the only thing between one tester and everyone
+        # else's budget. Handing out a key per tester was the earlier answer
+        # and it does not scale to a hundred people — each one is manual work
+        # in the Anthropic console.
+        #
+        # Checked BEFORE the call because the price is known only after it:
+        # the cap is therefore soft by exactly one call (cents), and the
+        # per-minute rate limit above bounds how fast that edge can be hit.
+        # DEV_TOOLS is the local bench, where the grant is not the point.
+        if not DEV_TOOLS and await db.budget_left(author["id"]) <= 0:
+            raise HTTPException(
+                402, "ИИ-бюджет аккаунта исчерпан — напиши, пополним")
+    poi.current_api_key.set(key)
+
+
+async def llm_budget(author=Depends(current_author)):
+    """Dependency form of spend_llm() for the endpoints that always call the
+    model. Must stay `async def`: a sync dependency runs in a threadpool and
+    the contextvar set inside would not propagate back to the handler.
+    """
+    await spend_llm(author)
 
 
 class RegisterIn(BaseModel):
     username: str
     password: str
     name: str | None = None
+    invite: str | None = None
+    email: str | None = None
+
+
+# Deliberately loose: the point is to catch a typo like "ivan@" or a pasted
+# username, not to adjudicate RFC 5322. Whether the address actually works is
+# proven by the reset link arriving, not by a regex.
+EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 
 class LoginIn(BaseModel):
@@ -222,18 +334,32 @@ class LoginIn(BaseModel):
 
 
 @app.post("/api/auth/register")
-async def register(body: RegisterIn, response: Response):
+async def register(body: RegisterIn, response: Response, request: Request):
+    _login_throttle(request, "register")
     username = body.username.strip().lower()
     if not re.fullmatch(r"[a-z0-9_]{3,32}", username):
         raise HTTPException(400, "логин: 3–32 символа, латиница/цифры/подчёркивание")
     if len(body.password) < 6:
         raise HTTPException(400, "пароль: минимум 6 символов")
+    email = (body.email or "").strip().lower()
+    # Required, not optional: without it a forgotten password is a lost
+    # account, and asking 100 people for their address after the fact is the
+    # thing this is meant to avoid.
+    if not EMAIL_RE.fullmatch(email):
+        raise HTTPException(400, "нужна почта — по ней восстанавливается доступ")
+
     color = _PALETTE[sum(username.encode()) % len(_PALETTE)]
     author_id = await db.add_user(
         username, auth.hash_password(body.password),
-        (body.name or username).strip() or username, color)
-    if author_id is None:
+        (body.name or username).strip() or username, color,
+        invite=body.invite, email=email, balance_usd=DEFAULT_BALANCE_USD)
+    # Accounts are handed out on request, so registration is invite-only.
+    if author_id == "invite":
+        raise HTTPException(403, "нужен действующий код приглашения")
+    if author_id == "taken":
         raise HTTPException(409, "логин занят")
+    if author_id == "email_taken":
+        raise HTTPException(409, "на эту почту уже есть аккаунт")
     token = auth.new_token()
     await db.create_session(token, author_id, SESSION_DAYS)
     _set_session(response, token)
@@ -241,7 +367,8 @@ async def register(body: RegisterIn, response: Response):
 
 
 @app.post("/api/auth/login")
-async def login(body: LoginIn, response: Response):
+async def login(body: LoginIn, response: Response, request: Request):
+    _login_throttle(request, "login")
     a = await db.get_author_by_username(body.username.strip().lower())
     if not a or not a.get("password_hash") or \
             not auth.verify_password(body.password, a["password_hash"]):
@@ -252,6 +379,55 @@ async def login(body: LoginIn, response: Response):
     return {k: v for k, v in a.items() if k != "password_hash"}
 
 
+class ForgotIn(BaseModel):
+    email: str
+
+
+class ResetIn(BaseModel):
+    token: str
+    password: str
+
+
+def _hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+@app.post("/api/auth/forgot")
+async def forgot_password(body: ForgotIn, request: Request):
+    """Start recovery. Always answers the same, whether or not the address is
+    registered — otherwise this endpoint becomes a way to test which emails
+    have accounts here."""
+    _login_throttle(request, "forgot")
+    email = (body.email or "").strip().lower()
+    same_answer = {"ok": True,
+                   "detail": "если аккаунт с такой почтой есть, ссылка отправлена"}
+    if not EMAIL_RE.fullmatch(email):
+        return same_answer
+
+    token = secrets.token_urlsafe(32)
+    author_id = await db.create_password_reset(email, _hash_reset_token(token))
+    if author_id is None:
+        return same_answer
+
+    link = f"{PUBLIC_URL}/reset.html?token={token}"
+    # No mail server yet, so the link goes to the server log and Alex passes it
+    # on by hand. When SMTP exists only this branch changes — the token, the
+    # expiry and the redemption flow stay as they are.
+    log.warning("PASSWORD RESET for author %s <%s>: %s", author_id, email, link)
+    return same_answer
+
+
+@app.post("/api/auth/reset")
+async def reset_password(body: ResetIn, request: Request):
+    _login_throttle(request, "reset")
+    if len(body.password) < 8:
+        raise HTTPException(400, "пароль: минимум 8 символов")
+    if not await db.redeem_password_reset(_hash_reset_token(body.token.strip()),
+                                          auth.hash_password(body.password)):
+        raise HTTPException(400, "ссылка недействительна или уже использована")
+    return {"ok": True}
+
+
 @app.post("/api/auth/logout")
 async def logout(request: Request, response: Response):
     token = request.cookies.get(SESSION_COOKIE)
@@ -259,6 +435,18 @@ async def logout(request: Request, response: Response):
         await db.delete_session(token)
     response.delete_cookie(SESSION_COOKIE, path="/")
     return {"ok": True}
+
+
+@app.get("/api/me/profile")
+async def my_profile(author=Depends(current_author)):
+    """The participant's own cabinet: who they are, what they've contributed,
+    what their work has cost. Own data only — there is no {id} variant, so one
+    tester cannot read another's spend."""
+    return {
+        "author": {k: v for k, v in author.items() if k != "password_hash"},
+        "account": await db.account_summary(author["id"]),
+        "activity": await db.activity_summary(author["id"]),
+    }
 
 
 @app.get("/api/auth/me")
@@ -285,12 +473,45 @@ class EdgeIn(BaseModel):
 
 class AuthorIn(BaseModel):
     name: str
-    reputation: float = 50.0              # 0..100 track-record PoI
     color: str | None = None
 
 
-class ReputationIn(BaseModel):
-    reputation: float                    # 0..100
+@app.middleware("http")
+async def meter_llm_usage(request: Request, call_next):
+    """Bill every LLM call made while handling this request to its author.
+
+    Middleware rather than per-endpoint code: it wraps the handler in the same
+    task, so the contextvar set here is visible to poi.complete_messages deep
+    inside, and the flush below runs after the handler has finished and all
+    usage has accumulated — something a dependency cannot do.
+    """
+    sink = []
+    poi.current_usage.set(sink)
+    response = await call_next(request)
+
+    if not sink:
+        return response
+    token = request.cookies.get(SESSION_COOKIE)
+    author = await db.session_author(token) if token else None
+    if author is None:
+        return response          # anonymous: nothing to bill
+    for r in sink:
+        r["cost_usd"] = poi.cost_usd(
+            r["model"], r["input_tokens"], r["output_tokens"],
+            cache_read_tokens=r.get("cache_read_tokens", 0),
+            cache_write_tokens=r.get("cache_write_tokens", 0))
+    try:
+        await db.record_usage(author["id"], sink, request.url.path)
+    except Exception:
+        pass                     # metering must never break a working request
+    return response
+
+
+@app.get("/api/config")
+async def config():
+    """What the front-end needs to know about this instance. Only flags —
+    never keys or tokens: this is unauthenticated."""
+    return {"dev_tools": DEV_TOOLS}
 
 
 @app.get("/api/graph")
@@ -324,7 +545,7 @@ async def get_children(node_id: int, limit: int = 20, offset: int = 0):
     return await db.get_children(node_id, limit, offset)
 
 
-@app.post("/api/argument")
+@app.post("/api/argument", dependencies=[Depends(llm_budget)])
 async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
     if not arg.text.strip():
         raise HTTPException(400, "argument text is empty")
@@ -429,14 +650,7 @@ async def get_authors():
 async def create_author(author: AuthorIn):
     if not author.name.strip():
         raise HTTPException(400, "author name is empty")
-    author_id = await db.add_author(author.name.strip(), author.reputation, author.color)
-    return await db.get_author(author_id)
-
-
-@app.patch("/api/authors/{author_id}", dependencies=[Depends(dev_only)])
-async def set_reputation(author_id: int, body: ReputationIn):
-    if not await db.update_author_reputation(author_id, body.reputation):
-        raise HTTPException(404, f"author {author_id} not found")
+    author_id = await db.add_author(author.name.strip(), author.color)
     return await db.get_author(author_id)
 
 
@@ -474,9 +688,14 @@ def _bucket_support(pois):
         else:
             buckets[bi] += 1
             weight += p
+    scored = len(pois) - no_data
     return {
         "count": len(pois),
         "weight": round(weight, 1),
+        # avg over SCORED supporters only — poi-as-lens: this reads the group,
+        # it is NOT a vote weight (the sum would smuggle "more heads = more power"
+        # back in). None when nobody here has a computed PoI yet.
+        "avg": round(weight / scored, 1) if scored else None,
         "buckets": [{"label": BUCKET_LABELS[i], "count": buckets[i]} for i in range(10)],
         "no_data": no_data,
     }
@@ -498,13 +717,19 @@ def _aggregate_reactions(rows):
             else:
                 buckets[bi] += 1
                 weight += r["poi"]
+        scored = len(items) - no_data
         out[stance] = {
             "count": len(items),
             "weight": round(weight, 1),          # sum of reactors' topic-PoI
+            # avg over SCORED reactors only — poi-as-lens: reads the group, it is
+            # NOT a vote weight. None when none of them has a computed PoI yet.
+            "avg": round(weight / scored, 1) if scored else None,
             "buckets": [{"label": BUCKET_LABELS[i], "count": buckets[i]} for i in range(10)],
             "no_data": no_data,
             "reactors": [{"name": r["name"], "poi": r["poi"], "color": r["color"]} for r in items],
         }
+    # kept for replayability of the event log, but the UI no longer shows a
+    # PoI-weighted sum — a reaction is one head, not PoI-weighted (poi-as-lens).
     out["net_weight"] = round(out["agree"]["weight"] - out["disagree"]["weight"], 1)
     return out
 
@@ -533,7 +758,12 @@ async def post_reaction(r: ReactionIn, author=Depends(current_author)):
     node = await db.get_node(r.node_id)
     if node is None:
         raise HTTPException(404, f"node {r.node_id} not found")
-    await db.set_reaction(author["id"], r.node_id, r.stance)
+    # freeze the reactor's topic PoI at cast time — the reaction counts this
+    # value forever, so a later change to the reactor's PoI can't retroactively
+    # (and order-dependently) reweight votes already cast
+    root = node.get("topic_root_id") or await db.topic_root_of(r.node_id)
+    reactor_weight = await db.topic_poi_of(author["id"], root) if root else None
+    await db.set_reaction(author["id"], r.node_id, r.stance, reactor_weight)
     # reactions nudge the NODE AUTHOR's topic PoI (bounded ±5 by the formula);
     # self-reactions are excluded inside the recompute query
     if node.get("author_id") and node.get("topic_root_id") \
@@ -560,47 +790,34 @@ class PositionVoteIn(BaseModel):
     stance: str                          # 'agree' | 'disagree'
 
 
-def _topic_nodes(graph, root_id):
-    """All nodes in the discussion (connected component) containing root_id."""
-    adj = {n["id"]: [] for n in graph["nodes"]}
-    for l in graph["links"]:
-        if l["source"] in adj and l["target"] in adj:
-            adj[l["source"]].append(l["target"])
-            adj[l["target"]].append(l["source"])
-    seen, stack = {root_id}, [root_id]
-    while stack:
-        x = stack.pop()
-        for y in adj.get(x, []):
-            if y not in seen:
-                seen.add(y)
-                stack.append(y)
-    return [n for n in graph["nodes"] if n["id"] in seen]
-
-
 async def _recompute_positions(topic_root_id):
     """Full re-cluster: rebuild a topic's positions from its argument nodes."""
-    graph = await db.get_graph()
-    nodes = _topic_nodes(graph, topic_root_id)
-    # atoms cut from explorations are points under investigation, not taken
-    # positions — they never join the position pools
-    arg_nodes = [n for n in nodes if (n.get("kind") or "argument") == "argument"
-                 and not n.get("atom_group")]
+    # read the topic's arguments straight from the materialized topic_root_id
+    # (atoms excluded) — no whole-graph load, no risk of a stray edge dragging in
+    # another topic's nodes
+    arg_nodes = await db.topic_argument_nodes(topic_root_id)
+    # dissented args are pinned: they never go through the LLM re-cluster, they
+    # are re-created as their own verbatim positions afterwards (п.10)
+    free = [n for n in arg_nodes if not n.get("dissented")]
+    pinned = [n for n in arg_nodes if n.get("dissented")]
     await db.clear_positions(topic_root_id)
-    if not arg_nodes:
-        return
-    clustered = await asyncio.to_thread(
-        pools_mod.cluster_arguments,
-        [{"id": n["id"], "text": n["text"]} for n in arg_nodes])
-    by_id = {n["id"] for n in arg_nodes}
-    for c in clustered:
-        pid = await db.add_position(
-            topic_root_id,
-            c.get("headline") or c.get("synthesis", ""),
-            c.get("composed") or c.get("synthesis", ""),
-            c.get("stance", "mixed"))
-        for mid in c.get("member_ids", []):
-            if mid in by_id:
-                await db.set_node_position(mid, pid)
+    if free:
+        clustered = await asyncio.to_thread(
+            pools_mod.cluster_arguments,
+            [{"id": n["id"], "text": n["text"]} for n in free])
+        by_id = {n["id"] for n in free}
+        for c in clustered:
+            pid = await db.add_position(
+                topic_root_id,
+                c.get("headline") or c.get("synthesis", ""),
+                c.get("composed") or c.get("synthesis", ""),
+                c.get("stance", "mixed"))
+            for mid in c.get("member_ids", []):
+                if mid in by_id:
+                    await db.set_node_position(mid, pid)
+    for n in pinned:
+        pid = await db.add_position(topic_root_id, n["text"][:60], n["text"], "dissent")
+        await db.set_node_position(n["id"], pid)
 
 
 async def _position_support(position_id, topic_root_id):
@@ -630,11 +847,17 @@ async def _position_payload(p):
             "poi": pl["poi_score"],                   # questions & details are scored too
             "parent": par if par in planet_ids else None,
         })
+    # a signed position (a conclusion) names its author; a clustered pool doesn't
+    author = None
+    if p.get("author_id"):
+        a = await db.get_author(p["author_id"])
+        author = a["name"] if a else None
     return {
         "id": p["id"],
         "headline": p["headline"],
         "composed": p["composed"],
         "stance": p["stance"],
+        "author": author,
         "member_ids": [m["id"] for m in members],
         "member_texts": [m["text"] for m in members],
         "planets": planets,
@@ -642,9 +865,22 @@ async def _position_payload(p):
     }
 
 
+# The full re-cluster is reachable through an unauthenticated GET, so the
+# per-author budget can't cover it; a per-topic cooldown caps how often the
+# expensive path can run. Initial clustering (no positions yet) is exempt.
+_RECLUSTER_COOLDOWN = 60.0
+_last_recluster: dict[int, float] = {}
+
+
 @app.get("/api/positions/{topic_root_id}")
 async def get_positions(topic_root_id: int, recompute: bool = False):
-    if recompute or not await db.list_positions(topic_root_id):
+    existing = await db.list_positions(topic_root_id)
+    now = time.monotonic()
+    if recompute and existing and \
+            now - _last_recluster.get(topic_root_id, 0.0) < _RECLUSTER_COOLDOWN:
+        recompute = False                 # too soon — serve the existing view
+    if recompute or not existing:
+        _last_recluster[topic_root_id] = now
         try:
             await _recompute_positions(topic_root_id)
         except HTTPException:
@@ -670,7 +906,8 @@ class BranchIn(BaseModel):
     kind: str = "detail"                 # 'detail' | 'question'
 
 
-@app.post("/api/positions/{position_id}/continue")
+@app.post("/api/positions/{position_id}/continue",
+          dependencies=[Depends(llm_budget)])
 async def continue_position(position_id: int, body: PositionArgIn,
                             author=Depends(current_author)):
     # "Развить": a detail planet orbiting the star (scored, like any contribution).
@@ -681,11 +918,14 @@ async def continue_position(position_id: int, body: PositionArgIn,
                             position_id=position_id,
                             topic_root_id=pos["topic_root_id"])
     await db.add_edge(nid, await _rep_member(position_id, pos["topic_root_id"]), "qualify")
-    _spawn(_score_later(nid, body.text))
+    # score with the DETAIL rubric against the position it develops (was being
+    # scored as a plain argument, the wrong genre for a qualification)
+    _spawn(_score_later(nid, body.text, "detail",
+                        pos.get("composed") or pos.get("headline")))
     return await _position_payload(pos)
 
 
-@app.post("/api/nodes/{node_id}/branch")
+@app.post("/api/nodes/{node_id}/branch", dependencies=[Depends(llm_budget)])
 async def branch_node(node_id: int, body: BranchIn, author=Depends(current_author)):
     # A planet can branch further: a scored child planet (sub-question / detail).
     parent = await db.get_node(node_id)
@@ -702,22 +942,58 @@ async def branch_node(node_id: int, body: BranchIn, author=Depends(current_autho
     return await _position_payload(pos) if pos else {"ok": True}
 
 
-@app.post("/api/positions/{position_id}/conclude")
+@app.post("/api/positions/{position_id}/conclude",
+          dependencies=[Depends(llm_budget)])
 async def conclude_position(position_id: int, author=Depends(current_author)):
-    # "Сделать вывод": synthesize the star + its orbit into the next node forward.
+    """
+    "Сделать вывод" — PREVIEW ONLY (п.9). The LLM PROPOSES a conclusion from the
+    position and its orbit; nothing is written. Like atomization, the author then
+    edits and signs it via .../conclude/confirm, so the conclusion enters the map
+    as THEIR scored, attributed claim — the platform never posts anonymous,
+    unscored LLM text that shapes the positions map, and the button can no longer
+    spawn conclusions on its own.
+    """
     pos = await db.get_position(position_id)
     if pos is None:
         raise HTTPException(404, f"position {position_id} not found")
-    planets = await db.position_planets(position_id)
-    planet_texts = [pl["text"] for pl in planets]
+    planet_texts = [pl["text"] for pl in await db.position_planets(position_id)]
     try:
         c = await asyncio.to_thread(
             pools_mod.conclude, pos["composed"] or pos["headline"], planet_texts)
     except Exception as e:
         raise HTTPException(502, f"conclusion failed: {e}")
-    new_pid = await db.add_position(pos["topic_root_id"],
-                                    c.get("headline", ""), c.get("composed", ""), "conclusion")
-    await db.add_position_link(new_pid, position_id, "conclusion")   # new concludes from old
+    return {"headline": c.get("headline", ""), "composed": c.get("composed", "")}
+
+
+class ConcludeConfirmIn(BaseModel):
+    composed: str                        # the author's edited conclusion text
+    headline: str = ""                   # optional short title
+
+
+@app.post("/api/positions/{position_id}/conclude/confirm",
+          dependencies=[Depends(llm_budget)])
+async def conclude_confirm(position_id: int, body: ConcludeConfirmIn,
+                           author=Depends(current_author)):
+    """The author signs the (edited) conclusion. It becomes THEIR forward claim:
+    a scored, attributed argument node backing a conclusion position linked to
+    the source — attribution + scoring instead of anonymous LLM content."""
+    pos = await db.get_position(position_id)
+    if pos is None:
+        raise HTTPException(404, f"position {position_id} not found")
+    text = body.composed.strip()
+    if not text:
+        raise HTTPException(400, "вывод не может быть пустым")
+    root = pos["topic_root_id"]
+    # the conclusion is the author's claim: a real scored node, connected into
+    # the audit graph, backing a conclusion position they signed
+    nid = await db.add_node(text, author_id=author["id"], kind="argument",
+                            topic_root_id=root)
+    await db.add_edge(nid, await _rep_member(position_id, root), "support")
+    new_pid = await db.add_position(root, body.headline.strip() or text[:60],
+                                    text, "conclusion", author_id=author["id"])
+    await db.set_node_position(nid, new_pid)
+    await db.add_position_link(new_pid, position_id, "conclusion")
+    _spawn(_score_later(nid, text))       # scored like any contribution
     return await _position_payload(await db.get_position(new_pid))
 
 
@@ -734,7 +1010,8 @@ async def _compose_later(position_id: int, texts: list[str]):
     hub.publish({"type": "position_updated", "position_id": position_id})
 
 
-@app.post("/api/positions/{position_id}/oppose")
+@app.post("/api/positions/{position_id}/oppose",
+          dependencies=[Depends(llm_budget)])
 async def oppose_position(position_id: int, body: PositionArgIn,
                           author=Depends(current_author)):
     pos = await db.get_position(position_id)
@@ -753,7 +1030,8 @@ async def oppose_position(position_id: int, body: PositionArgIn,
     return await _position_payload(await db.get_position(new_pid))
 
 
-@app.post("/api/positions/{position_id}/question")
+@app.post("/api/positions/{position_id}/question",
+          dependencies=[Depends(llm_budget)])
 async def question_position(position_id: int, body: PositionArgIn,
                             author=Depends(current_author)):
     pos = await db.get_position(position_id)
@@ -771,6 +1049,56 @@ async def question_position(position_id: int, body: PositionArgIn,
     return await _position_payload(await db.get_position(position_id))
 
 
+@app.post("/api/nodes/{node_id}/dissent", dependencies=[Depends(llm_budget)])
+async def dissent_position(node_id: int, author=Depends(current_author)):
+    """
+    "Не согласен с трактовкой" (п.10): the author pulls their argument OUT of the
+    pool it was auto-clustered into. Consent by opt-out — clustering stays
+    automatic (that is the product), but no one is counted as supporting a
+    composed text they reject.
+
+    The argument becomes its OWN position with its VERBATIM text (a position that
+    literally repeats the author's words cannot misrepresent them), and is pinned
+    so re-clustering never folds it back in. The pool it left is re-composed from
+    its remaining members — so it stops speaking for the dissenter — or deleted
+    if it is now empty.
+    """
+    node = await db.get_node(node_id)
+    if node is None:
+        raise HTTPException(404, f"node {node_id} not found")
+    if node.get("author_id") != author["id"]:
+        raise HTTPException(403, "выйти из позиции может только автор аргумента")
+    if (node.get("kind") or "argument") != "argument":
+        raise HTTPException(400, "из позиции выходит только аргумент")
+    old_pid = node.get("position_id")
+    if not old_pid:
+        raise HTTPException(400, "этот аргумент не входит ни в одну позицию")
+    if node.get("dissented"):
+        raise HTTPException(409, "аргумент уже вынесен в собственную позицию")
+
+    root = node.get("topic_root_id") or await db.topic_root_of(node_id)
+    # 1. spin the argument into its own verbatim position and pin it
+    new_pid = await db.add_position(root, node["text"][:60], node["text"], "dissent")
+    await db.set_node_position(node_id, new_pid)
+    await db.mark_dissented(node_id)
+    # 2. the pool it left must stop claiming the dissenter's point
+    remaining = await db.position_nodes(old_pid, "argument")
+    if remaining:
+        try:
+            comp = await asyncio.to_thread(
+                pools_mod.compose_one, [m["text"] for m in remaining])
+            await db.update_position(old_pid, comp.get("headline", ""),
+                                     comp.get("composed", ""))
+        except Exception as e:
+            hub.publish({"type": "position_compose_failed",
+                         "position_id": old_pid, "error": str(e)})
+    else:
+        await db.delete_position(old_pid)
+    hub.publish({"type": "position_updated", "position_id": new_pid})
+    hub.publish({"type": "position_updated", "position_id": old_pid})
+    return await _position_payload(await db.get_position(new_pid))
+
+
 @app.post("/api/positions/{position_id}/vote")
 async def vote_position(position_id: int, body: PositionVoteIn,
                         author=Depends(current_author)):
@@ -781,6 +1109,274 @@ async def vote_position(position_id: int, body: PositionVoteIn,
     await db.set_position_reaction(author["id"], position_id, body.stance)
     pos = await db.get_position(position_id)
     return await _position_payload(pos)
+
+
+# ---------------------------------------------------------------- decisions
+class DecisionIn(BaseModel):
+    topic_root_id: int
+    question: str
+
+
+class OptionIn(BaseModel):
+    position_id: int | None = None
+    label: str | None = None
+    origin: str = "initial"           # initial | proposed | reframe
+
+
+class VoteMsgIn(BaseModel):
+    text: str
+
+
+class VoteInformIn(BaseModel):
+    accept: bool
+
+
+class CastIn(BaseModel):
+    option_ids: list[int]
+
+
+class NavigateIn(BaseModel):
+    question: str
+    anchor: str | None = None
+
+
+async def _decision_or_404(decision_id):
+    d = await db.get_decision(decision_id)
+    if d is None:
+        raise HTTPException(404, f"decision {decision_id} not found")
+    return d
+
+
+async def _render_material(topic_root_id, question):
+    m = await db.topic_material(topic_root_id)
+    return material.render(question, m["positions"], m["questions"],
+                           m["atoms"], m["dissents"])
+
+
+@app.post("/api/decisions", dependencies=[Depends(dev_only)])
+async def create_decision(body: DecisionIn, author=Depends(current_author)):
+    return await db.create_decision(body.topic_root_id, body.question.strip(),
+                                    created_by=author["id"])
+
+
+@app.post("/api/decisions/{decision_id}/options",
+          dependencies=[Depends(dev_only)])
+async def add_decision_option(decision_id: int, body: OptionIn,
+                              author=Depends(current_author)):
+    await _decision_or_404(decision_id)
+    if body.origin not in ("initial", "proposed", "reframe"):
+        raise HTTPException(400, "origin must be initial|proposed|reframe")
+    rev = await db.current_revision(decision_id)
+    return await db.add_option(decision_id, body.position_id, body.label,
+                               origin=body.origin, proposed_by=author["id"],
+                               revision=rev["revision"] if rev else 1)
+
+
+@app.post("/api/decisions/{decision_id}/open", dependencies=[Depends(dev_only)])
+async def open_decision(decision_id: int):
+    """Freeze the material and the judge model, then accept votes."""
+    d = await _decision_or_404(decision_id)
+    snapshot = await _render_material(d["topic_root_id"], d["question"])
+    row = await db.open_decision(decision_id, snapshot,
+                                 votedialogue.DEFAULT_JUDGE_MODEL)
+    if row is None:
+        raise HTTPException(409, "decision is not in draft")
+    prefix = (material.estimate_tokens(votedialogue.INTERLOCUTOR_SYSTEM)
+              + material.estimate_tokens(snapshot))
+    return {**row,
+            "cache": material.cache_outlook(
+                prefix, votedialogue.INTERLOCUTOR_MODEL)}
+
+
+@app.get("/api/decisions/{decision_id}")
+async def read_decision(decision_id: int):
+    d = await _decision_or_404(decision_id)
+    return {"decision": d,
+            "options": await db.list_options(decision_id),
+            "tally": await db.tally(decision_id)}
+
+
+@app.post("/api/decisions/{decision_id}/dialogue/start",
+          dependencies=[Depends(llm_budget)])
+async def vote_dialogue_start(decision_id: int, author=Depends(current_author)):
+    d = await _decision_or_404(decision_id)
+    if d["status"] != "open":
+        raise HTTPException(409, "голосование не открыто")
+    existing = await db.get_vote_dialogue(decision_id, author["id"])
+    if existing:
+        return _vote_dlg_meta(existing)
+    rev = await db.current_revision(decision_id)
+    try:
+        opening = await asyncio.to_thread(
+            votedialogue.opening_turn, rev["material_snapshot"])
+    except Exception as e:
+        raise HTTPException(502, f"собеседник недоступен: {e}")
+    turns = []
+    _ingest_vote_reply(turns, opening)
+    return _vote_dlg_meta(await db.start_vote_dialogue(
+        decision_id, author["id"], rev["revision"], turns))
+
+
+@app.post("/api/decisions/{decision_id}/dialogue/message",
+          dependencies=[Depends(llm_budget)])
+async def vote_dialogue_message(decision_id: int, body: VoteMsgIn,
+                                author=Depends(current_author)):
+    d, dlg, rev = await _vote_dlg_or_409(decision_id, author)
+    if not body.text.strip():
+        raise HTTPException(400, "пустое сообщение")
+    turns = dlg["transcript"]
+    if turns and turns[-1].get("meta") == "inform_offer_pending":
+        raise HTTPException(409, "сначала ответь на предложение информации")
+    if votedialogue.user_turns(turns) >= votedialogue.MAX_TURNS:
+        raise HTTPException(409, "бюджет ходов исчерпан — можно завершать")
+    turns.append({"role": "user", "content": body.text.strip()})
+    try:
+        raw = await asyncio.to_thread(
+            votedialogue.reply, rev["material_snapshot"], turns)
+    except Exception as e:
+        turns.pop()                  # don't persist a turn the AI never saw
+        raise HTTPException(502, f"собеседник недоступен: {e}")
+    _ingest_vote_reply(turns, raw)
+    await db.save_vote_transcript(decision_id, author["id"], turns)
+    return _vote_dlg_meta(await db.get_vote_dialogue(decision_id, author["id"]))
+
+
+@app.post("/api/decisions/{decision_id}/dialogue/inform",
+          dependencies=[Depends(llm_budget)])
+async def vote_dialogue_inform(decision_id: int, body: VoteInformIn,
+                               author=Depends(current_author)):
+    d, dlg, rev = await _vote_dlg_or_409(decision_id, author)
+    turns = dlg["transcript"]
+    if not turns or turns[-1].get("meta") != "inform_offer_pending":
+        raise HTTPException(409, "нет активного предложения информации")
+    turns[-1]["meta"] = ("inform_offer_accepted" if body.accept
+                         else "inform_offer_declined")
+    turns.append({"role": "user",
+                  "content": ("[User accepted the information offer. Provide "
+                              "the information now.]" if body.accept
+                              else "[User declined the information offer.]"),
+                  "meta": "inform_resolution"})
+    try:
+        raw = await asyncio.to_thread(
+            votedialogue.reply, rev["material_snapshot"], turns)
+    except Exception as e:
+        turns.pop()
+        raise HTTPException(502, f"собеседник недоступен: {e}")
+    _ingest_vote_reply(turns, raw)
+    await db.save_vote_transcript(decision_id, author["id"], turns)
+    return _vote_dlg_meta(await db.get_vote_dialogue(decision_id, author["id"]))
+
+
+@app.post("/api/decisions/{decision_id}/dialogue/finalize",
+          dependencies=[Depends(llm_budget)])
+async def vote_dialogue_finalize(decision_id: int,
+                                 author=Depends(current_author)):
+    """Phase 2. The PERSON decides they are ready — never the interlocutor."""
+    d, dlg, rev = await _vote_dlg_or_409(decision_id, author)
+    turns = dlg["transcript"]
+    n = votedialogue.user_turns(turns)
+    if n < votedialogue.MIN_TURNS_TO_FINALIZE:
+        raise HTTPException(
+            409, f"нужно минимум {votedialogue.MIN_TURNS_TO_FINALIZE} ходов, "
+                 f"сейчас {n}")
+    try:
+        total, criteria, summary, weight = await asyncio.to_thread(
+            votedialogue.judge, rev["material_snapshot"], turns,
+            d["judge_model"])
+    except Exception as e:
+        raise HTTPException(502, f"судья недоступен: {e}")
+    row = await db.finish_vote_dialogue(decision_id, author["id"], total,
+                                        criteria, summary, weight)
+    return _vote_dlg_meta(row, full=True)
+
+
+@app.post("/api/decisions/{decision_id}/vote")
+async def cast_vote(decision_id: int, body: CastIn,
+                    author=Depends(current_author)):
+    d = await _decision_or_404(decision_id)
+    if d["status"] != "open":
+        raise HTTPException(409, "голосование не открыто")
+    if not body.option_ids:
+        raise HTTPException(400, "не выбрано ни одного варианта")
+    valid = {o["id"] for o in await db.list_options(decision_id)}
+    unknown = set(body.option_ids) - valid
+    if unknown:
+        raise HTTPException(400, f"неизвестные варианты: {sorted(unknown)}")
+    # No dialogue, or an unfinished one, still votes — at weight 1. The
+    # dialogue reveals, it does not gate.
+    dlg = await db.get_vote_dialogue(decision_id, author["id"])
+    weight = (dlg or {}).get("weight") or votedialogue.MIN_WEIGHT
+    rev = (dlg or {}).get("revision") or 1
+    await db.cast_vote(decision_id, author["id"], body.option_ids, weight,
+                       rev, (dlg or {}).get("id"))
+    return {"ok": True, "weight": weight, "revision": rev,
+            "tally": await db.tally(decision_id)}
+
+
+@app.post("/api/decisions/{decision_id}/navigate",
+          dependencies=[Depends(llm_budget)])
+async def navigate_decision(decision_id: int, body: NavigateIn):
+    """The 'ask the AI' button — a navigator, never an adviser."""
+    await _decision_or_404(decision_id)
+    if not body.question.strip():
+        raise HTTPException(400, "пустой вопрос")
+    rev = await db.current_revision(decision_id)
+    if rev is None:
+        raise HTTPException(409, "голосование ещё не открыто")
+    try:
+        text = await asyncio.to_thread(
+            votedialogue.navigate, rev["material_snapshot"],
+            body.question.strip(), body.anchor)
+    except Exception as e:
+        raise HTTPException(502, f"навигатор недоступен: {e}")
+    return {"answer": text.strip()}
+
+
+async def _vote_dlg_or_409(decision_id, author):
+    d = await _decision_or_404(decision_id)
+    if d["status"] != "open":
+        raise HTTPException(409, "голосование не открыто")
+    dlg = await db.get_vote_dialogue(decision_id, author["id"])
+    if dlg is None:
+        raise HTTPException(409, "диалог не начат")
+    rev = await db.current_revision(decision_id)
+    return d, dlg, rev
+
+
+def _ingest_vote_reply(turns, raw):
+    """Split an interlocutor reply; an INFORM_OFFER becomes a pending turn."""
+    before, offer = votedialogue.split_inform_offer(raw)
+    if before:
+        turns.append({"role": "assistant", "content": before})
+    if offer:
+        turns.append({"role": "assistant", "content": offer,
+                      "meta": "inform_offer_pending"})
+
+
+def _vote_dlg_meta(dlg, full=False):
+    """
+    What the client may see. The score is withheld until the dialogue is
+    finalised — showing it mid-conversation would turn preparation into a game
+    of maximising a number instead of understanding a question.
+    """
+    if dlg is None:
+        raise HTTPException(404, "диалог не найден")
+    out = {
+        "decision_id": dlg["decision_id"],
+        "revision": dlg["revision"],
+        "transcript": dlg["transcript"],
+        "user_turns": votedialogue.user_turns(dlg["transcript"]),
+        "min_turns": votedialogue.MIN_TURNS_TO_FINALIZE,
+        "max_turns": votedialogue.MAX_TURNS,
+        "finished": dlg["finished_at"] is not None,
+    }
+    if dlg["finished_at"] is not None:
+        out["weight"] = dlg["weight"]
+        out["summary"] = dlg["summary"]
+        if full:
+            out["score"] = dlg["score"]
+            out["criteria"] = dlg["criteria"]
+    return out
 
 
 @app.post("/api/reset", dependencies=[Depends(dev_only)])
@@ -872,7 +1468,7 @@ async def start_dialogue(body: DialogueStartIn, author=Depends(current_author)):
     return _dlg_meta(d)
 
 
-@app.post("/api/dialogue/pre")
+@app.post("/api/dialogue/pre", dependencies=[Depends(llm_budget)])
 async def dialogue_pre(body: DialoguePreIn, author=Depends(current_author)):
     d = await db.get_dialogue(author["id"])
     if d is None:
@@ -899,7 +1495,7 @@ async def dialogue_pre(body: DialoguePreIn, author=Depends(current_author)):
     return _dlg_meta(await db.get_dialogue(author["id"]))
 
 
-@app.post("/api/dialogue/message")
+@app.post("/api/dialogue/message", dependencies=[Depends(llm_budget)])
 async def dialogue_message(body: DialogueMsgIn, author=Depends(current_author)):
     d = await db.get_dialogue(author["id"])
     if d is None or d["phase"] != "dialogue":
@@ -924,7 +1520,7 @@ async def dialogue_message(body: DialogueMsgIn, author=Depends(current_author)):
     return _dlg_meta(await db.get_dialogue(author["id"]))
 
 
-@app.post("/api/dialogue/inform")
+@app.post("/api/dialogue/inform", dependencies=[Depends(llm_budget)])
 async def dialogue_inform(body: DialogueInformIn, author=Depends(current_author)):
     d = await db.get_dialogue(author["id"])
     if d is None or d["phase"] != "dialogue":
@@ -950,7 +1546,7 @@ async def dialogue_inform(body: DialogueInformIn, author=Depends(current_author)
     return _dlg_meta(await db.get_dialogue(author["id"]))
 
 
-@app.post("/api/dialogue/finalize")
+@app.post("/api/dialogue/finalize", dependencies=[Depends(llm_budget)])
 async def dialogue_finalize(body: DialoguePostIn, author=Depends(current_author)):
     d = await db.get_dialogue(author["id"])
     if d is None or d["phase"] not in ("dialogue", "post"):
@@ -997,6 +1593,60 @@ async def dialogue_continue(author=Depends(current_author)):
     return _dlg_meta(await db.get_dialogue(author["id"]))
 
 
+# ---- handing out accounts: invite codes and per-tester API keys. Behind
+# ADMIN_TOKEN rather than DEV_TOOLS, because these are needed on the live
+# instance while the dev tools stay off.
+class InviteIn(BaseModel):
+    note: str | None = None       # who it is for, so a spent code is traceable
+    count: int = 1
+
+
+@app.post("/api/dev/invites", dependencies=[Depends(admin_only)])
+async def dev_mint_invites(body: InviteIn):
+    if not 1 <= body.count <= 200:
+        raise HTTPException(400, "count: 1..200")
+    codes = []
+    for _ in range(body.count):
+        code = secrets.token_urlsafe(9)
+        if await db.add_invite(code, body.note):
+            codes.append(code)
+    return {"codes": codes}
+
+
+@app.get("/api/dev/invites", dependencies=[Depends(admin_only)])
+async def dev_list_invites():
+    return await db.list_invites()
+
+
+class BalanceIn(BaseModel):
+    balance_usd: float
+
+
+@app.put("/api/dev/authors/{author_id}/balance",
+         dependencies=[Depends(admin_only)])
+async def dev_set_balance(author_id: int, body: BalanceIn):
+    if not 0 <= body.balance_usd <= 1000:
+        raise HTTPException(400, "balance_usd: 0..1000")
+    if not await db.set_balance(author_id, body.balance_usd):
+        raise HTTPException(404, "нет такого автора")
+    return {"ok": True, "author_id": author_id, "balance_usd": body.balance_usd}
+
+
+class ApiKeyIn(BaseModel):
+    api_key: str
+
+
+@app.put("/api/dev/authors/{author_id}/api_key",
+         dependencies=[Depends(admin_only)])
+async def dev_set_api_key(author_id: int, body: ApiKeyIn):
+    key = body.api_key.strip()
+    if not key:
+        raise HTTPException(400, "пустой ключ")
+    if not await db.set_api_key(author_id, key):
+        raise HTTPException(404, "нет такого автора")
+    return {"ok": True, "author_id": author_id}
+
+
 @app.get("/api/dev/dialogues", dependencies=[Depends(admin_only)])
 async def dev_list_dialogues():
     return await db.list_dialogues()
@@ -1011,11 +1661,12 @@ async def dev_get_dialogue(author_id: int):
 
 
 # ---------------------------------------------------------------- AI navigator
-# Pre-publication check (vault: poi-accrual-onboarding, "ИИ-навигатор"): before
-# a draft goes into the graph, the LLM compares it with the topic's POSITIONS
-# and, if the point is already made or the question already answered, suggests
-# looking there first. A suggestion, never a block: fail-open on any error,
-# and the client can always post anyway.
+# ONE navigator (vault: ai-navigator-draft-review). `precheck` is a THIN VIEW of
+# the same `review_draft` pass — a draft compared against a topic's POSITIONS —
+# used by the in-topic position actions (oppose/question), where all we need is
+# the overlap verdict. The reply/new-topic forms use /draft/review for the full
+# pass. Previously each had its own LLM prompt (pools.precheck_draft); they now
+# share the single review prompt. A suggestion, never a block: fail-open.
 class PrecheckIn(BaseModel):
     text: str
 
@@ -1023,7 +1674,8 @@ class PrecheckIn(BaseModel):
 _PRECHECK_NEW = {"verdict": "new", "position_id": None, "note": ""}
 
 
-@app.post("/api/topics/{topic_root_id}/precheck")
+@app.post("/api/topics/{topic_root_id}/precheck",
+          dependencies=[Depends(llm_budget)])
 async def precheck_draft(topic_root_id: int, body: PrecheckIn,
                          author=Depends(current_author)):
     if not body.text.strip():
@@ -1032,8 +1684,10 @@ async def precheck_draft(topic_root_id: int, body: PrecheckIn,
     if not positions:
         return _PRECHECK_NEW              # nothing to compare against yet
     try:
+        # the single navigator, reduced to the position-overlap question
+        # (no parent node / branch: this is a draft vs the topic's positions)
         result = await asyncio.to_thread(
-            pools_mod.precheck_draft, body.text,
+            pools_mod.review_draft, body.text, None, [],
             [{"id": p["id"], "headline": p["headline"], "composed": p["composed"]}
              for p in positions])
     except Exception:
@@ -1123,6 +1777,11 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
     cache_key = (body.connect_to, text)
     result = _review_cache_get(cache_key)
     if result is None:
+        # budget is charged only on a real LLM call — cache hits (the author
+        # flipping the type dropdown on the same draft) stay free. Outside the
+        # try: an exhausted grant must reach the tester as 402, not vanish
+        # into the fail-open below and leave the navigator silently dead.
+        await spend_llm(author)
         try:
             result = await asyncio.to_thread(
                 pools_mod.review_draft, text, parent, branch,
@@ -1197,9 +1856,13 @@ async def _own_exploration_or_403(node_id: int, author):
     return node
 
 
-@app.post("/api/nodes/{node_id}/atomize")
+@app.post("/api/nodes/{node_id}/atomize", dependencies=[Depends(llm_budget)])
 async def atomize_preview(node_id: int, author=Depends(current_author)):
     node = await _own_exploration_or_403(node_id, author)
+    # already atomized -> don't spend a (paid) LLM call proposing a second cut
+    # the confirm would refuse to materialize anyway (idempotent)
+    if await db.atom_children(node_id):
+        return {"groups": [], "already_atomized": True}
     try:
         result = await asyncio.to_thread(pools_mod.atomize, node["text"])
     except Exception as e:
@@ -1226,16 +1889,16 @@ async def atomize_confirm(node_id: int, body: AtomizeConfirmIn,
             raise HTTPException(400, "каждый атом: непустой текст и тип "
                                      "argument/question/detail/proposal")
     root_id = node.get("topic_root_id") or await db.topic_root_of(node_id)
-    created = []
-    for a in body.atoms:
-        nid = await db.add_node(a.text.strip(), author_id=author["id"],
-                                kind=a.type, topic_root_id=root_id,
-                                atom_group=(a.group or "разбор").strip() or "разбор")
-        await db.add_edge(nid, node_id, "atom")
-        created.append(nid)
-    hub.publish({"type": "atoms_created", "node_id": node_id,
-                 "count": len(created)})
-    return {"created": created}
+    atoms = [{"text": a.text.strip(), "kind": a.type,
+              "group": (a.group or "разбор").strip() or "разбор"}
+             for a in body.atoms]
+    # idempotent: a repeat confirm (double-click / retry) returns the atoms
+    # already created instead of duplicating them; all writes are one transaction
+    created, already = await db.add_atoms_once(node_id, root_id, author["id"], atoms)
+    if not already:
+        hub.publish({"type": "atoms_created", "node_id": node_id,
+                     "count": len(created)})
+    return {"created": created, "already_atomized": already}
 
 
 # The append-only event log (audit layer, Layer 1): every argument and every
@@ -1261,6 +1924,36 @@ async def events():
 
 # Serve the front-ends from static/: index.html is the tree UI, graph.html is
 # the force-directed visualization (an optional mode, kept for later).
+#
+# graph.html and dialogue-admin.html are the solo test bench: they carry an
+# author dropdown, "new persona" and "reseed the graph". The server rejects all
+# of that with 403 when DEV_TOOLS is off, but a tester who opens the page still
+# sees admin controls and a screen full of failures. Routes declared before the
+# mount win, so these two are gated here rather than in the pages themselves.
 static_dir = Path(__file__).parent.parent / "static"
+
+
+def _dev_page(name: str):
+    """Serve an admin-only page when DEV_TOOLS is on; 404 otherwise.
+
+    Declared as an explicit route, NOT a catch-all `/{page}`: a catch-all
+    would shadow the mount below and break every other root-level asset
+    (app.js, tree.js, index.html).
+
+    Only dialogue-admin.html lives here — it shows testers' full transcripts.
+    graph.html stays open to everyone (it is a real view of the graph, and the
+    header links to it); its test-only controls are hidden client-side instead,
+    driven by /api/config.
+    """
+    async def handler():
+        if not DEV_TOOLS:
+            raise HTTPException(404)
+        return FileResponse(static_dir / name)
+    return handler
+
+
+app.get("/dialogue-admin.html", include_in_schema=False)(
+    _dev_page("dialogue-admin.html"))
+
 if static_dir.exists():
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")

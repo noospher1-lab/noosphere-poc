@@ -138,7 +138,6 @@ function normalize(data) {
       poi_score: score01,                       // 0..1 for the HUD bar
       confidence: maxIn > 0 ? inD / maxIn : 0,   // centrality proxy (in-degree)
       author: n.author || null,
-      reputation: n.reputation ?? null,
       authorColor: n.author_color || null,
       breakdown: bd,
     };
@@ -648,7 +647,6 @@ function addLiveNode(raw, edge) {
     poi_score: score01,
     confidence: 0.5,
     author: raw.author || null,
-    reputation: raw.reputation ?? null,
     authorColor: raw.author_color || null,
     weight: raw.weight ?? null,
     breakdown: bd,
@@ -908,8 +906,8 @@ addEventListener('keydown', (e) => {
 
 // ---------------------------------------------------------------- panels (add / test)
 // Add-argument form, persona manager and a live vote-weight table. This is the
-// hands-on test surface: post arguments as different personas (each with its
-// own reputation) and watch how reputation reshapes vote weight.
+// hands-on test surface: post arguments as different personas and watch how
+// ARGUMENT PoI (not the author) sets each node's vote weight.
 let argMode = 'branch';        // 'branch' (root) | 'reply' (attach to selected node)
 let argRelation = 'support';
 let newAuthorOpen = false;
@@ -950,12 +948,6 @@ function updateArgTarget() {
 async function loadAuthorsForForm() {
   try { authorsCache = await (await fetch('/api/authors')).json(); }
   catch (e) { console.error('authors load failed', e); return; }
-  const sel = document.getElementById('arg-author');
-  const prev = sel.value;
-  sel.innerHTML = '<option value="">— без автора —</option>' +
-    authorsCache.map((a) => `<option value="${a.id}">${a.name}</option>`).join('');
-  if (prev) sel.value = prev;
-
   // who is reacting (in the HUD reaction row)
   const rx = document.getElementById('rx-author');
   if (rx) {
@@ -974,7 +966,12 @@ async function loadReactions(nodeId) {
   let d;
   try { d = await (await fetch(`/api/reactions/${nodeId}?topic=${currentTopicId}`)).json(); }
   catch (e) { return; }
-  summary.innerHTML = `· 👍 ${d.agree.count} (Σ${d.agree.weight}) · 👎 ${d.disagree.count}`;
+  // Показываем СКОЛЬКО отреагировало и их СРЕДНИЙ PoI, а не сумму: сумма
+  // поощряет накрутку числом. Вес голоса восстановлен (poi-weight-restored,
+  // 2026-07-21), но формула ещё не зафиксирована — витрину не трогаем.
+  // (a sum would read as a PoI-weighted vote). The histogram below shows spread.
+  const avgTag = (s) => s.avg != null ? ` (ср. PoI ${Math.round(s.avg)})` : '';
+  summary.innerHTML = `· 👍 ${d.agree.count}${avgTag(d.agree)} · 👎 ${d.disagree.count}${avgTag(d.disagree)}`;
 
   const maxCount = Math.max(1, ...d.agree.buckets.map((b) => b.count), ...d.disagree.buckets.map((b) => b.count));
   const UNIT = 70;
@@ -1035,7 +1032,7 @@ function renderPoolHud(n) {
   const personas = authorsCache.map((a) => `<option value="${a.id}">${a.name}</option>`).join('');
   document.getElementById('hud-content').innerHTML =
     `<div style="margin-bottom:10px;color:#ece6d8;white-space:pre-wrap;line-height:1.55">${escapeHtml(n.composed || n.label)}</div>`
-    + `<div style="color:var(--bronze);font-size:11px;margin-bottom:8px">👥 поддержали: ${s.count} · ΣPoI ${s.weight}</div>`
+    + `<div style="color:var(--bronze);font-size:11px;margin-bottom:8px">👥 поддержали: ${s.count}${s.avg != null ? ` · средний PoI ${Math.round(s.avg)}` : ''}</div>`
     + `<div style="margin-bottom:12px">${bucketBarsHTML(s, STANCE_COLOR[n.stance] || '#888')}</div>`
     + `<div style="border-top:1px solid rgba(216,175,110,0.18);padding-top:10px;margin-bottom:8px">`
     + `<div style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--bronze);margin-bottom:6px">Действие с позицией</div>`
@@ -1128,9 +1125,6 @@ function _openActionForm(note, chrome) {
   setFormChrome(chrome || DEFAULT_CHROME);
   document.getElementById('addpanel').classList.add('open');
   document.getElementById('tab-add').classList.add('active');
-  document.getElementById('testpanel').classList.remove('open');
-  document.getElementById('arg-mode').style.display = 'none';
-  document.getElementById('arg-reply-opts').style.display = 'none';
   setArgStatus(note, 'busy');
   hud.classList.remove('open');
   document.getElementById('arg-text').focus();
@@ -1151,8 +1145,8 @@ function branchAction(n, planetKind) {
 function clearPendingAction() {
   pendingAction = null;
   setFormChrome(DEFAULT_CHROME);
-  document.getElementById('arg-mode').style.display = '';
-  document.getElementById('arg-reply-opts').style.display = argMode === 'reply' ? 'block' : 'none';
+  document.getElementById('arg-h2').textContent = 'Новая тема';
+  document.getElementById('arg-reply-opts').style.display = 'none';
   setArgStatus('');
 }
 
@@ -1311,27 +1305,38 @@ async function submitArgument() {
   const text = document.getElementById('arg-text').value.trim();
   if (!text) { setArgStatus('Введите текст аргумента', 'err'); return; }
 
-  let authorId = null;
-  if (newAuthorOpen) {
-    const name = document.getElementById('arg-newauthor-name').value.trim();
-    const rep = parseFloat(document.getElementById('arg-newauthor-rep').value);
-    if (!name) { setArgStatus('Имя персоны пусто', 'err'); return; }
-    try {
-      const a = await (await fetch('/api/authors', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name, reputation: isNaN(rep) ? 50 : rep, color: randomColor() }),
-      })).json();
-      authorId = a.id;
-    } catch (e) { setArgStatus('Не удалось создать персону', 'err'); return; }
-  } else {
-    const v = document.getElementById('arg-author').value;
-    authorId = v ? parseInt(v) : null;
-  }
+  // автора ставит сервер по сессии
+  const authorId = null;
 
   const btn = document.getElementById('arg-submit');
 
   // Anchored action: a position move (continue/oppose/question) or a planet
   // branch — posts to the right endpoint, not /api/argument.
+  if (pendingAction && pendingAction.kind === 'reply') {
+    btn.disabled = true;
+    setArgStatus('ИИ оценивает довод…', 'busy');
+    try {
+      const res = await fetch('/api/argument', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text, connect_to: pendingAction.nodeId,
+                               edge_type: argRelation }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(typeof e.detail === 'string' ? e.detail : ('HTTP ' + res.status));
+      }
+      document.getElementById('arg-text').value = '';
+      clearPendingAction();
+      setArgStatus('Добавлено', 'ok');
+      scheduleLiveRefresh();
+    } catch (e) {
+      setArgStatus('Ошибка: ' + e.message, 'err');
+    } finally {
+      btn.disabled = false;
+    }
+    return;
+  }
+
   if (pendingAction) {
     let url, payload = { text, author_id: authorId };
     if (pendingAction.kind === 'branch') {
@@ -1364,13 +1369,9 @@ async function submitArgument() {
     return;
   }
 
-  const body = { text, author_id: authorId };
-  if (argMode === 'reply') {
-    const target = replyTargetId != null ? replyTargetId : selectedId;
-    if (target == null) { setArgStatus('Выбери узел-цель кликом по графу', 'err'); return; }
-    body.connect_to = target;
-    body.edge_type = argRelation;
-  }
+  // Только корень темы: ответ на конкретный узел делается из HUD, где видно,
+  // к чему он прикрепляется. Автор берётся из сессии на сервере.
+  const body = { text, title: text.slice(0, 80) };
 
   btn.disabled = true;
   setArgStatus('LLM оценивает аргумент…', 'busy');
@@ -1396,61 +1397,20 @@ async function submitArgument() {
   }
 }
 
-async function resetGraph() {
-  document.getElementById('test-status').textContent = 'Сброс…';
-  document.getElementById('test-status').className = 'status busy';
-  try {
-    await fetch('/api/reset', { method: 'POST' });
-    currentTopicId = null;
-    await loadGraph('live');   // reload the freshly seeded graph
-    await loadAuthorsForForm();
-    refreshWeights();
-    document.getElementById('test-status').textContent = 'Граф сброшен.';
-    document.getElementById('test-status').className = 'status ok';
-  } catch (e) {
-    document.getElementById('test-status').textContent = 'Ошибка сброса';
-    document.getElementById('test-status').className = 'status err';
-  }
-}
-
 function initPanels() {
   const addPanel = document.getElementById('addpanel');
-  const testPanel = document.getElementById('testpanel');
   const tabAdd = document.getElementById('tab-add');
-  const tabTest = document.getElementById('tab-test');
 
-  const toggle = (panel, tab, other, otherTab) => {
-    const open = panel.classList.toggle('open');
-    tab.classList.toggle('active', open);
-    other.classList.remove('open');
-    otherTab.classList.remove('active');
-    if (open && panel === testPanel) refreshWeights();
-  };
-  tabAdd.onclick = () => { if (pendingAction) clearPendingAction(); toggle(addPanel, tabAdd, testPanel, tabTest); };
-  tabTest.onclick = () => toggle(testPanel, tabTest, addPanel, tabAdd);
-
-  // segmented controls (branch/reply, relation type)
-  document.querySelectorAll('#arg-mode button').forEach((b) => b.onclick = () => {
-    document.querySelectorAll('#arg-mode button').forEach((x) => x.classList.remove('active'));
-    b.classList.add('active');
-    argMode = b.dataset.mode;
-    document.getElementById('arg-reply-opts').style.display = argMode === 'reply' ? 'block' : 'none';
-    updateArgTarget();
-  });
-  document.querySelectorAll('#arg-rel button').forEach((b) => b.onclick = () => {
-    document.querySelectorAll('#arg-rel button').forEach((x) => x.classList.remove('active'));
-    b.classList.add('active');
-    argRelation = b.dataset.rel;
-  });
-
-  document.getElementById('arg-newauthor-toggle').onclick = () => {
-    newAuthorOpen = !newAuthorOpen;
-    document.getElementById('arg-newauthor').style.display = newAuthorOpen ? 'block' : 'none';
-    document.getElementById('arg-author').disabled = newAuthorOpen;
+  // Панель одна: «новая тема». Тест-панель (персоны, веса, reseed) и выбор
+  // «куда добавить» убраны из разметки — это был стенд для соло-разработки,
+  // а не то, что должен видеть участник.
+  tabAdd.onclick = () => {
+    if (pendingAction) clearPendingAction();
+    const open = addPanel.classList.toggle('open');
+    tabAdd.classList.toggle('active', open);
   };
 
   document.getElementById('arg-submit').onclick = submitArgument;
-  document.getElementById('reset-btn').onclick = resetGraph;
   document.getElementById('rx-agree').onclick = () => react('agree');
   document.getElementById('rx-disagree').onclick = () => react('disagree');
 
@@ -1476,17 +1436,22 @@ function initPanels() {
   document.getElementById('pools-refresh').onclick = () => buildPoolGraph(true);
 
   // "Reply to this node" in the HUD: open the add form, pre-targeted at it.
+  document.querySelectorAll('#arg-rel button').forEach((b) => b.onclick = () => {
+    document.querySelectorAll('#arg-rel button').forEach((x) => x.classList.remove('active'));
+    b.classList.add('active');
+    argRelation = b.dataset.rel;
+  });
+
   document.getElementById('hud-reply').onclick = () => {
     if (selectedId == null) return;
+    const target = nodeById.get(selectedId);
+    pendingAction = { kind: 'reply', nodeId: selectedId };
     document.getElementById('addpanel').classList.add('open');
-    document.getElementById('testpanel').classList.remove('open');
     document.getElementById('tab-add').classList.add('active');
-    document.getElementById('tab-test').classList.remove('active');
-    argMode = 'reply';
-    document.querySelectorAll('#arg-mode button').forEach((x) =>
-      x.classList.toggle('active', x.dataset.mode === 'reply'));
+    document.getElementById('arg-h2').textContent = 'Ответ на узел';
     document.getElementById('arg-reply-opts').style.display = 'block';
-    updateArgTarget();
+    setArgStatus('Отвечаешь на: «' + truncate(nodeLabelText(target) || '', 34) + '»', 'busy');
+    hud.classList.remove('open');
     document.getElementById('arg-text').focus();
   };
 

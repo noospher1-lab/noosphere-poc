@@ -34,7 +34,7 @@ def test_user_and_session_flow():
         await db.close_pool()
         await db.init_pool()
         await db.init_db()
-        await db.wipe()
+        await db.wipe(force=True)
 
         uid = await db.add_user("alex_test", auth.hash_password("secret1"), "Алекс", "#fff")
         assert uid is not None

@@ -35,6 +35,97 @@ const ROOT = new Map();     // nodeId -> topic root id (learned while walking do
 const expanded = new Set();
 let selectedId = null;
 
+// ---- hints: contextual tips, toggled from the header, remembered per browser
+let HINTS = localStorage.getItem("noo_hints") !== "off";   // on by default
+function hint(html) {
+  if (!HINTS) return null;
+  const h = el("div", "hint");
+  h.innerHTML = html;
+  return h;
+}
+function appendHint(container, html) {
+  const h = hint(html);
+  if (h) container.appendChild(h);
+}
+function updateHintsBtn() {
+  const b = $("#hintsBtn");
+  if (b) b.textContent = HINTS ? "💡 Подсказки: вкл" : "💡 Подсказки: выкл";
+}
+function toggleHints() {
+  HINTS = !HINTS;
+  localStorage.setItem("noo_hints", HINTS ? "on" : "off");
+  updateHintsBtn();
+  renderTree();
+  if (selectedId != null) selectNode(selectedId);
+  else renderEmptyDetail();
+}
+
+// The empty detail panel doubles as the "how it works" guide when hints are on.
+function renderEmptyDetail() {
+  const d = $("#detail");
+  d.innerHTML = "";
+  d.appendChild(HINTS ? guidePanel() : shortEmpty());
+}
+function shortEmpty() {
+  const e = el("div", "empty");
+  e.innerHTML =
+    "<h3>Выбери обсуждение слева</h3>" +
+    "<p>Каждая ветка — тема. Разворачивай её, чтобы читать аргументы за и " +
+    "против, задавать вопросы и добавлять свои.</p>" +
+    "<p class='muted'>Или начни своё — кнопка «Новая тема» сверху. " +
+    "Подсказки можно выключить кнопкой «💡 Подсказки» вверху.</p>";
+  return e;
+}
+function guidePanel() {
+  const g = el("div", "guide");
+  g.appendChild(el("h3", null, "Как здесь всё устроено"));
+  g.appendChild(el("p", "lead",
+    "Noosphere показывает не «кто победил в споре», а как устроено рассуждение: " +
+    "каждый довод виден отдельно и связан с тем, к чему относится."));
+  const steps = [
+    ["1", "Читай дерево слева",
+      "Верхние ветки — темы, вложенные — ответы. Цветная метка показывает связь " +
+      "с родителем: <b>за</b>, <b>против</b>, <b>уточнение</b>, <b>вопрос</b>."],
+    ["2", "PoI — это качество довода",
+      "PoI оценивает, насколько аргумент проработан: логика, полнота, работа с " +
+      "неопределённостью и с возражениями. Проработанные доводы весят в " +
+      "голосованиях больше — влияние зарабатывается качеством мысли, а не " +
+      "капиталом и не громкостью. Высокий PoI не значит «прав», значит " +
+      "«сделан добросовестно»."],
+    ["3", "Реагируй: ▲ согласен / ▼ не согласен",
+      "Так ты показываешь своё отношение к доводу. Согласие и несогласие — это " +
+      "не оценка качества: сильный довод остаётся сильным, даже когда с ним " +
+      "не согласны."],
+    ["4", "Отвечай или начни тему",
+      "Выбери тип ответа (за/против/уточнение/вопрос) и напиши. Перед публикацией " +
+      "ИИ-навигатор мягко подскажет тип и есть ли уже похожее — но решаешь ты."],
+    ["5", "Позиции — общая карта по теме",
+      "ИИ группирует близкие аргументы в позиции. Их можно поддержать, оспорить, " +
+      "развить или сделать вывод. Если тебя свели не туда — можно выйти в свою " +
+      "отдельную позицию (дословно твоими словами)."],
+    ["6", "Тренажёр рассуждения",
+      "Короткий разговор с ИИ по одному вопросу. Это не экзамен на «правоту»: " +
+      "разговор показывает <b>сильные и слабые стороны твоего рассуждения</b>, " +
+      "чтобы было видно, что стоит подтянуть. Проходить можно с любым мнением."],
+  ];
+  for (const [n, title, body] of steps) {
+    const s = el("div", "step");
+    s.appendChild(el("div", "n", n));
+    const col = el("div");
+    col.appendChild(el("div", "b", title));
+    const p = el("p"); p.innerHTML = body;
+    col.appendChild(p);
+    s.appendChild(col);
+    g.appendChild(s);
+  }
+  const foot = el("p", "muted");
+  foot.style.marginTop = "16px";
+  foot.innerHTML = "Выбери тему слева, чтобы начать. Эти подсказки можно " +
+    "выключить кнопкой «💡 Подсказки» вверху.";
+  g.appendChild(foot);
+  return g;
+}
+
 // ---- auth: the author of every write is the session, not a dropdown
 function renderAuthUI() {
   const u = $("#user");
@@ -45,15 +136,12 @@ function renderAuthUI() {
     if (ME.color) u.style.color = ME.color;
     $("#loginBtn").style.display = "none";
     $("#logoutBtn").style.display = "";
-    // vault: the UI must show "PoI 10 · пройди диалог или аргументируй"
-    if (ME.dialogue_poi == null) {
-      const a = el("a", null, "PoI 10 · пройди диалог PoI ▸");
-      a.href = "/dialogue.html";
-      a.title = "стартовый PoI = 10; пройди диалог или аргументируй, чтобы его поднять";
-      badge.appendChild(a);
-    } else {
-      badge.textContent = "PoI диалога: " + Math.round(ME.dialogue_poi);
-    }
+    // Раньше здесь была вторая ссылка на ту же страницу — рядом со ссылкой
+    // «Тренажёр» в шапке она читалась как две разные кнопки. Вход теперь один,
+    // бейдж только показывает балл.
+    badge.textContent = ME.dialogue_poi == null
+      ? "PoI 10"
+      : "PoI диалога: " + Math.round(ME.dialogue_poi);
   } else {
     u.textContent = "наблюдатель";
     u.style.color = "";
@@ -86,7 +174,11 @@ async function doAuth(path) {
     username: $("#authUser").value.trim(),
     password: $("#authPass").value,
   };
-  if (path.endsWith("register")) body.name = $("#authName").value.trim() || undefined;
+  if (path.endsWith("register")) {
+    body.name = $("#authName").value.trim() || undefined;
+    body.invite = $("#authInvite").value.trim() || undefined;
+    body.email = $("#authEmail").value.trim() || undefined;
+  }
   try {
     ME = await api(path, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -201,7 +293,23 @@ function renderSubtree(container, node, type) {
 function renderTree() {
   const tree = $("#tree");
   tree.innerHTML = "";
-  if (!TOPICS.length) { tree.appendChild(el("div", "muted", "нет тем")); return; }
+  if (HINTS) {
+    const lg = el("div", "legend");
+    lg.append(
+      el("span", "rel root", "тема"),
+      el("span", "rel support", "за"),
+      el("span", "rel refute", "против"),
+      el("span", "rel qualify", "уточн."),
+      el("span", "rel question", "вопрос"),
+      el("span", null, "— как ответ связан с тем, к чему прикреплён"),
+    );
+    tree.appendChild(lg);
+  }
+  if (!TOPICS.length) {
+    tree.appendChild(el("div", "muted",
+      "Пока нет тем. Создай первую кнопкой «Новая тема» сверху."));
+    return;
+  }
   for (const t of TOPICS) renderSubtree(tree, t, "root");
 }
 async function toggleExpand(id) {
@@ -254,27 +362,42 @@ async function selectNode(id) {
     "  ·  #" + node.id
   );
   card.appendChild(meta);
+  appendHint(card, "<b>PoI</b> — насколько довод проработан, а не «правота». " +
+    "Проработанные доводы весят в голосованиях больше.");
   if (node.poi_breakdown && !node.poi_breakdown.seed) card.appendChild(critBreakdown(node.poi_breakdown));
-  d.appendChild(card);
 
-  // atomization: the author of an exploration can cut it into atoms
-  if (node.kind === "exploration" && ME && node.author_id === ME.id)
-    d.appendChild(atomizeCard(node));
-
-  // reactions
-  const rc = el("div", "card");
-  rc.appendChild(el("div", "section-title", "реакции (взвешены по PoI темы)"));
-  const rbody = el("div"); rbody.textContent = "загрузка…";
-  rc.appendChild(rbody);
+  // reactions live INSIDE the argument card, right under the text — not a
+  // separate block. Показываем простые счётчики: формула веса голоса после
+  // poi-weight-restored (2026-07-21) ещё не зафиксирована, и рисовать «Σ PoI»
+  // до этого — значит показывать число, которое потом изменится.
+  const rwrap = el("div");
+  rwrap.style.marginTop = "14px";
+  rwrap.style.paddingTop = "12px";
+  rwrap.style.borderTop = "1px solid var(--line)";
+  const rbody = el("div", "muted"); rbody.textContent = "загрузка…";
+  rwrap.appendChild(rbody);
+  appendHint(rwrap, "Реакция — твоё отношение к доводу. На его PoI она не влияет: " +
+    "качество оценивается по самому рассуждению, а не по числу согласных.");
   const ract = el("div", "actions");
   const agree = el("button", "mini", "▲ согласен");
   const dis = el("button", "mini", "▼ не согласен");
   agree.onclick = () => react(id, root, "agree");
   dis.onclick = () => react(id, root, "disagree");
   ract.append(agree, dis);
-  rc.appendChild(ract);
-  d.appendChild(rc);
+  rwrap.appendChild(ract);
+  card.appendChild(rwrap);
+  d.appendChild(card);
   loadReactions(id, root, rbody);
+
+  // atomization: the author of an exploration can cut it into atoms
+  if (node.kind === "exploration" && ME && node.author_id === ME.id)
+    d.appendChild(atomizeCard(node));
+
+  // position membership (п.10): show the author where their argument landed and
+  // let them reject the composed text they were folded into
+  if ((node.kind || "argument") === "argument" && node.position_id
+      && !node.atom_group && node.position_headline)
+    d.appendChild(positionMembershipCard(node));
 
   // reply form
   d.appendChild(replyForm(id));
@@ -282,7 +405,10 @@ async function selectNode(id) {
   // positions (only for the discussion root)
   if (isRoot) {
     const pc = el("div", "card");
-    pc.appendChild(el("div", "section-title", "позиции (пулы) по теме"));
+    pc.appendChild(el("div", "section-title", "Позиции по теме"));
+    appendHint(pc, "ИИ сводит близкие аргументы в <b>позиции</b> — общую карту " +
+      "мнений по теме. Позицию можно поддержать, оспорить, развить или выйти из " +
+      "неё в свою, если тебя свели не туда.");
     const pbody = el("div"); pbody.textContent = "сборка позиций…";
     pc.appendChild(pbody);
     d.appendChild(pc);
@@ -323,6 +449,48 @@ function critBreakdown(bd) {
 const ATOM_LABEL = { argument: "тезис", question: "вопрос",
                      detail: "дополнение", proposal: "предложение" };
 
+function positionMembershipCard(node) {
+  const card = el("div", "card");
+  const own = node.position_stance === "dissent" || node.dissented;
+  card.appendChild(el("div", "section-title",
+    own ? "твоя отдельная позиция" : "позиция, в которую вошёл аргумент"));
+  card.appendChild(el("div", null, node.position_headline || ""));
+  if (node.position_composed && !own) {
+    const c = el("div", "muted", node.position_composed);
+    c.style.marginTop = "6px";
+    card.appendChild(c);
+  }
+  if (own) {
+    card.appendChild(el("div", "muted",
+      "вынесено в собственную позицию — показывается твоими словами дословно."));
+    return card;
+  }
+  // only the author can dissent from how their own argument was composed
+  if (ME && node.author_id === ME.id) {
+    card.appendChild(el("div", "muted",
+      "это ИИ-композиция пула, включающая твой аргумент. Если она искажает " +
+      "твою мысль — вынеси аргумент в отдельную позицию (дословно)."));
+    const act = el("div", "actions");
+    const btn = el("button", "mini", "не согласен с трактовкой — выйти");
+    btn.onclick = async () => {
+      if (!confirm("Вынести твой аргумент в отдельную позицию? Пул будет " +
+                   "перекомпонован без него.")) return;
+      btn.disabled = true; btn.textContent = "выношу…";
+      try {
+        await api(`/api/nodes/${node.id}/dissent`, { method: "POST" });
+        toast("аргумент вынесен в собственную позицию");
+        selectNode(node.id);
+      } catch (e) {
+        toast("ошибка: " + e.message);
+        btn.disabled = false; btn.textContent = "не согласен с трактовкой — выйти";
+      }
+    };
+    act.appendChild(btn);
+    card.appendChild(act);
+  }
+  return card;
+}
+
 function atomizeCard(node) {
   const card = el("div", "card");
   card.appendChild(el("div", "section-title", "атомизация разбора"));
@@ -344,6 +512,12 @@ function atomizeCard(node) {
       return;
     }
     go.disabled = false; go.textContent = "⚛ предложить заново";
+    if (pre.already_atomized) {
+      go.disabled = true; go.textContent = "разбор уже атомизирован";
+      box.style.display = ""; box.innerHTML = "";
+      box.appendChild(el("div", "muted", "этот разбор уже разбит на атомы"));
+      return;
+    }
     renderAtomPreview(box, node, pre.groups || []);
   };
   act.appendChild(go);
@@ -388,7 +562,9 @@ function renderAtomPreview(box, node, groups) {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ atoms }),
       });
-      toast("создано атомов: " + res.created.length);
+      toast(res.already_atomized
+        ? "разбор уже был атомизирован — дубли не создаются"
+        : "создано атомов: " + res.created.length);
       box.style.display = "none";
       expanded.add(node.id);
       await fetchChildren(node.id);
@@ -423,13 +599,18 @@ function bucketRow(data, cls) {
 async function loadReactions(id, root, target) {
   try {
     const r = await api(`/api/reactions/${id}?topic=${root}`);
+    // простые счётчики — формула веса ещё открыта (poi-weight-restored)
+    if (!r.agree.count && !r.disagree.count) {
+      target.textContent = "Пока нет реакций — будь первым.";
+      return;
+    }
     target.innerHTML = "";
-    const line = el("div", "muted");
-    line.textContent = `за: ${r.agree.count} (Σ PoI ${r.agree.weight}) · против: ${r.disagree.count} (Σ PoI ${r.disagree.weight}) · нетто ${r.net_weight}`;
-    target.appendChild(line);
-    if (r.agree.count) { target.appendChild(el("div", "muted", "поддержка →")); target.appendChild(bucketRow(r.agree, "agree")); }
-    if (r.disagree.count) { target.appendChild(el("div", "muted", "возражение →")); target.appendChild(bucketRow(r.disagree, "disagree")); }
-    if (!r.agree.count && !r.disagree.count) target.appendChild(el("div", "muted", "пока нет реакций"));
+    const a = el("span"); a.style.color = "var(--green)";
+    a.textContent = `▲ ${r.agree.count} согласны`;
+    const sep = el("span", "muted", "   ·   ");
+    const dsp = el("span"); dsp.style.color = "var(--red)";
+    dsp.textContent = `▼ ${r.disagree.count} не согласны`;
+    target.append(a, sep, dsp);
   } catch (e) { target.textContent = "ошибка: " + e.message; }
 }
 
@@ -492,7 +673,15 @@ async function reviewDraft(payload) {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
     });
-  } catch (_) { return null; }
+  } catch (e) {
+    // Still fail-open — a dead navigator never blocks publishing. But an
+    // exhausted grant is the one error the author can act on, so it gets
+    // said out loud instead of looking like the AI just went quiet.
+    const msg = String(e && e.message || "");
+    if (msg.includes("бюджет") || msg.includes("исчерпан"))
+      toast("ИИ-бюджет исчерпан — навигатор отключён, публиковать можно");
+    return null;
+  }
 }
 
 function reviewHasNotes(rev) {
@@ -598,9 +787,12 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit, s
 
 function replyForm(parentId) {
   const card = el("div", "card");
-  card.appendChild(el("div", "section-title", "ответить (создаёт дочерний узел)"));
+  card.appendChild(el("div", "section-title", "Ответить"));
+  appendHint(card, "Выбери, как твоя реплика относится к этому доводу " +
+    "(за / против / уточнение / вопрос), и напиши её. Перед публикацией " +
+    "ИИ-навигатор мягко подскажет — но решаешь ты.");
   const ta = el("textarea");
-  ta.placeholder = "аргумент…";
+  ta.placeholder = "Твой аргумент…";
   card.appendChild(ta);
   const act = el("div", "actions");
   const typeSel = el("select");
@@ -684,10 +876,10 @@ function newTopicForm() {
   const d = $("#detail");
   d.innerHTML = "";
   const card = el("div", "card");
-  card.appendChild(el("div", "section-title", "новая тема (корень обсуждения)"));
+  card.appendChild(el("div", "section-title", "Новая тема"));
   const titleIn = el("input");
   titleIn.type = "text";
-  titleIn.placeholder = "название темы — коротко, одним предложением";
+  titleIn.placeholder = "Название темы — коротко, одним предложением";
   titleIn.style.width = "100%";
   titleIn.style.marginBottom = "8px";
   card.appendChild(titleIn);
@@ -702,7 +894,7 @@ function newTopicForm() {
   kindSel.appendChild(new Option("разбор", "exploration"));
   const send = el("button", "primary", "создать тему");
   const cancel = el("button", "mini", "отмена");
-  cancel.onclick = () => { d.innerHTML = '<div class="muted">выбери узел слева</div>'; };
+  cancel.onclick = () => { renderEmptyDetail(); };
   const hint = el("div");                       // the navigator's suggestion box
   hint.style.display = "none";
 
@@ -777,8 +969,13 @@ function positionCard(p, root, byId, links) {
   head.appendChild(el("b", null, p.headline || "(без заголовка)"));
   box.appendChild(head);
   if (p.composed) box.appendChild(el("div", "muted", p.composed));
+  if (p.author) box.appendChild(el("div", "muted", "✍ вывод подписал: " + p.author));
   const sup = p.support;
-  box.appendChild(el("div", "muted", `сторонников: ${sup.count} · Σ PoI ${sup.weight}`));
+  // читаем группу, а не суммируем: показываем СКОЛЬКО поддержало позицию
+  // and their AVERAGE PoI (not the sum — a sum would smuggle "more heads = more
+  // power" back in). The little histogram shows the spread.
+  const avg = sup.avg != null ? "средний PoI " + Math.round(sup.avg) : "PoI ещё считается";
+  box.appendChild(el("div", "muted meta-poi", `сторонников: ${sup.count} · ${avg}`));
   if (sup.count) box.appendChild(bucketRow(sup, "agree"));
 
   // inter-position links, both directions (oppose / conclusion)
@@ -802,24 +999,29 @@ function positionCard(p, root, byId, links) {
   const q = el("button", "mini", "вопрос");
   q.onclick = () => positionText(p.id, root, "question", "острый вопрос к позиции:");
   act.append(vote, cont, opp, q);
+  const cbox = el("div"); cbox.style.display = "none";
   if (p.stance !== "conclusion") {
+    // two steps (п.9): ИИ ПРЕДЛАГАЕТ вывод (ничего не пишет), автор правит и
+    // подписывает — вывод входит в карту как ЕГО оценённый аргумент, не как
+    // анонимный ИИ-текст
     const concl = el("button", "mini", "сделать вывод");
     concl.onclick = async () => {
       if (!requireAuth()) return;
-      if (!confirm("ИИ синтезирует вывод из позиции и её веток. Продолжить?")) return;
-      concl.disabled = true; concl.textContent = "ИИ делает вывод…";
-      try {
-        await api(`/api/positions/${p.id}/conclude`, { method: "POST" });
-        toast("вывод создан");
-        selectNode(root);   // re-renders positions; no new tree node appears
-      } catch (e) {
+      concl.disabled = true; concl.textContent = "ИИ предлагает вывод…";
+      let pre;
+      try { pre = await api(`/api/positions/${p.id}/conclude`, { method: "POST" }); }
+      catch (e) {
         toast("ошибка: " + e.message);
         concl.disabled = false; concl.textContent = "сделать вывод";
+        return;
       }
+      concl.disabled = false; concl.textContent = "предложить заново";
+      renderConcludeDraft(cbox, p, root, pre);
     };
     act.append(concl);
   }
   box.appendChild(act);
+  box.appendChild(cbox);
 
   if (p.planets && p.planets.length) {
     const pl = el("div", "muted"); pl.style.marginTop = "6px";
@@ -827,6 +1029,38 @@ function positionCard(p, root, byId, links) {
     box.appendChild(pl);
   }
   return box;
+}
+
+function renderConcludeDraft(box, p, root, pre) {
+  box.style.display = ""; box.innerHTML = "";
+  box.appendChild(el("div", "muted",
+    "ИИ предложил вывод — отредактируй и подпиши своим именем; он войдёт в " +
+    "карту как ТВОЙ оценённый аргумент, а не как анонимный ИИ-текст:"));
+  const hl = el("input"); hl.type = "text";
+  hl.value = pre.headline || ""; hl.placeholder = "заголовок вывода";
+  hl.style.width = "100%"; hl.style.margin = "6px 0";
+  const ta = el("textarea"); ta.value = pre.composed || ""; ta.rows = 4;
+  box.appendChild(hl); box.appendChild(ta);
+  const act = el("div", "actions");
+  const sign = el("button", "primary", "подписать и опубликовать");
+  sign.onclick = async () => {
+    const composed = ta.value.trim();
+    if (!composed) { toast("вывод пустой"); return; }
+    sign.disabled = true; sign.textContent = "публикую…";
+    try {
+      await api(`/api/positions/${p.id}/conclude/confirm`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ headline: hl.value.trim(), composed }),
+      });
+      toast("вывод опубликован — PoI оценивается в фоне…");
+      selectNode(root);
+    } catch (e) {
+      toast("ошибка: " + e.message);
+      sign.disabled = false; sign.textContent = "подписать и опубликовать";
+    }
+  };
+  act.appendChild(sign);
+  box.appendChild(act);
 }
 
 async function positionVote(pid, root, stance) {
@@ -896,6 +1130,7 @@ function listenEvents() {
 
 // ---- boot
 $("#refresh").onclick = () => refreshVisible();
+$("#hintsBtn").onclick = () => toggleHints();
 $("#newTopic").onclick = () => newTopicForm();
 $("#loginBtn").onclick = () => openAuth();
 $("#logoutBtn").onclick = () => doLogout();
@@ -907,6 +1142,8 @@ $("#authPass").addEventListener("keydown", (e) => {
 });
 (async function boot() {
   try {
+    updateHintsBtn();
+    renderEmptyDetail();
     await loadMe();
     await loadTopics();
     listenEvents();

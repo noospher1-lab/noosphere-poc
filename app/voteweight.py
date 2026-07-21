@@ -31,6 +31,21 @@ import math
 DEFAULT_STAKE = 100.0
 
 
+def carries_vote_weight(node):
+    """
+    Only a taken POSITION carries vote weight: a plain argument node.
+
+    Questions assert nothing, details/qualifications supplement a claim rather
+    than make one, explorations are unsettled (the author took no side), and
+    atoms are points still UNDER investigation (atom_group set) — none of these
+    are votes, even though each is scored on its own rubric. The positions layer
+    is likewise built from arguments only, so this keeps vote weight consistent
+    with what actually clusters into decisions.
+    """
+    return (node.get("kind") or "argument") == "argument" \
+        and not node.get("atom_group")
+
+
 def vote_weight(poi_score, stake=DEFAULT_STAKE):
     if poi_score is None:
         return 0.0
@@ -50,7 +65,9 @@ def compute_graph_weights(graph):
                 "text": n["text"],
                 "poi_score": n["poi_score"],
                 "author": n.get("author"),
-                "weight": vote_weight(n["poi_score"]),
+                "kind": n.get("kind") or "argument",
+                # non-position kinds are scored on their own rubric but do not vote
+                "weight": vote_weight(n["poi_score"]) if carries_vote_weight(n) else 0.0,
             }
         )
     return out

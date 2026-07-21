@@ -5,19 +5,54 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>Noosphere — Argument Graph</title>
 <style>
+  /* Одна палитра с деревом обсуждений (index.html): мягче чистого чёрного,
+     Inter для текста и JetBrains Mono для чисел и меток. Раньше здесь была
+     своя, более «терминальная» схема — из-за неё две страницы одного продукта
+     выглядели как два разных. */
   :root {
-    --bg: #05060a;
-    --ivory: #ece6d8;
-    --bronze: #d8af6e;
-    --green: #57d98a;
-    --red: #e25b56;
-    --orange: #e2933f;
-    --blue: #5aa9e6;
+    --bg: #0e1016;
+    --panel: #161922;
+    --panel2: #1d212c;
+    --line: #272c39;
+    --line2: #333a49;
+    --ivory: #edeef2;
+    --dim: #9aa0b0;
+    --dim2: #6f7688;
+    --bronze: #e0b878;
+    --green: #5fd18f;
+    --red: #ec6b66;
+    --orange: #e8a04e;
+    --blue: #66b0ea;
+    --violet: #bf98ff;
+    --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
     --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+    --header-h: 49px;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
-  #app { position: fixed; inset: 0; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden;
+    font-family: var(--sans); color: var(--ivory); }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  /* Канвас начинается под шапкой, а не с самого верха окна. */
+  #app { position: fixed; top: var(--header-h); left: 0; right: 0; bottom: 0; }
+
+  /* ---- шапка: тот же блок, что в дереве обсуждений ---- */
+  header {
+    position: fixed; top: 0; left: 0; right: 0; height: var(--header-h); z-index: 20;
+    display: flex; align-items: center; gap: 14px;
+    padding: 11px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  #logoCanvas { width: 30px; height: 30px; display: block; flex: none; }
+  .header-word { font-family: var(--mono); font-weight: 500; letter-spacing: .24em;
+    font-size: 14px; text-transform: uppercase; }
+  .header-word .noo { color: var(--blue); }
+  .header-word .sphere { color: var(--bronze); }
+  header .tagline { color: var(--dim2); font-size: 13px; }
+  header .spacer { flex: 1; }
+  header a { font-size: 13px; color: var(--dim); }
+  header a:hover { color: var(--blue); }
+  header .muted { color: var(--dim); font-size: 13px; }
+  @media (max-width: 760px) { header .tagline { display: none; } }
   canvas { display: block; }
 
   /* ---- edge labels (CSS overlay, billboarded via JS) ---- */
@@ -62,30 +97,29 @@
 
   /* ---- variant switcher ---- */
   #variants {
-    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    position: fixed; top: calc(var(--header-h) + 12px); left: 50%; transform: translateX(-50%);
     display: flex; gap: 6px; z-index: 5;
     font-family: var(--mono);
   }
   #variants button {
-    font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
-    color: #8a8576; background: rgba(12,14,20,0.82); cursor: pointer;
-    border: 1px solid rgba(216,175,110,0.22); border-radius: 3px;
-    padding: 6px 11px; backdrop-filter: blur(6px); transition: all .2s;
+    font-family: var(--sans); font-size: 12px;
+    color: var(--dim); background: var(--panel2); cursor: pointer;
+    border: 1px solid var(--line2); border-radius: 6px;
+    padding: 6px 11px; transition: border-color .12s, background .12s, color .12s;
   }
-  #variants button:hover { color: var(--ivory); border-color: rgba(216,175,110,0.4); }
-  #variants button.active { color: #05060a; background: var(--bronze); border-color: var(--bronze); }
+  #variants button:hover { color: var(--ivory); border-color: var(--bronze); }
+  #variants button.active { color: var(--bronze); background: #2a2110; border-color: var(--bronze); font-weight: 600; }
 
   /* ---- topic (discussion) switcher — stub for the future topics menu ---- */
   #topics {
-    position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
+    position: fixed; top: calc(var(--header-h) + 12px); left: 50%; transform: translateX(-50%);
     display: flex; align-items: center; gap: 8px; z-index: 5; font-family: var(--mono);
   }
-  #topics .lbl { font-size: 9px; letter-spacing: 0.22em; text-transform: uppercase; color: #6b6658; }
+  #topics .lbl { font-size: 13px; color: var(--dim2); }
   #topics select {
-    font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em;
-    color: var(--ivory); background: rgba(12,14,20,0.82); cursor: pointer;
-    border: 1px solid rgba(216,175,110,0.3); border-radius: 3px; padding: 5px 9px;
-    backdrop-filter: blur(6px);
+    font-family: var(--sans); font-size: 13px;
+    color: var(--ivory); background: var(--panel2); cursor: pointer;
+    border: 1px solid var(--line2); border-radius: 6px; padding: 6px 10px;
   }
 
   /* ---- PoI lens tier legend ---- */
@@ -99,29 +133,30 @@
 
   /* ---- HUD panel ---- */
   #hud {
-    position: fixed; top: 18px; right: 18px; width: 300px; max-width: calc(100vw - 36px);
-    font-family: var(--mono); color: var(--ivory);
-    background: linear-gradient(180deg, rgba(12,14,20,0.92), rgba(8,9,14,0.92));
-    border: 1px solid rgba(216,175,110,0.28); border-radius: 4px;
-    padding: 16px 16px 14px; backdrop-filter: blur(6px);
+    position: fixed; top: calc(var(--header-h) + 12px); right: 18px; width: 300px; max-width: calc(100vw - 36px);
+    font-family: var(--sans); color: var(--ivory);
+    background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 18px 14px;
     transform: translateX(calc(100% + 30px)); transition: transform .35s cubic-bezier(.2,.8,.2,1);
   }
   #hud.open { transform: translateX(0); }
-  #hud .eyebrow { font-size: 9px; letter-spacing: 0.28em; color: var(--bronze); text-transform: uppercase; }
-  #hud h1 { font-size: 15px; line-height: 1.35; margin: 8px 0 10px; font-weight: 500; }
-  #hud .body { font-size: 11px; line-height: 1.55; color: #c4bfb2; margin-bottom: 14px;
+  #hud .eyebrow { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
+    color: var(--dim2); text-transform: uppercase; font-weight: 600; }
+  #hud h1 { font-size: 17px; line-height: 1.35; margin: 6px 0 10px; font-weight: 600; }
+  #hud .body { font-size: 14px; line-height: 1.6; color: var(--dim); margin-bottom: 14px;
     max-height: 56vh; overflow-y: auto; white-space: pre-wrap; padding-right: 4px; }
   #hud .body::-webkit-scrollbar { width: 6px; }
   #hud .body::-webkit-scrollbar-thumb { background: rgba(216,175,110,0.3); border-radius: 3px; }
   #hud .meter { margin-bottom: 10px; }
-  #hud .meter .row { display: flex; justify-content: space-between; font-size: 10px; letter-spacing: .08em; margin-bottom: 4px; }
-  #hud .meter .row .k { color: var(--bronze); text-transform: uppercase; }
-  #hud .meter .row .v { color: var(--ivory); font-variant-numeric: tabular-nums; }
-  #hud .track { height: 4px; background: rgba(255,255,255,0.07); border-radius: 2px; overflow: hidden; }
+  #hud .meter .row { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+  #hud .meter .row .k { color: var(--dim2); }
+  #hud .meter .row .v { color: var(--ivory); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  #hud .track { height: 7px; background: var(--panel2); border-radius: 4px; overflow: hidden; }
   #hud .fill { height: 100%; width: 0; background: var(--bronze); transition: width .5s ease; }
   #hud .fill.poi.up { background: var(--green); }
   #hud .fill.poi.down { background: var(--red); }
-  #hud .close { position: absolute; top: 10px; right: 12px; cursor: pointer; color: #6b6658; font-size: 14px; line-height: 1; }
+  #hud .close { position: absolute; top: 10px; right: 12px; cursor: pointer; color: var(--dim2); font-size: 15px; line-height: 1; }
   #hud .close:hover { color: var(--ivory); }
 
   /* ---- reactions (PoI-weighted votes on a node) ---- */
@@ -147,13 +182,7 @@
   .rx-empty { font-size: 9px; color: #6b6658; }
 
   /* ---- legend / title ---- */
-  #brand {
-    position: fixed; top: 18px; left: 20px; font-family: var(--mono); color: var(--ivory);
-    pointer-events: none;
-  }
-  #brand .name { font-size: 13px; letter-spacing: 0.34em; text-transform: uppercase; }
-  #brand .name b { color: var(--bronze); font-weight: 500; }
-  #brand .sub { font-size: 9px; letter-spacing: 0.18em; color: #6b6658; margin-top: 4px; }
+
 
   #legend {
     position: fixed; bottom: 16px; left: 20px; font-family: var(--mono);
@@ -174,56 +203,59 @@
 
   /* ---- left toolbar + slide-in panels (add argument / test) ---- */
   #tools {
-    position: fixed; top: 64px; left: 20px; z-index: 6;
+    position: fixed; top: calc(var(--header-h) + 58px); left: 20px; z-index: 6;
     display: flex; flex-direction: column; gap: 6px; font-family: var(--mono);
   }
   #tools button {
-    font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
-    color: #8a8576; background: rgba(12,14,20,0.82); cursor: pointer;
-    border: 1px solid rgba(216,175,110,0.22); border-radius: 3px;
-    padding: 6px 11px; backdrop-filter: blur(6px); transition: all .2s; text-align: left;
+    font-family: var(--sans); font-size: 12px;
+    color: var(--dim); background: var(--panel2); cursor: pointer;
+    border: 1px solid var(--line2); border-radius: 6px;
+    padding: 7px 12px; transition: border-color .12s, background .12s, color .12s; text-align: left;
   }
-  #tools button:hover { color: var(--ivory); border-color: rgba(216,175,110,0.4); }
-  #tools button.active { color: #05060a; background: var(--bronze); border-color: var(--bronze); }
+  #tools button:hover { color: var(--ivory); border-color: var(--bronze); }
+  #tools button.active { color: var(--bronze); background: #2a2110; border-color: var(--bronze); font-weight: 600; }
 
   .panel {
-    position: fixed; top: 64px; left: 132px; width: 290px; max-width: calc(100vw - 152px);
-    max-height: calc(100vh - 96px); overflow-y: auto;
-    font-family: var(--mono); color: var(--ivory); z-index: 6;
-    background: linear-gradient(180deg, rgba(12,14,20,0.94), rgba(8,9,14,0.94));
-    border: 1px solid rgba(216,175,110,0.28); border-radius: 4px;
-    padding: 14px; backdrop-filter: blur(6px);
+    position: fixed; top: calc(var(--header-h) + 58px); left: 132px; width: 290px; max-width: calc(100vw - 152px);
+    max-height: calc(100vh - var(--header-h) - 96px); overflow-y: auto;
+    font-family: var(--sans); color: var(--ivory); z-index: 6;
+    background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 18px;
     transform: translateX(-12px); opacity: 0; pointer-events: none; transition: all .3s;
   }
   .panel.open { transform: translateX(0); opacity: 1; pointer-events: auto; }
-  .panel h2 { font-size: 10px; letter-spacing: 0.22em; color: var(--bronze);
-    text-transform: uppercase; margin: 0 0 10px; font-weight: 500; }
-  .panel h3 { font-size: 9px; letter-spacing: 0.18em; color: #8a8576;
-    text-transform: uppercase; margin: 14px 0 6px; font-weight: 500; }
-  .panel label { display: block; font-size: 9px; letter-spacing: 0.12em; color: #8a8576;
-    text-transform: uppercase; margin: 8px 0 4px; }
+  .panel h2 { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
+    color: var(--dim2); text-transform: uppercase; margin: 0 0 12px; font-weight: 600; }
+  .panel h3 { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
+    color: var(--dim2); text-transform: uppercase; margin: 16px 0 8px; font-weight: 600; }
+  .panel label { display: block; font-size: 12px; color: var(--dim);
+    margin: 10px 0 4px; }
   .panel textarea, .panel select, .panel input[type=text], .panel input[type=number] {
-    width: 100%; font-family: var(--mono); font-size: 11px; color: var(--ivory);
-    background: rgba(5,6,10,0.6); border: 1px solid rgba(216,175,110,0.22);
-    border-radius: 3px; padding: 7px 8px; box-sizing: border-box;
+    width: 100%; font-family: var(--sans); font-size: 14px; color: var(--ivory);
+    background: var(--panel2); border: 1px solid var(--line2);
+    border-radius: 6px; padding: 8px 10px; box-sizing: border-box;
   }
   .panel textarea { resize: vertical; min-height: 64px; }
   .panel .seg { display: flex; gap: 4px; margin-top: 4px; }
   .panel .seg button {
-    flex: 1; font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em;
-    color: #8a8576; background: rgba(5,6,10,0.6); cursor: pointer;
-    border: 1px solid rgba(216,175,110,0.22); border-radius: 3px; padding: 6px 4px;
-    transition: all .2s;
+    flex: 1; font-family: var(--sans); font-size: 12px;
+    color: var(--dim); background: var(--panel2); cursor: pointer;
+    border: 1px solid var(--line2); border-radius: 6px; padding: 7px 4px;
+    transition: border-color .12s, background .12s, color .12s;
   }
-  .panel .seg button.active { color: #05060a; background: var(--bronze); border-color: var(--bronze); }
+  .panel .seg button.active { color: var(--bronze); background: #2a2110;
+    border-color: var(--bronze); font-weight: 600; }
   .panel .primary {
-    width: 100%; margin-top: 12px; font-family: var(--mono); font-size: 11px;
-    letter-spacing: 0.1em; color: #05060a; background: var(--bronze); cursor: pointer;
-    border: none; border-radius: 3px; padding: 9px; transition: opacity .2s;
+    width: 100%; margin-top: 14px; font-family: var(--sans); font-size: 14px;
+    color: var(--bronze); background: #2a2110; cursor: pointer; font-weight: 600;
+    border: 1px solid var(--bronze); border-radius: 6px; padding: 10px;
+    transition: background .12s;
   }
+  .panel .primary:hover:not(:disabled) { background: #342815; }
   .panel .primary:disabled { opacity: 0.5; cursor: default; }
-  .panel .hint { font-size: 9px; color: #6b6658; margin-top: 6px; line-height: 1.5; }
-  .panel .status { font-size: 10px; margin-top: 8px; min-height: 13px; }
+  .panel .hint { font-size: 12px; color: var(--dim2); margin-top: 8px; line-height: 1.55; }
+  .panel .status { font-size: 12px; margin-top: 8px; min-height: 15px; }
   .panel .status.err { color: var(--red); }
   .panel .status.ok { color: var(--green); }
   .panel .status.busy { color: var(--bronze); }
@@ -277,10 +309,15 @@
 <body>
   <div id="app"></div>
 
-  <div id="brand">
-    <div class="name">NOO<b>SPHERE</b></div>
-    <div class="sub">ДИАЛОГ С ИИ · ГРАФ · ОСЬ ВРЕМЕНИ</div>
-  </div>
+  <header>
+    <canvas id="logoCanvas" width="88" height="88" aria-hidden="true"></canvas>
+    <span class="header-word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
+    <span class="tagline">граф аргументов</span>
+    <span class="spacer"></span>
+    <a href="/" title="Дерево обсуждений — основной режим чтения">← Дерево</a>
+    <a href="/dialogue.html" title="Разговор с ИИ по одному вопросу">Тренажёр ▸</a>
+    <a href="/profile.html" title="Мой кабинет — вклад в граф и остаток на счёте">Кабинет ▸</a>
+  </header>
 
   <div id="topics">
     <span class="lbl">Обсуждение</span>
@@ -328,8 +365,7 @@
 
   <!-- left toolbar -->
   <div id="tools">
-    <button id="tab-add">+ Аргумент</button>
-    <button id="tab-test">Тест-панель</button>
+    <button id="tab-add">+ Новая тема</button>
     <button id="tab-lens">Линза PoI</button>
     <button id="tab-pools">Пулы (ИИ)</button>
   </div>
@@ -341,27 +377,17 @@
     <span><i style="background:#555a66"></i>нет данных</span>
   </div>
 
-  <!-- add-argument panel -->
+  <!-- Новая тема. Только корень: «ответ на узел» отсюда убран — на графе не
+       видно, к какому именно узлу прикрепляется ответ, и выбор читался как
+       вопрос без ответа. Отвечать на конкретный узел можно из HUD («ответить
+       на этот узел») и из дерева обсуждений, где родитель виден. -->
   <div id="addpanel" class="panel">
-    <h2 id="arg-h2">Добавить аргумент</h2>
-    <label>Текст аргумента</label>
+    <h2 id="arg-h2">Новая тема</h2>
+    <label>Текст темы</label>
     <textarea id="arg-text" placeholder="Сформулируй тезис…"></textarea>
 
-    <label>Автор (персона)</label>
-    <select id="arg-author"></select>
-    <button id="arg-newauthor-toggle" class="seg" style="margin-top:6px;display:block;width:100%;cursor:pointer">+ новая персона</button>
-    <div id="arg-newauthor" style="display:none">
-      <label>Имя</label>
-      <input type="text" id="arg-newauthor-name" placeholder="Имя персоны" />
-      <label>Репутация (0–100)</label>
-      <input type="number" id="arg-newauthor-rep" min="0" max="100" value="50" />
-    </div>
-
-    <label>Куда добавить</label>
-    <div class="seg" id="arg-mode">
-      <button data-mode="branch" class="active">Новая ветка</button>
-      <button data-mode="reply">Ответ на узел</button>
-    </div>
+    <!-- Тип связи нужен только когда отвечаешь на конкретный узел из HUD:
+         там цель названа по имени, в отличие от прежнего «ответ на узел». -->
     <div id="arg-reply-opts" style="display:none">
       <label>Тип связи</label>
       <div class="seg" id="arg-rel">
@@ -370,23 +396,12 @@
         <button data-rel="qualify">уточнение</button>
         <button data-rel="question">вопрос</button>
       </div>
-      <div class="hint" id="arg-target">Цель: выбери узел кликом по графу.</div>
     </div>
 
     <button id="arg-submit" class="primary">Оценить и добавить</button>
     <div class="status" id="arg-status"></div>
-    <div class="hint" id="arg-hint">PoI аргумента ставит LLM (нужен ANTHROPIC_API_KEY). Вес = качество самого аргумента.</div>
-  </div>
-
-  <!-- test panel: personas + live weights + reset -->
-  <div id="testpanel" class="panel">
-    <h2>Тест-режим</h2>
-    <h3>PoI персон · текущая тема</h3>
-    <div id="authors-list"></div>
-    <h3>Вес аргументов в теме</h3>
-    <div id="weights-list"></div>
-    <button id="reset-btn" class="primary" style="background:transparent;color:var(--bronze);border:1px solid rgba(216,175,110,0.4)">Сбросить граф (reseed)</button>
-    <div class="status" id="test-status"></div>
+    <div class="hint" id="arg-hint">PoI ставит ИИ по качеству проработки довода.
+      Автор — твой аккаунт.</div>
   </div>
 
   <!-- pools (Layer 2): AI-composed positions for the user-facing reading view -->
@@ -402,5 +417,6 @@
   </div>
 
   <script type="module" src="./app.js"></script>
+<script src="/logo.js"></script>
 </body>
 </html>

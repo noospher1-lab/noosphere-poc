@@ -12,7 +12,10 @@ sleep 1
 setsid nohup uvicorn app.main:app --port 8000 > uvicorn.log 2>&1 < /dev/null &
 disown 2>/dev/null
 
-for i in 1 2 3 4 5 6; do
+# 20 tries, not 6: startup (pool + schema migrations) regularly takes longer
+# than 6s, and the old window reported a false "не поднялся" over a server
+# that was in fact coming up fine.
+for i in $(seq 20); do
   sleep 1
   curl -s -o /dev/null http://localhost:8000/ && { ok=1; break; }
 done

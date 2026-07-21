@@ -17,13 +17,12 @@ import asyncio
 
 from . import db
 
-# Test personas. `reputation` here is only a lossy global label; real influence
-# is per-topic (seeded below). (name, reputation, color)
+# Test personas. Real influence is per-topic PoI (seeded below). (name, color)
 AUTHORS = [
-    ("Профессор", 75, "#b98cff"),
-    ("Алекс",     68, "#d8af6e"),
-    ("Студент",   60, "#5aa9e6"),
-    ("Тролль",    20, "#e25b56"),
+    ("Профессор", "#b98cff"),
+    ("Алекс",     "#d8af6e"),
+    ("Студент",   "#5aa9e6"),
+    ("Тролль",    "#e25b56"),
 ]
 
 # Each topic is one self-contained discussion. nodes[0] is the root (proposal);
@@ -75,7 +74,7 @@ async def _seed():
     """Wipe and re-seed. Assumes the pool + schema are already up."""
     await db.wipe()
 
-    author_ids = [await db.add_author(name, rep, color) for name, rep, color in AUTHORS]
+    author_ids = [await db.add_author(name, color) for name, color in AUTHORS]
 
     n_nodes = n_edges = 0
     for topic in TOPICS:

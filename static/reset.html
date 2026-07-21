@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noosphere — Новый пароль</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg:#0e1016; --panel:#161922; --panel2:#1d212c; --line:#272c39;
+    --ivory:#edeef2; --dim:#9aa0b0; --dim2:#6f7688; --bronze:#e0b878;
+    --green:#5fd18f; --red:#ec6b66; --blue:#66b0ea;
+    --sans:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg); color:var(--ivory);
+    font-family:var(--sans); font-size:15px; line-height:1.5; }
+  a { color:var(--blue); text-decoration:none; }
+  #wrap { max-width:420px; margin:0 auto; padding:12svh 18px; }
+  .word { font-family:var(--mono); letter-spacing:.24em; font-size:14px;
+    text-transform:uppercase; margin-bottom:26px; }
+  .word .noo { color:var(--blue); } .word .sphere { color:var(--bronze); }
+  h1 { font-size:20px; font-weight:600; margin:0 0 6px; }
+  p.lead { color:var(--dim); margin:0 0 18px; }
+  input { width:100%; padding:11px 13px; margin:7px 0; border-radius:8px;
+    border:1px solid var(--line); background:var(--panel2); color:var(--ivory);
+    font-family:var(--sans); font-size:15px; }
+  button { width:100%; padding:12px; margin-top:10px; border-radius:8px;
+    border:1px solid var(--bronze); background:#2a2110; color:var(--bronze);
+    font-weight:600; font-size:15px; cursor:pointer; }
+  button:hover { background:#342815; }
+  button:disabled { opacity:.5; cursor:default; }
+  .msg { padding:11px 14px; border-radius:8px; margin:14px 0; font-size:14px; }
+  .msg.err { background:rgba(236,107,102,.1); border:1px solid rgba(236,107,102,.35); color:#ffb3b0; }
+  .msg.ok { background:rgba(95,209,143,.1); border:1px solid rgba(95,209,143,.35); color:#9ae7bd; }
+  .hidden { display:none; }
+  .foot { margin-top:20px; color:var(--dim2); font-size:13px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div class="word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></div>
+
+  <div id="msg" class="msg hidden"></div>
+
+  <!-- со ссылкой из письма: задать новый пароль -->
+  <div id="setForm" class="hidden">
+    <h1>Новый пароль</h1>
+    <p class="lead">Придумай пароль от 8 символов. Все открытые сессии на этом
+      аккаунте будут закрыты.</p>
+    <input type="password" id="pw1" placeholder="Новый пароль" autocomplete="new-password" />
+    <input type="password" id="pw2" placeholder="Ещё раз" autocomplete="new-password" />
+    <button id="setBtn">Сохранить</button>
+  </div>
+
+  <!-- без ссылки: запросить её -->
+  <div id="askForm" class="hidden">
+    <h1>Восстановить доступ</h1>
+    <p class="lead">Укажи почту, которую вводил при регистрации — пришлём ссылку
+      для смены пароля.</p>
+    <input type="email" id="email" placeholder="почта" autocomplete="email" />
+    <button id="askBtn">Прислать ссылку</button>
+  </div>
+
+  <div class="foot"><a href="/">← к обсуждениям</a></div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const token = new URLSearchParams(location.search).get("token");
+
+function show(kind, text) {
+  const m = $("#msg");
+  m.className = "msg " + kind;
+  m.textContent = text;
+  m.classList.remove("hidden");
+}
+
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  let data = null;
+  try { data = await r.json(); } catch (_) { /* пустой ответ */ }
+  if (!r.ok) throw new Error((data && data.detail) || ("ошибка " + r.status));
+  return data;
+}
+
+if (token) {
+  $("#setForm").classList.remove("hidden");
+  $("#setBtn").onclick = async () => {
+    const a = $("#pw1").value, b = $("#pw2").value;
+    if (a.length < 8) return show("err", "пароль: минимум 8 символов");
+    if (a !== b) return show("err", "пароли не совпадают");
+    $("#setBtn").disabled = true;
+    try {
+      await post("/api/auth/reset", { token, password: a });
+      $("#setForm").classList.add("hidden");
+      show("ok", "Пароль изменён. Теперь можно войти с новым паролем.");
+    } catch (e) {
+      show("err", e.message);
+      $("#setBtn").disabled = false;
+    }
+  };
+} else {
+  $("#askForm").classList.remove("hidden");
+  $("#askBtn").onclick = async () => {
+    $("#askBtn").disabled = true;
+    try {
+      const d = await post("/api/auth/forgot", { email: $("#email").value });
+      show("ok", d.detail);
+    } catch (e) {
+      show("err", e.message);
+    } finally {
+      $("#askBtn").disabled = false;
+    }
+  };
+}
+</script>
+</body>
+</html>

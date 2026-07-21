@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noosphere — Мой кабинет</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg:#0e1016; --panel:#161922; --panel2:#1d212c; --line:#272c39; --line2:#333a49;
+    --ivory:#edeef2; --dim:#9aa0b0; --dim2:#6f7688; --bronze:#e0b878; --green:#5fd18f;
+    --red:#ec6b66; --blue:#66b0ea;
+    --sans:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,'SFMono-Regular',Menlo,monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg); color:var(--ivory);
+    font-family:var(--sans); font-size:15px; line-height:1.5;
+    -webkit-font-smoothing:antialiased; }
+  a { color:var(--blue); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  header { display:flex; align-items:center; gap:14px; padding:11px 18px;
+    border-bottom:1px solid var(--line); background:var(--panel); }
+  .header-word { font-family:var(--mono); font-weight:500; letter-spacing:.24em;
+    font-size:14px; text-transform:uppercase; }
+  .header-word .noo { color:var(--blue); }
+  .header-word .sphere { color:var(--bronze); }
+  header .tagline { color:var(--dim2); font-size:13px; }
+  header .spacer { flex:1; }
+  #wrap { max-width:720px; margin:0 auto; padding:22px 16px 60px; }
+  h1 { font-size:22px; font-weight:600; margin:14px 0 4px; }
+  .muted { color:var(--dim); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:16px 18px; margin:13px 0; }
+  .section-title { color:var(--dim2); letter-spacing:.06em; text-transform:uppercase;
+    font-size:10.5px; font-weight:600; margin-bottom:11px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; }
+  .stat .v { font-family:var(--mono); font-size:21px; font-weight:600; }
+  .stat .k { color:var(--dim2); font-size:12px; margin-top:2px; }
+  .stat .v.green { color:var(--green); }
+  .stat .v.bronze { color:var(--bronze); }
+  .bar { height:7px; background:var(--panel2); border-radius:4px; overflow:hidden;
+    margin:12px 0 6px; }
+  .bar > span { display:block; height:100%; background:var(--bronze); }
+  .rows { font-family:var(--mono); font-size:13px; }
+  .rows .r { display:flex; justify-content:space-between; gap:12px;
+    padding:6px 0; border-bottom:1px solid var(--line); }
+  .rows .r:last-child { border-bottom:0; }
+  .rows .r .k { color:var(--dim); }
+  .note { color:var(--dim2); font-size:13px; line-height:1.6; }
+  .err { background:rgba(236,107,102,.1); border:1px solid rgba(236,107,102,.35);
+    color:#ffb3b0; padding:11px 14px; border-radius:8px; margin:14px 0; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="header-word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
+  <span class="tagline">мой кабинет</span>
+  <span class="spacer"></span>
+  <a href="/">← к обсуждениям</a>
+</header>
+
+<div id="wrap">
+  <div id="err" class="err hidden"></div>
+
+  <div id="content" class="hidden">
+    <h1 id="name">—</h1>
+    <p class="muted" id="handle"></p>
+
+    <div class="card">
+      <div class="section-title">Счёт для работы с ИИ</div>
+      <div class="grid">
+        <div class="stat"><div class="v green" id="left">—</div><div class="k">осталось</div></div>
+        <div class="stat"><div class="v" id="spent">—</div><div class="k">потрачено</div></div>
+        <div class="stat"><div class="v" id="granted">—</div><div class="k">выдано</div></div>
+        <div class="stat"><div class="v" id="calls">—</div><div class="k">запросов к ИИ</div></div>
+      </div>
+      <div class="bar"><span id="barFill" style="width:0%"></span></div>
+      <p class="note" id="balanceNote"></p>
+    </div>
+
+    <div class="card">
+      <div class="section-title">Мой вклад</div>
+      <div class="rows">
+        <div class="r"><span class="k">узлов в графе</span><span id="nodes">—</span></div>
+        <div class="r"><span class="k">аргументов</span><span id="arguments">—</span></div>
+        <div class="r"><span class="k">вопросов</span><span id="questions">—</span></div>
+        <div class="r"><span class="k">средний PoI текстов</span><span id="avgPoi">—</span></div>
+        <div class="r"><span class="k">PoI диалога</span><span id="dlgPoi">—</span></div>
+        <div class="r"><span class="k">первая запись</span><span id="firstAt">—</span></div>
+        <div class="r"><span class="k">последняя запись</span><span id="lastAt">—</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">Аккаунт и данные</div>
+      <p class="note">
+        Аккаунт и всё, что ты написал, остаются за тобой. Тексты, их оценки и
+        история участия привязаны к этому логину и переносятся вместе с ним,
+        когда прототип станет рабочей системой.
+      </p>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+
+function money(x) { return "$" + Number(x).toFixed(2); }
+function when(iso) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("ru-RU",
+    { day: "numeric", month: "short", year: "numeric" });
+}
+
+async function load() {
+  let p;
+  try {
+    const r = await fetch("/api/me/profile");
+    if (r.status === 401) {
+      $("#err").textContent = "Нужно войти — открой обсуждения и нажми «Войти».";
+      $("#err").classList.remove("hidden");
+      return;
+    }
+    if (!r.ok) throw new Error(await r.text());
+    p = await r.json();
+  } catch (e) {
+    $("#err").textContent = "Не удалось загрузить кабинет: " + e.message;
+    $("#err").classList.remove("hidden");
+    return;
+  }
+
+  const a = p.author, acc = p.account || {}, act = p.activity || {};
+  $("#name").textContent = a.name || a.username;
+  $("#handle").textContent = "@" + (a.username || "");
+  if (a.color) $("#name").style.color = a.color;
+
+  $("#left").textContent = money(acc.left_usd || 0);
+  $("#spent").textContent = money(acc.spent_usd || 0);
+  $("#granted").textContent = money(acc.granted_usd || 0);
+  $("#calls").textContent = acc.calls ?? 0;
+
+  const granted = Number(acc.granted_usd) || 0;
+  const used = granted > 0 ? Math.min(100, (acc.spent_usd / granted) * 100) : 0;
+  $("#barFill").style.width = used.toFixed(1) + "%";
+
+  // The state that actually blocks a tester is worth saying plainly, rather
+  // than leaving them to work it out from a number. Having no key of your
+  // own is the normal case now — the shared key pays, and this grant is what
+  // bounds it — so it is no longer worth a message.
+  if (acc.has_key) {
+    $("#balanceNote").textContent =
+      "К аккаунту привязан свой ключ ИИ — расход идёт по нему, без лимита счёта.";
+  } else if ((acc.left_usd || 0) <= 0 && granted > 0) {
+    $("#balanceNote").textContent =
+      "Счёт израсходован. Читать и голосовать можно по-прежнему; для действий с ИИ нужно пополнение.";
+  } else {
+    $("#balanceNote").textContent =
+      "Счёт тратится на оценку текстов, диалог PoI, поиск и переводы.";
+  }
+
+  $("#nodes").textContent = act.nodes ?? 0;
+  $("#arguments").textContent = act.arguments ?? 0;
+  $("#questions").textContent = act.questions ?? 0;
+  $("#avgPoi").textContent = act.avg_poi ?? "—";
+  $("#dlgPoi").textContent = a.dialogue_poi != null ? Math.round(a.dialogue_poi) : "—";
+  $("#firstAt").textContent = when(act.first_at);
+  $("#lastAt").textContent = when(act.last_at);
+
+  $("#content").classList.remove("hidden");
+}
+
+load();
+</script>
+</body>
+</html>
