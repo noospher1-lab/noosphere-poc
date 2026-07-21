@@ -39,7 +39,7 @@
   body.lean #search { display:none; }
   #facets { display:flex; flex-direction:column; min-height:0; flex:1 1 auto; }
   body.lean header { padding:6px 12px; }
-  body.lean .tagline, body.lean .variant { display:none; }
+  body.lean .tagline { display:none; }  /* переключатель оставляем: прятать навигацию значит запирать в экране */
 
   #search { flex:0 0 auto; padding:10px 16px; border-bottom:1px solid var(--line);
     display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
@@ -118,7 +118,7 @@
   <header>
     <span class="word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
     <span class="tagline">карта тем</span>
-    <span class="variant">вариант 1 · фасеты</span>
+    <span class="nav" id="nav"></span>
     <span class="screen">
       <span class="btn" id="newBtn">+ Новая тема</span>
       <a class="btn" id="demoBtn"></a>
@@ -197,7 +197,7 @@ function layout() {
   nodes = [];
   const GOLDEN = Math.PI * (3 - Math.sqrt(5));
   for (const d of DOMAINS) {
-    const mine = TOPICS.filter(t => t.domain === d.id)
+    const mine = MAP_TOPICS.filter(t => t.domain === d.id)
                        .sort((a, b) => b.nodes - a.nodes);
     const step = 12.5;
     mine.forEach((t, i) => {
@@ -435,6 +435,7 @@ window.addEventListener("resize", resize);
   try { await loadMapData(); }
   catch (e) { lvl.textContent = "не загрузилось: " + e.message; return; }
 
+  mountNav(document.getElementById("nav"));
   setupScreen({ onResize: resize });
   facets = buildFacets(document.getElementById("facets"), refresh);
 

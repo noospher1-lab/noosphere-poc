@@ -4,7 +4,7 @@
 // оценить нельзя. Переключатель в шапке, режим виден в адресе (?demo=1).
 
 let DOMAINS = [], GEO_TREE = [], GEO_UNIONS = [], ALL_COUNTRIES = [];
-let TOPICS = [], DOM_BY_ID = {}, ALL_TAGS = [], GEO_PARENT = {};
+let MAP_TOPICS = [], DOM_BY_ID = {}, ALL_TAGS = [], GEO_PARENT = {};
 
 // Темы без рубрики не прячем: они существуют, их надо видеть и уметь
 // рубрицировать. Псевдо-направление живёт только на клиенте — на сервере у
@@ -38,10 +38,10 @@ async function loadMapData() {
         if (!slot.continents.includes(cont.name)) slot.continents.push(cont.name);
       }
 
-  TOPICS = DEMO ? demoTopics() : (await apiGet("/api/map/topics")).map(fromApi);
-  ALL_TAGS = [...new Set(TOPICS.flatMap(t => t.tags))]
+  MAP_TOPICS = DEMO ? demoTopics() : (await apiGet("/api/map/topics")).map(fromApi);
+  ALL_TAGS = [...new Set(MAP_TOPICS.flatMap(t => t.tags))]
     .sort((a, b) => a.localeCompare(b, "ru"));
-  return TOPICS;
+  return MAP_TOPICS;
 }
 
 // Замыкание географии сервер уже посчитал при записи (страна тянет регионы и

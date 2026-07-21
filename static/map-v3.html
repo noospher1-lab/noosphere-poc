@@ -39,7 +39,7 @@
      он не знает выхода. Ползунок плотности тоже остаётся: без него этот
      вариант нечитаем, а крутить его на большом экране и хочется. */
   body.lean header { padding:6px 12px; }
-  body.lean .tagline, body.lean .variant { display:none; }
+  body.lean .tagline { display:none; }  /* переключатель оставляем: прятать навигацию значит запирать в экране */
   body.lean #bar { padding:7px 12px; }
 
   #bar { flex:0 0 auto; padding:10px 16px; border-bottom:1px solid var(--line);
@@ -125,7 +125,7 @@
   <header>
     <span class="word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
     <span class="tagline">карта тем</span>
-    <span class="variant">вариант 3 · связи</span>
+    <span class="nav" id="nav"></span>
     <span class="screen">
       <span class="btn" id="newBtn">+ Новая тема</span>
       <a class="btn" id="demoBtn"></a>
@@ -212,7 +212,7 @@ function buildLinks() {
   }
   document.getElementById("legend").innerHTML =
     `${links.length} связей между ${nodes.length} темами ` +
-    `<span style="color:#e0b878">(верхушка по активности из ${TOPICS.length})</span><br>` +
+    `<span style="color:#e0b878">(верхушка по активности из ${MAP_TOPICS.length})</span><br>` +
     `толщина ребра — сколько общего · цвет узла — домен`;
 }
 
@@ -227,7 +227,7 @@ function buildLinks() {
 let TOP_N = 120;
 
 function layout() {
-  const subset = [...TOPICS].sort((a, b) => b.nodes - a.nodes).slice(0, TOP_N);
+  const subset = [...MAP_TOPICS].sort((a, b) => b.nodes - a.nodes).slice(0, TOP_N);
   nodes = subset.map((t, i) => {
     const a = (i / subset.length) * Math.PI * 2;
     return { ...t, i, d: DOM_BY_ID[t.domain],
@@ -464,6 +464,7 @@ let facets = null;
   try { await loadMapData(); }
   catch (e) { document.getElementById("legend").textContent = "не загрузилось: " + e.message; return; }
 
+  mountNav(document.getElementById("nav"));
   setupScreen({ onResize: resize });
   facets = buildFacets(document.getElementById("facets"), draw);
   const drawer = document.getElementById("drawer");

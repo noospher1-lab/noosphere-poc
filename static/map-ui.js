@@ -56,7 +56,7 @@ function clearSelection() {
 
 function countBy(skip, pred) {
   let n = 0;
-  for (const t of TOPICS) if (matchTopic(t, skip) && pred(t)) n++;
+  for (const t of MAP_TOPICS) if (matchTopic(t, skip) && pred(t)) n++;
   return n;
 }
 
@@ -208,6 +208,31 @@ function buildFacets(host, onChange) {
 
   render();
   return { render };
+}
+
+// ============================================================ ПЕРЕКЛЮЧАТЕЛЬ
+// Переход между вариантами прямо из шапки, без возврата на map.html.
+// Режим данных переносится вместе с переходом: демо, потерянное на первом же
+// переключении, сделало бы сравнение вариантов невозможным — они показывали бы
+// разное, и разница читалась бы как разница навигации.
+
+const SCREENS = [
+  { file:"map-v1.html", short:"пейзаж",  title:"Карта по направлениям" },
+  { file:"map-v2.html", short:"каталог", title:"Список с фильтрами" },
+  { file:"map-v3.html", short:"связи",   title:"Граф связей по тегам" },
+];
+
+function mountNav(host) {
+  const here = location.pathname.split("/").pop() || "map-v1.html";
+  const q = DEMO ? "?demo=1" : "";
+  host.innerHTML =
+    `<span class="seg">` +
+    SCREENS.map(s =>
+      s.file === here
+        ? `<b class="seg-i on" title="${s.title}">${s.short}</b>`
+        : `<a class="seg-i" href="/${s.file}${q}" title="${s.title}">${s.short}</a>`
+    ).join("") +
+    `</span><a class="seg-out" href="/" title="Дерево обсуждений — там пишут">обсуждения →</a>`;
 }
 
 // ============================================================ СОЗДАНИЕ ТЕМЫ

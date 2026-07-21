@@ -208,20 +208,18 @@ async function loadTopics() {
   await openDeepLink();
 }
 
-// ?topic=N — вход с карты тем. Без этого «открыть обсуждение» приводило бы
-// в общий список, где нужную тему пришлось бы искать глазами заново.
+// ?topic=N и ?view=map — вход по ссылке извне. Внутри приложения виды
+// переключаются без перезагрузки, но ссылкой поделиться всё равно должно быть
+// можно, поэтому адрес читается один раз на старте.
 let deepLinkDone = false;
 async function openDeepLink() {
   if (deepLinkDone) return;
-  const want = Number(new URLSearchParams(location.search).get("topic"));
-  if (!want || !TOPICS.some(t => t.id === want)) return;
   deepLinkDone = true;
-  expanded.add(want);
-  selectedId = want;
-  await fetchChildren(want).catch(() => {});
-  renderTree();
-  document.querySelector(`[data-id="${want}"]`)
-    ?.scrollIntoView({ block: "center", behavior: "smooth" });
+  const p = new URLSearchParams(location.search);
+  if (p.get("view") === "map") { showView("map"); return; }
+  const want = Number(p.get("topic"));
+  if (!want || !TOPICS.some(t => t.id === want)) return;
+  await openTopic(want);
 }
 
 async function fetchChildren(id, { more = false } = {}) {
@@ -903,6 +901,77 @@ function newTopicForm() {
   const ta = el("textarea");
   ta.placeholder = "тезис, вопрос, предложение или разбор, открывающий обсуждение…";
   card.appendChild(ta);
+  // Рубрика спрашивается ЗДЕСЬ, в единственной форме создания темы. Пока их
+  // было две — на карте и тут, — эта не спрашивала ничего, и всё созданное
+  // основным путём падало в «без рубрики» и не находилось ни одним фильтром.
+  const rub = el("div");
+  rub.style.margin = "10px 0 2px";
+  const rubRow = el("div");
+  rubRow.style.display = "flex";
+  rubRow.style.gap = "8px";
+  const domSel = el("select"), subSel = el("select");
+  domSel.style.flex = subSel.style.flex = "1 1 0";
+  domSel.appendChild(new Option("— направление —", ""));
+  rubRow.appendChild(domSel); rubRow.appendChild(subSel);
+  rub.appendChild(rubRow);
+
+  const geoIn = el("input");
+  geoIn.type = "text";
+  geoIn.placeholder = "География — страна, регион или союз (необязательно)";
+  geoIn.style.width = "100%"; geoIn.style.marginTop = "8px";
+  const geoHits = el("div"); geoHits.className = "cmp-geo-hits";
+  const geoChosen = el("div"); geoChosen.className = "cmp-chosen";
+  const chosen = new Set();
+  rub.appendChild(geoIn); rub.appendChild(geoHits); rub.appendChild(geoChosen);
+
+  const tagsIn = el("input");
+  tagsIn.type = "text";
+  tagsIn.placeholder = "Теги через запятую (необязательно)";
+  tagsIn.style.width = "100%"; tagsIn.style.marginTop = "8px";
+  rub.appendChild(tagsIn);
+  card.appendChild(rub);
+
+  let TAX = null;
+  const geoAll = () => !TAX ? [] : [
+    ...TAX.unions.map(u => u.name),
+    ...TAX.geo_tree.map(c => c.name),
+    ...TAX.geo_tree.flatMap(c => c.regions.map(r => r.name)),
+    ...TAX.countries,
+  ];
+  function renderChosen() {
+    geoChosen.innerHTML = [...chosen]
+      .map(n => `<span class="cmp-chip">${n}<i>×</i></span>`).join("");
+    geoChosen.querySelectorAll(".cmp-chip i").forEach(x => {
+      x.onclick = () => { chosen.delete(x.parentElement.firstChild.textContent); renderChosen(); };
+    });
+  }
+  geoIn.addEventListener("input", () => {
+    const q = geoIn.value.trim().toLowerCase();
+    if (!q) { geoHits.innerHTML = ""; return; }
+    const hits = [...new Set(geoAll())]
+      .filter(n => n.toLowerCase().includes(q) && !chosen.has(n)).slice(0, 8);
+    geoHits.innerHTML = hits.map(n => `<span class="cmp-hit">${n}</span>`).join("");
+    geoHits.querySelectorAll(".cmp-hit").forEach(x => {
+      x.onclick = () => { chosen.add(x.textContent); geoIn.value = ""; geoHits.innerHTML = ""; renderChosen(); };
+    });
+  });
+  function fillSubs() {
+    const d = TAX && TAX.domains.find(x => x.id === domSel.value);
+    subSel.innerHTML = "";
+    subSel.appendChild(new Option(d ? "— подветвь необязательна —" : "—", ""));
+    (d ? d.subs : []).forEach(s => subSel.appendChild(new Option(s, s)));
+    subSel.disabled = !d;
+  }
+  domSel.onchange = fillSubs;
+  // Справочник тянем лениво и молча: без него форма всё равно работает, тема
+  // просто уйдёт без рубрики — это хуже, но не повод не дать её создать.
+  api("/api/taxonomy").then(t => {
+    TAX = t;
+    t.domains.forEach(d => domSel.appendChild(new Option(d.name, d.id)));
+    fillSubs();
+  }).catch(() => { rub.style.display = "none"; });
+  fillSubs();
+
   const act = el("div", "actions");
   const kindSel = el("select");
   kindSel.appendChild(new Option("тезис", "argument"));
@@ -924,11 +993,20 @@ function newTopicForm() {
       // against yet, so only the type/quality checks apply here
       const node = await api("/api/argument", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text, kind: kindSel.value, title }),
+        body: JSON.stringify({
+          text, kind: kindSel.value, title,
+          domain: domSel.value || null,
+          sub: subSel.value || null,
+          geo: [...chosen],
+          tags: tagsIn.value.split(",").map(s => s.trim()).filter(Boolean),
+        }),
       });
-      toast("тема создана — PoI оценивается в фоне…");
+      toast(domSel.value
+        ? "тема создана — PoI оценивается в фоне…"
+        : "тема создана, но без рубрики — на карте её найдут только поиском");
       ROOT.set(node.id, node.id);
       await loadTopics();
+      MapView.reload();                 // карта должна увидеть тему сразу
       selectNode(node.id);
     } catch (e) {
       toast("ошибка: " + e.message);
@@ -1148,7 +1226,36 @@ function listenEvents() {
 // ---- boot
 $("#refresh").onclick = () => refreshVisible();
 $("#hintsBtn").onclick = () => toggleHints();
-$("#newTopic").onclick = () => newTopicForm();
+$("#newTopic").onclick = () => { showView("tree"); newTopicForm(); };
+
+// ---- переключение видов. Одна страница: переход не рвёт живое соединение,
+// не перелогинивает и не заводит вторую форму создания темы.
+function showView(v) {
+  const map = v === "map";
+  $("#mapView").style.display = map ? "" : "none";
+  $("#wrap").style.display = map ? "none" : "";
+  $("#tagline").textContent = map ? "карта тем" : "дерево обсуждений";
+  document.querySelectorAll("#viewSeg .seg-i").forEach(b =>
+    b.classList.toggle("on", b.dataset.view === v));
+  if (map) {
+    MapView.open($("#mapView"), {
+      onOpenTopic: (id) => { showView("tree"); openTopic(id); },
+    });
+  }
+  history.replaceState(null, "", map ? "?view=map" : location.pathname);
+}
+document.querySelectorAll("#viewSeg .seg-i").forEach(b => {
+  b.onclick = () => showView(b.dataset.view);
+});
+
+// Открыть тему из карты: раскрыть и выделить, без перезагрузки страницы.
+async function openTopic(id) {
+  expanded.add(id);
+  await fetchChildren(id).catch(() => {});
+  selectNode(id);
+  document.querySelector(`[data-id="${id}"]`)
+    ?.scrollIntoView({ block: "center", behavior: "smooth" });
+}
 $("#loginBtn").onclick = () => openAuth();
 $("#logoutBtn").onclick = () => doLogout();
 $("#doLogin").onclick = () => doAuth("/api/auth/login");

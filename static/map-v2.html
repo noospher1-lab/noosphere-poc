@@ -39,7 +39,7 @@
      растягивались на весь монитор и оставались читаемыми. */
   body.lean aside#facets { display:none; }
   body.lean header { padding:6px 12px; }
-  body.lean .tagline, body.lean .variant { display:none; }
+  body.lean .tagline { display:none; }  /* переключатель оставляем: прятать навигацию значит запирать в экране */
   body.lean .rows { max-width:900px; margin:0 auto; width:100%; }
 
   #main { flex:1 1 auto; display:flex; min-height:0; }
@@ -151,7 +151,7 @@
   <header>
     <span class="word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
     <span class="tagline">карта тем</span>
-    <span class="variant">вариант 2 · каталог</span>
+    <span class="nav" id="nav"></span>
     <span class="screen">
       <span class="btn" id="newBtn">+ Новая тема</span>
       <a class="btn" id="demoBtn"></a>
@@ -213,13 +213,13 @@ function hl(text) {
 }
 
 function renderRows() {
-  const out = TOPICS.filter(t => matches(t));
+  const out = MAP_TOPICS.filter(t => matches(t));
   out.sort((a, b) => sortBy === "title"
     ? a.title.localeCompare(b.title, "ru")
     : b[sortBy] - a[sortBy]);
 
   document.getElementById("hits").textContent =
-    out.length === TOPICS.length ? `${TOPICS.length} тем` : `${out.length} из ${TOPICS.length}`;
+    out.length === MAP_TOPICS.length ? `${MAP_TOPICS.length} тем` : `${out.length} из ${MAP_TOPICS.length}`;
 
   const rows = document.getElementById("rows");
   if (!out.length) { rows.innerHTML = `<div class="none">Ничего не нашлось. Попробуй снять часть фильтров.</div>`; return; }
@@ -230,7 +230,7 @@ function renderRows() {
       ...t.geo.map(g => `<span class="tag${SEL.geo.has(g) ? " hit" : ""}">📍 ${g}</span>`),
       ...t.tags.map(x => `<span class="tag${SEL.tags.has(x) ? " hit" : ""}">#${x}</span>`),
     ].join("");
-    return `<div class="card${selected === t ? " sel" : ""}" data-i="${TOPICS.indexOf(t)}">
+    return `<div class="card${selected === t ? " sel" : ""}" data-i="${MAP_TOPICS.indexOf(t)}">
       <div class="c-top"><span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:99px;background:${d.color}"></span>
         <span class="c-dom" style="color:${d.color}">${d.name}</span>
         <span class="c-sub">${t.sub}</span></div>
@@ -242,7 +242,7 @@ function renderRows() {
   }).join("");
 
   rows.querySelectorAll(".card").forEach(c => {
-    c.onclick = () => openPanel(TOPICS[+c.dataset.i]);
+    c.onclick = () => openPanel(MAP_TOPICS[+c.dataset.i]);
   });
 }
 
@@ -318,6 +318,7 @@ document.getElementById("sort").addEventListener("change", e => {
     rows.innerHTML = `<div class="none">не удалось загрузить: ${e.message}</div>`;
     return;
   }
+  mountNav(document.getElementById("nav"));
   setupScreen();
   facets = buildFacets(document.getElementById("facets"), renderRows);
 
@@ -330,7 +331,7 @@ document.getElementById("sort").addEventListener("change", e => {
     onCreated: async (node) => {
       await loadMapData();
       facets.render(); renderRows();
-      const t = TOPICS.find(x => x.id === node.id);
+      const t = MAP_TOPICS.find(x => x.id === node.id);
       if (t) openPanel(t);
     },
   });

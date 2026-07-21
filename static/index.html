@@ -160,7 +160,11 @@
 <header>
   <canvas id="logoCanvas" width="88" height="88" aria-hidden="true"></canvas>
   <span class="header-word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
-  <span class="tagline">дерево обсуждений</span>
+  <span class="tagline" id="tagline">дерево обсуждений</span>
+  <span class="seg" id="viewSeg">
+    <b class="seg-i on" data-view="tree">дерево</b>
+    <a class="seg-i" data-view="map">карта</a>
+  </span>
   <span class="spacer"></span>
   <span id="poiBadge" class="muted"></span>
   <span id="user" class="muted"></span>
@@ -173,6 +177,10 @@
   <a href="/profile.html" title="Мой кабинет — вклад в граф и остаток на счёте для работы с ИИ">Кабинет ▸</a>
   <a href="/graph.html" title="Силовой граф — дополнительный режим просмотра">Граф ▸</a>
 </header>
+
+<!-- Карта — ВИД внутри той же страницы, а не отдельный экран: иначе переход
+     рвёт живое соединение, дублирует вход и разводит формы создания темы. -->
+<div id="mapView" style="display:none"></div>
 
 <div id="authModal" class="modal" style="display:none">
   <div class="card modal-card">
@@ -204,7 +212,11 @@
 </div>
 
 <div id="toast" class="toast"></div>
+<link rel="stylesheet" href="/map-ui.css" />
 <script src="/logo.js"></script>
+<script src="/map-data.js"></script>
+<script src="/map-ui.js"></script>
+<script src="/map-view.js"></script>
 <script src="/tree.js"></script>
 </body>
 </html>
