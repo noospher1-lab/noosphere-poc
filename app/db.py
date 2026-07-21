@@ -417,6 +417,35 @@ _SCHEMA = [
         payload   JSONB NOT NULL DEFAULT '{}'::jsonb
     )
     """,
+    # Рубрикация темы. Отдельной таблицей, а не колонками в nodes: рубрика
+    # есть только у КОРНЯ обсуждения, и держать её на всех узлах значило бы
+    # хранить пустоту в 99% строк.
+    """
+    CREATE TABLE IF NOT EXISTS topic_facets (
+        topic_root_id INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+        domain        TEXT NOT NULL,
+        sub           TEXT,
+        created_at    TIMESTAMPTZ DEFAULT now()
+    )
+    """,
+    # География — многие-ко-многим, и сюда пишется ЗАМЫКАНИЕ: вместе со
+    # страной попадают её регионы и части света. Россия лежит и под «Европа»,
+    # и под «Азия», поэтому фильтр по континенту остаётся одним сравнением по
+    # индексу, а не обходом дерева на каждый запрос.
+    """
+    CREATE TABLE IF NOT EXISTS topic_geo (
+        topic_root_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        geo           TEXT NOT NULL,
+        PRIMARY KEY (topic_root_id, geo)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS topic_tags (
+        topic_root_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        tag           TEXT NOT NULL,
+        PRIMARY KEY (topic_root_id, tag)
+    )
+    """,
 ]
 
 
@@ -431,6 +460,8 @@ async def _log(conn, type_, payload, author_id=None):
 # never loads the whole graph (scaling draft, principle 3). These indexes are
 # what make that query an index lookup instead of a scan.
 _INDEXES = [
+    "CREATE INDEX IF NOT EXISTS topic_geo_idx ON topic_geo (geo)",
+    "CREATE INDEX IF NOT EXISTS topic_tags_idx ON topic_tags (tag)",
     "CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id)",
     "CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id)",
     "CREATE INDEX IF NOT EXISTS idx_nodes_position ON nodes(position_id)",
@@ -1789,6 +1820,85 @@ async def get_graph():
             for e in edge_rows
         ],
     }
+
+
+async def set_topic_facets(topic_root_id, domain, sub, geo_closure, tags,
+                           author_id=None, event=None):
+    """Проставить теме рубрику. Идемпотентно: повторный вызов переписывает.
+
+    Всё в одной транзакции — тема без географии или с половиной тегов из-за
+    оборванной записи выглядела бы как осознанный выбор автора. Событие пишется
+    здесь же, а не отдельным вызовом: лог обязан сходиться с состоянием.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if event:
+                await _log(conn, event,
+                           {"topic": topic_root_id, "domain": domain,
+                            "sub": sub, "tags": tags}, author_id)
+            await conn.execute(
+                """
+                INSERT INTO topic_facets (topic_root_id, domain, sub)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (topic_root_id)
+                DO UPDATE SET domain = EXCLUDED.domain, sub = EXCLUDED.sub
+                """, topic_root_id, domain, sub)
+            await conn.execute("DELETE FROM topic_geo WHERE topic_root_id = $1",
+                               topic_root_id)
+            if geo_closure:
+                await conn.executemany(
+                    "INSERT INTO topic_geo (topic_root_id, geo) VALUES ($1, $2)",
+                    [(topic_root_id, g) for g in geo_closure])
+            await conn.execute("DELETE FROM topic_tags WHERE topic_root_id = $1",
+                               topic_root_id)
+            if tags:
+                await conn.executemany(
+                    "INSERT INTO topic_tags (topic_root_id, tag) VALUES ($1, $2)",
+                    [(topic_root_id, t) for t in tags])
+
+
+async def map_topics():
+    """Все темы с рубрикой и статистикой — то, из чего строится карта.
+
+    Один запрос вместо N+1: агрегаты по гео и тегам собираются подзапросами,
+    иначе на каждую тему уходило бы ещё два обращения.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT n.id, n.title, n.text, n.kind, n.poi_score,
+                   f.domain, f.sub,
+                   COALESCE((SELECT array_agg(g.geo ORDER BY g.geo)
+                             FROM topic_geo g WHERE g.topic_root_id = n.id),
+                            '{}') AS geo,
+                   COALESCE((SELECT array_agg(t.tag ORDER BY t.tag)
+                             FROM topic_tags t WHERE t.topic_root_id = n.id),
+                            '{}') AS tags,
+                   (SELECT count(*) FROM nodes c
+                    WHERE c.topic_root_id = n.id) AS nodes,
+                   (SELECT count(DISTINCT c.author_id) FROM nodes c
+                    WHERE c.topic_root_id = n.id AND c.author_id IS NOT NULL)
+                       AS people,
+                   (SELECT avg(c.poi_score) FROM nodes c
+                    WHERE c.topic_root_id = n.id AND c.poi_score IS NOT NULL)
+                       AS avg_poi,
+                   a.name AS author, a.color AS author_color
+            FROM nodes n
+            LEFT JOIN topic_facets f ON f.topic_root_id = n.id
+            LEFT JOIN authors a ON a.id = n.author_id
+            WHERE n.id = n.topic_root_id
+            ORDER BY n.id
+            """)
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["geo"] = list(d["geo"] or [])
+        d["tags"] = list(d["tags"] or [])
+        d["avg_poi"] = round(float(d["avg_poi"]), 1) if d["avg_poi"] is not None else None
+        out.append(d)
+    return out
 
 
 async def list_topics():

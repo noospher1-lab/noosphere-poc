@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noosphere — Карта тем (вариант 2: каталог)</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/map-ui.css" />
+<style>
+  :root {
+    --bg:#0e1016; --panel:#161922; --panel2:#1d212c; --line:#272c39;
+    --line2:#333a49; --ivory:#edeef2; --dim:#9aa0b0; --dim2:#6f7688;
+    --bronze:#e0b878; --green:#5fd18f; --red:#ec6b66; --blue:#66b0ea;
+    --sans:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ivory);
+    font-family:var(--sans); font-size:15px; overflow:hidden; }
+  #app { display:flex; flex-direction:column; height:100vh; }
+
+  header { display:flex; align-items:center; gap:14px; padding:10px 16px;
+    border-bottom:1px solid var(--line); background:var(--panel); flex:0 0 auto; }
+  .word { font-family:var(--mono); letter-spacing:.22em; font-size:13px;
+    text-transform:uppercase; }
+  .word .noo { color:var(--blue); } .word .sphere { color:var(--bronze); }
+  .tagline { color:var(--dim2); font-size:13px; }
+  .variant { font-family:var(--mono); font-size:12px;
+    color:var(--dim2); border:1px solid var(--line2); border-radius:99px;
+    padding:4px 10px; }
+  .screen { margin-left:auto; display:flex; gap:8px; }
+  .btn { border:1px solid var(--line2); background:var(--panel2); color:var(--dim);
+    border-radius:99px; padding:5px 12px; font-size:13px; cursor:pointer;
+    user-select:none; white-space:nowrap; font-family:var(--sans); }
+  .btn:hover { border-color:var(--dim2); color:var(--ivory); }
+  .btn.on { background:#2a2110; border-color:var(--bronze); color:var(--bronze); }
+
+  /* В каталоге «скрыть панели» значит другое, чем на карте: прячется колонка
+     фасетов, а список получает всю ширину и центрируется, чтобы строки не
+     растягивались на весь монитор и оставались читаемыми. */
+  body.lean aside#facets { display:none; }
+  body.lean header { padding:6px 12px; }
+  body.lean .tagline, body.lean .variant { display:none; }
+  body.lean .rows { max-width:900px; margin:0 auto; width:100%; }
+
+  #main { flex:1 1 auto; display:flex; min-height:0; }
+
+  /* ---- левая колонка: фасеты со счётчиками ---- */
+  aside#facets { width:272px; flex:0 0 auto; border-right:1px solid var(--line);
+    background:var(--panel); display:flex; flex-direction:column; min-height:0; }
+  .fgroup { padding:0 14px 16px; }
+  .fgroup h3 { font-family:var(--mono); font-size:11px; text-transform:uppercase;
+    letter-spacing:.11em; color:var(--dim2); margin:0 0 8px; font-weight:500; }
+  .frow { display:flex; align-items:center; gap:8px; padding:5px 7px;
+    border-radius:6px; cursor:pointer; user-select:none; font-size:14px;
+    color:var(--dim); }
+  .frow:hover { background:var(--panel2); color:var(--ivory); }
+  .frow.on { background:#2a2110; color:var(--bronze); }
+  .frow.zero { opacity:.35; }
+  .frow .dot { width:8px; height:8px; border-radius:99px; flex:0 0 auto; }
+  .frow .nm { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; }
+  .frow .ct { font-family:var(--mono); font-size:11.5px; color:var(--dim2); }
+  .frow.on .ct { color:var(--bronze); }
+  .clearall { margin:0 14px 14px; font-size:13px; color:var(--blue);
+    cursor:pointer; }
+  .clearall:hover { text-decoration:underline; }
+
+  /* ---- центр: поиск + список ---- */
+  section#list { flex:1 1 auto; display:flex; flex-direction:column; min-width:0; }
+  .bar { flex:0 0 auto; display:flex; gap:10px; align-items:center;
+    padding:11px 18px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .bar input[type=search] { flex:1 1 240px; min-width:180px; padding:9px 12px;
+    border-radius:8px; border:1px solid var(--line2); background:var(--panel2);
+    color:var(--ivory); font-family:var(--sans); font-size:14px; }
+  .bar input[type=search]:focus { outline:none; border-color:var(--bronze); }
+  .bar select { padding:9px 10px; border-radius:8px; border:1px solid var(--line2);
+    background:var(--panel2); color:var(--dim); font-family:var(--sans);
+    font-size:13.5px; cursor:pointer; }
+  .bar .hits { font-family:var(--mono); font-size:12px; color:var(--dim2);
+    white-space:nowrap; }
+
+  .rows { flex:1 1 auto; overflow-y:auto; padding:8px 18px 40px; }
+  .card { border:1px solid var(--line); background:var(--panel);
+    border-radius:10px; padding:13px 15px; margin-bottom:9px; cursor:pointer; }
+  .card:hover { border-color:var(--line2); background:var(--panel2); }
+  .card.sel { border-color:var(--bronze); }
+  .c-top { display:flex; align-items:center; gap:8px; margin-bottom:7px; }
+  .c-dom { font-family:var(--mono); font-size:11px; text-transform:uppercase;
+    letter-spacing:.09em; }
+  .c-sub { font-size:12.5px; color:var(--dim2); }
+  .c-sub::before { content:"· "; }
+  .c-title { font-size:15.5px; font-weight:500; line-height:1.4;
+    margin-bottom:9px; }
+  .c-title mark { background:rgba(224,184,120,.25); color:var(--bronze);
+    border-radius:3px; padding:0 2px; }
+  .c-bot { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+  .tag { font-size:12px; color:var(--dim2); border:1px solid var(--line);
+    border-radius:99px; padding:2px 9px; }
+  .tag.hit { border-color:var(--bronze); color:var(--bronze); }
+  .c-stats { margin-left:auto; font-family:var(--mono); font-size:11.5px;
+    color:var(--dim2); white-space:nowrap; }
+  .c-stats b { color:var(--dim); font-weight:500; }
+  .none { color:var(--dim2); text-align:center; padding:50px 0; font-size:14px; }
+
+  /* ---- правая панель ---- */
+  aside#panel { width:0; flex:0 0 auto; overflow:hidden;
+    border-left:1px solid var(--line); background:var(--panel);
+    transition:width .2s ease; display:flex; flex-direction:column; }
+  aside#panel.open { width:min(400px,44vw); }
+  .p-inner { width:min(400px,44vw); display:flex; flex-direction:column;
+    height:100%; }
+  .p-head { padding:16px 18px 12px; border-bottom:1px solid var(--line); }
+  .p-close { float:right; color:var(--dim2); cursor:pointer; font-size:20px;
+    line-height:1; margin:-2px -4px 0 8px; }
+  .p-close:hover { color:var(--ivory); }
+  .p-dom { font-family:var(--mono); font-size:11px; text-transform:uppercase;
+    letter-spacing:.1em; margin-bottom:7px; }
+  .p-title { font-size:17px; font-weight:600; line-height:1.35;
+    margin-bottom:10px; }
+  .p-meta { display:flex; gap:6px; flex-wrap:wrap; }
+  .p-stats { display:flex; gap:18px; padding:12px 18px;
+    border-bottom:1px solid var(--line); }
+  .p-stats div { font-family:var(--mono); font-size:12px; color:var(--dim2); }
+  .p-stats b { display:block; font-size:17px; color:var(--ivory);
+    font-weight:600; font-family:var(--sans); margin-bottom:2px; }
+  .p-search { padding:11px 18px; border-bottom:1px solid var(--line); }
+  .p-search input { width:100%; padding:8px 11px; border-radius:8px;
+    border:1px solid var(--line2); background:var(--panel2); color:var(--ivory);
+    font-size:14px; font-family:var(--sans); }
+  .p-search input:focus { outline:none; border-color:var(--bronze); }
+  .p-body { flex:1 1 auto; overflow-y:auto; padding:6px 18px 20px; }
+  .arg { border-left:2px solid var(--line2); padding:9px 0 9px 12px; margin:9px 0;
+    font-size:14px; line-height:1.5; color:var(--dim); }
+  .arg.support { border-left-color:var(--green); }
+  .arg.refute  { border-left-color:var(--red); }
+  .arg .who { font-family:var(--mono); font-size:11px; color:var(--dim2);
+    margin-top:5px; }
+  .arg mark { background:rgba(224,184,120,.25); color:var(--bronze);
+    border-radius:3px; padding:0 2px; }
+  .arg.dim { opacity:.28; }
+  .empty { color:var(--dim2); font-size:13px; padding:14px 0; }
+  .p-foot { padding:12px 18px; border-top:1px solid var(--line); }
+  .p-foot button { width:100%; padding:10px; border-radius:8px;
+    border:1px solid var(--bronze); background:#2a2110; color:var(--bronze);
+    font-weight:600; font-size:14px; cursor:pointer; font-family:var(--sans); }
+  .p-foot button:hover { background:#342815; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
+    <span class="tagline">карта тем</span>
+    <span class="variant">вариант 2 · каталог</span>
+    <span class="screen">
+      <span class="btn" id="newBtn">+ Новая тема</span>
+      <a class="btn" id="demoBtn"></a>
+      <span class="btn" id="leanBtn">▢ скрыть панели</span>
+      <span class="btn" id="fsBtn">⤢ во весь экран</span>
+    </span>
+  </header>
+  <div id="composer"></div>
+
+  <div id="main">
+    <aside id="facets"></aside>
+
+    <section id="list">
+      <div class="bar">
+        <input type="search" id="q" placeholder="Поиск по темам…" autocomplete="off" />
+        <select id="sort">
+          <option value="nodes">сначала активные</option>
+          <option value="people">больше участников</option>
+          <option value="poi">выше PoI текста</option>
+          <option value="title">по алфавиту</option>
+        </select>
+        <span class="hits" id="hits"></span>
+      </div>
+      <div class="rows" id="rows"></div>
+    </section>
+
+    <aside id="panel"><div class="p-inner">
+      <div class="p-head">
+        <span class="p-close" id="pClose">×</span>
+        <div class="p-dom" id="pDom"></div>
+        <div class="p-title" id="pTitle"></div>
+        <div class="p-meta" id="pMeta"></div>
+      </div>
+      <div class="p-stats">
+        <div><b id="pNodes">—</b>узлов</div>
+        <div><b id="pPeople">—</b>участников</div>
+        <div><b id="pPoi">—</b>PoI текста</div>
+      </div>
+      <div class="p-search">
+        <input type="search" id="pq" placeholder="Поиск внутри обсуждения…" autocomplete="off" />
+      </div>
+      <div class="p-body" id="pBody"></div>
+      <div class="p-foot"><button id="pOpen">Открыть обсуждение →</button></div>
+    </div></aside>
+  </div>
+</div>
+
+<script src="/map-data.js"></script>
+<script src="/map-ui.js"></script>
+<script>
+let sortBy = "nodes", selected = null, facets = null;
+
+const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const matches = t => matchTopic(t);
+
+function hl(text) {
+  if (!QUERY) return text;
+  return text.replace(new RegExp("(" + esc(QUERY) + ")", "gi"), "<mark>$1</mark>");
+}
+
+function renderRows() {
+  const out = TOPICS.filter(t => matches(t));
+  out.sort((a, b) => sortBy === "title"
+    ? a.title.localeCompare(b.title, "ru")
+    : b[sortBy] - a[sortBy]);
+
+  document.getElementById("hits").textContent =
+    out.length === TOPICS.length ? `${TOPICS.length} тем` : `${out.length} из ${TOPICS.length}`;
+
+  const rows = document.getElementById("rows");
+  if (!out.length) { rows.innerHTML = `<div class="none">Ничего не нашлось. Попробуй снять часть фильтров.</div>`; return; }
+
+  rows.innerHTML = out.map(t => {
+    const d = DOM_BY_ID[t.domain];
+    const tags = [
+      ...t.geo.map(g => `<span class="tag${SEL.geo.has(g) ? " hit" : ""}">📍 ${g}</span>`),
+      ...t.tags.map(x => `<span class="tag${SEL.tags.has(x) ? " hit" : ""}">#${x}</span>`),
+    ].join("");
+    return `<div class="card${selected === t ? " sel" : ""}" data-i="${TOPICS.indexOf(t)}">
+      <div class="c-top"><span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:99px;background:${d.color}"></span>
+        <span class="c-dom" style="color:${d.color}">${d.name}</span>
+        <span class="c-sub">${t.sub}</span></div>
+      <div class="c-title">${hl(t.title)}</div>
+      <div class="c-bot">${tags}
+        <span class="c-stats"><b>${t.nodes}</b> узлов · <b>${t.people}</b> уч. · PoI <b>${t.poi}</b></span>
+      </div>
+    </div>`;
+  }).join("");
+
+  rows.querySelectorAll(".card").forEach(c => {
+    c.onclick = () => openPanel(TOPICS[+c.dataset.i]);
+  });
+}
+
+function render() { facets && facets.render(); renderRows(); }
+
+// ---- panel
+let BRANCH = [];
+
+async function openPanel(t) {
+  selected = t;
+  document.getElementById("panel").classList.add("open");
+  const d = DOM_BY_ID[t.domain];
+  const pd = document.getElementById("pDom");
+  pd.textContent = d.name + (t.sub ? " · " + t.sub : ""); pd.style.color = d.color;
+  document.getElementById("pTitle").textContent = t.title;
+  document.getElementById("pMeta").innerHTML =
+    [...t.geo.map(g => `<span class="tag">📍 ${g}</span>`),
+     ...t.tags.map(x => `<span class="tag">#${x}</span>`)].join("");
+  document.getElementById("pNodes").textContent = t.nodes;
+  document.getElementById("pPeople").textContent = t.people;
+  document.getElementById("pPoi").textContent = t.poi || "—";
+  document.getElementById("pq").value = "";
+  document.getElementById("pOpen").style.display = t.id > 0 ? "" : "none";
+  document.getElementById("pOpen").onclick = () => { location.href = `/?topic=${t.id}`; };
+  renderRows();
+
+  BRANCH = [];
+  document.getElementById("pBody").innerHTML =
+    `<div class="empty">${t.id > 0 ? "загружаю ветку…" : "демо-тема — ветки нет"}</div>`;
+  BRANCH = await loadBranch(t.id);
+  if (selected === t) renderArgs("");
+}
+document.getElementById("pClose").onclick = () => {
+  selected = null;
+  document.getElementById("panel").classList.remove("open");
+  renderRows();
+};
+
+function renderArgs(q) {
+  q = q.trim().toLowerCase();
+  const body = document.getElementById("pBody");
+  if (!BRANCH.length) {
+    body.innerHTML = `<div class="empty">в этой теме пока нет ответов — будь первым</div>`;
+    return;
+  }
+  let hit = 0;
+  body.innerHTML = BRANCH.map(a => {
+    const on = !q || a.t.toLowerCase().includes(q);
+    if (q && on) hit++;
+    const text = (q && on)
+      ? a.t.replace(new RegExp("(" + esc(q) + ")", "gi"), "<mark>$1</mark>")
+      : a.t;
+    return `<div class="arg ${a.s} ${on ? "" : "dim"}">${text}<div class="who">${a.who}</div></div>`;
+  }).join("");
+  if (q) body.insertAdjacentHTML("afterbegin",
+    `<div class="empty">${hit ? `нашлось ${hit}` : "ничего не нашлось"} в этой ветке</div>`);
+}
+document.getElementById("pq").addEventListener("input", e => renderArgs(e.target.value));
+
+document.getElementById("q").addEventListener("input", e => {
+  setQuery(e.target.value); render();
+});
+document.getElementById("sort").addEventListener("change", e => {
+  sortBy = e.target.value; renderRows();
+});
+
+(async function init() {
+  const rows = document.getElementById("rows");
+  rows.innerHTML = `<div class="none">загружаю…</div>`;
+  try {
+    await loadMapData();
+  } catch (e) {
+    rows.innerHTML = `<div class="none">не удалось загрузить: ${e.message}</div>`;
+    return;
+  }
+  setupScreen();
+  facets = buildFacets(document.getElementById("facets"), renderRows);
+
+  const demo = document.getElementById("demoBtn");
+  demo.textContent = DEMO ? "◆ демо-данные" : "◇ демо-данные";
+  demo.classList.toggle("on", DEMO);
+  demo.href = DEMO ? location.pathname : location.pathname + "?demo=1";
+
+  const composer = mountComposer(document.getElementById("composer"), {
+    onCreated: async (node) => {
+      await loadMapData();
+      facets.render(); renderRows();
+      const t = TOPICS.find(x => x.id === node.id);
+      if (t) openPanel(t);
+    },
+  });
+  document.getElementById("newBtn").onclick = composer.open;
+
+  render();
+})();
+</script>
+</body>
+</html>

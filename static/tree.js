@@ -205,6 +205,23 @@ async function loadTopics() {
   TOPICS = await api("/api/topics");
   for (const t of TOPICS) ROOT.set(t.id, t.id); // a root is its own topic
   renderTree();
+  await openDeepLink();
+}
+
+// ?topic=N — вход с карты тем. Без этого «открыть обсуждение» приводило бы
+// в общий список, где нужную тему пришлось бы искать глазами заново.
+let deepLinkDone = false;
+async function openDeepLink() {
+  if (deepLinkDone) return;
+  const want = Number(new URLSearchParams(location.search).get("topic"));
+  if (!want || !TOPICS.some(t => t.id === want)) return;
+  deepLinkDone = true;
+  expanded.add(want);
+  selectedId = want;
+  await fetchChildren(want).catch(() => {});
+  renderTree();
+  document.querySelector(`[data-id="${want}"]`)
+    ?.scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
 async function fetchChildren(id, { more = false } = {}) {

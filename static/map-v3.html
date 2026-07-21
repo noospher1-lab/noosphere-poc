@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noosphere — Карта тем (вариант 3: связи)</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/map-ui.css" />
+<style>
+  :root {
+    --bg:#0e1016; --panel:#161922; --panel2:#1d212c; --line:#272c39;
+    --line2:#333a49; --ivory:#edeef2; --dim:#9aa0b0; --dim2:#6f7688;
+    --bronze:#e0b878; --green:#5fd18f; --red:#ec6b66; --blue:#66b0ea;
+    --sans:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ivory);
+    font-family:var(--sans); font-size:15px; overflow:hidden; }
+  #app { display:flex; flex-direction:column; height:100vh; }
+
+  header { display:flex; align-items:center; gap:14px; padding:10px 16px;
+    border-bottom:1px solid var(--line); background:var(--panel); flex:0 0 auto; }
+  .word { font-family:var(--mono); letter-spacing:.22em; font-size:13px;
+    text-transform:uppercase; }
+  .word .noo { color:var(--blue); } .word .sphere { color:var(--bronze); }
+  .tagline { color:var(--dim2); font-size:13px; }
+  .variant { font-family:var(--mono); font-size:12px;
+    color:var(--dim2); border:1px solid var(--line2); border-radius:99px;
+    padding:4px 10px; }
+  .screen { margin-left:auto; display:flex; gap:8px; }
+  .btn { border:1px solid var(--line2); background:var(--panel2); color:var(--dim);
+    border-radius:99px; padding:5px 12px; font-size:13px; cursor:pointer;
+    user-select:none; white-space:nowrap; font-family:var(--sans); }
+  .btn:hover { border-color:var(--dim2); color:var(--ivory); }
+  .btn.on { background:#2a2110; border-color:var(--bronze); color:var(--bronze); }
+
+  /* Чистый режим ужимает шапку, но НЕ прячет её целиком: в ней кнопка
+     возврата, и спрятать её — значит запереть человека в режиме, из которого
+     он не знает выхода. Ползунок плотности тоже остаётся: без него этот
+     вариант нечитаем, а крутить его на большом экране и хочется. */
+  body.lean header { padding:6px 12px; }
+  body.lean .tagline, body.lean .variant { display:none; }
+  body.lean #bar { padding:7px 12px; }
+
+  #bar { flex:0 0 auto; padding:10px 16px; border-bottom:1px solid var(--line);
+    display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  input[type=search] { flex:1 1 240px; min-width:190px; padding:9px 12px;
+    border-radius:8px; border:1px solid var(--line2); background:var(--panel2);
+    color:var(--ivory); font-family:var(--sans); font-size:14px; }
+  input[type=search]:focus { outline:none; border-color:var(--bronze); }
+  .ctl { display:flex; align-items:center; gap:8px; font-size:13px;
+    color:var(--dim2); white-space:nowrap; }
+  input[type=range] { width:120px; accent-color:var(--bronze); }
+  .hits { font-family:var(--mono); font-size:12px; color:var(--dim2);
+    white-space:nowrap; }
+  .toggle { border:1px solid var(--line2); background:var(--panel2);
+    color:var(--dim); border-radius:99px; padding:5px 12px; font-size:13px;
+    cursor:pointer; user-select:none; }
+  .toggle.on { background:#2a2110; border-color:var(--bronze); color:var(--bronze); }
+
+  #stage { flex:1 1 auto; position:relative; min-height:0; }
+  canvas { display:block; width:100%; height:100%; cursor:grab; }
+  canvas.drag { cursor:grabbing; }
+
+  #legend { position:absolute; left:16px; bottom:34px; font-family:var(--mono);
+    font-size:11px; color:var(--dim2); pointer-events:none; line-height:1.7; }
+  #keys { position:absolute; left:16px; bottom:12px; font-family:var(--mono);
+    font-size:11px; color:var(--dim2); pointer-events:none; }
+  #tip { position:absolute; pointer-events:none; display:none; max-width:280px;
+    background:rgba(13,15,21,.96); border:1px solid var(--line2);
+    border-radius:8px; padding:9px 11px; font-size:13px; line-height:1.45;
+    box-shadow:0 8px 26px rgba(0,0,0,.5); }
+  #tip .t { color:var(--ivory); margin-bottom:5px; }
+  #tip .m { font-family:var(--mono); font-size:11px; color:var(--dim2); }
+  #tip .n { color:var(--bronze); font-family:var(--mono); font-size:11px;
+    margin-top:5px; }
+
+  #panel { position:absolute; top:0; right:0; bottom:0; width:min(430px,92vw);
+    background:var(--panel); border-left:1px solid var(--line);
+    transform:translateX(102%); transition:transform .22s ease;
+    display:flex; flex-direction:column; }
+  #panel.open { transform:none; }
+  .p-head { padding:16px 18px 12px; border-bottom:1px solid var(--line); }
+  .p-close { float:right; color:var(--dim2); cursor:pointer; font-size:20px;
+    line-height:1; margin:-2px -4px 0 8px; }
+  .p-close:hover { color:var(--ivory); }
+  .p-dom { font-family:var(--mono); font-size:11px; text-transform:uppercase;
+    letter-spacing:.1em; margin-bottom:7px; }
+  .p-title { font-size:17px; font-weight:600; line-height:1.35; margin-bottom:10px; }
+  .p-meta { display:flex; gap:6px; flex-wrap:wrap; }
+  .tag { font-size:12px; color:var(--dim); border:1px solid var(--line2);
+    border-radius:99px; padding:2px 9px; }
+  .p-stats { display:flex; gap:18px; padding:12px 18px;
+    border-bottom:1px solid var(--line); }
+  .p-stats div { font-family:var(--mono); font-size:12px; color:var(--dim2); }
+  .p-stats b { display:block; font-size:17px; color:var(--ivory); font-weight:600;
+    font-family:var(--sans); margin-bottom:2px; }
+  .p-near { padding:11px 18px; border-bottom:1px solid var(--line); }
+  .p-near h4 { font-family:var(--mono); font-size:11px; text-transform:uppercase;
+    letter-spacing:.1em; color:var(--dim2); margin:0 0 8px; font-weight:500; }
+  .near { font-size:13.5px; color:var(--dim); padding:5px 0; cursor:pointer;
+    line-height:1.4; }
+  .near:hover { color:var(--bronze); }
+  .near span { font-family:var(--mono); font-size:11px; color:var(--dim2); }
+  .p-search { padding:11px 18px; border-bottom:1px solid var(--line); }
+  .p-search input { width:100%; padding:8px 11px; border-radius:8px;
+    border:1px solid var(--line2); background:var(--panel2); color:var(--ivory);
+    font-size:14px; font-family:var(--sans); }
+  .p-search input:focus { outline:none; border-color:var(--bronze); }
+  .p-body { flex:1 1 auto; overflow-y:auto; padding:6px 18px 20px; }
+  .arg { border-left:2px solid var(--line2); padding:9px 0 9px 12px; margin:9px 0;
+    font-size:14px; line-height:1.5; color:var(--dim); }
+  .arg.support { border-left-color:var(--green); }
+  .arg.refute  { border-left-color:var(--red); }
+  .arg .who { font-family:var(--mono); font-size:11px; color:var(--dim2);
+    margin-top:5px; }
+  .arg mark { background:rgba(224,184,120,.25); color:var(--bronze);
+    border-radius:3px; padding:0 2px; }
+  .arg.dim { opacity:.28; }
+  .empty { color:var(--dim2); font-size:13px; padding:14px 0; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
+    <span class="tagline">карта тем</span>
+    <span class="variant">вариант 3 · связи</span>
+    <span class="screen">
+      <span class="btn" id="newBtn">+ Новая тема</span>
+      <a class="btn" id="demoBtn"></a>
+      <span class="btn" id="leanBtn">▢ скрыть панели</span>
+      <span class="btn" id="fsBtn">⤢ во весь экран</span>
+    </span>
+  </header>
+  <div id="composer"></div>
+
+  <div id="bar">
+    <input type="search" id="q" placeholder="Поиск по темам…" autocomplete="off" />
+    <div class="ctl">плотность связей
+      <input type="range" id="dens" min="1" max="3" step="1" value="2" />
+      <span id="densLab" class="hits">≥ 1 общий тег</span>
+    </div>
+    <span class="toggle on" id="tGeo">гео тоже связывает</span>
+    <div class="ctl">тем на карте
+      <input type="range" id="topn" min="40" max="300" step="20" value="120" />
+      <span id="topnLab" class="hits">120</span>
+    </div>
+    <span class="btn" id="fxBtn">☰ фильтры<span class="badge" id="fxCount" style="display:none"></span></span>
+    <span class="hits" id="hits"></span>
+  </div>
+
+  <div id="stage">
+    <canvas id="cv"></canvas>
+
+    <aside class="drawer" id="drawer">
+      <div class="drawer-head">
+        <b>Фильтры</b><span class="drawer-close" id="drawerClose">×</span>
+      </div>
+      <div id="facets"></div>
+    </aside>
+    <div id="legend"></div>
+  <div id="keys">f — во весь экран · h — скрыть панели</div>
+    <div id="tip"></div>
+
+    <aside id="panel">
+      <div class="p-head">
+        <span class="p-close" id="pClose">×</span>
+        <div class="p-dom" id="pDom"></div>
+        <div class="p-title" id="pTitle"></div>
+        <div class="p-meta" id="pMeta"></div>
+      </div>
+      <div class="p-stats">
+        <div><b id="pNodes">—</b>узлов</div>
+        <div><b id="pPeople">—</b>участников</div>
+        <div><b id="pPoi">—</b>PoI текста</div>
+      </div>
+      <div class="p-near">
+        <h4>Соседние темы</h4>
+        <div id="pNear"></div>
+      </div>
+      <div class="p-search">
+        <input type="search" id="pq" placeholder="Поиск внутри обсуждения…" autocomplete="off" />
+      </div>
+      <div class="p-body" id="pBody"></div>
+    </aside>
+  </div>
+</div>
+
+<script src="/map-data.js"></script>
+<script src="/map-ui.js"></script>
+<script>
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+let nodes = [], links = [], view = { x:0, y:0, k:1 };
+let hover = null, selected = null, query = "", minShared = 1, geoLinks = true;
+const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// ---------------------------------------------------------------- связи
+// Ребро = общие теги (и опционально общая география). Вес — сколько общих.
+// Здесь и лежит главный риск варианта: при пороге в 1 общий тег карта
+// зарастает и кластеры перестают читаться. Поэтому порог — это ручка,
+// а не константа: можно своими глазами увидеть, где начинается каша.
+function buildLinks() {
+  links = [];
+  for (let a = 0; a < nodes.length; a++) {
+    for (let b = a + 1; b < nodes.length; b++) {
+      const p = nodes[a], q = nodes[b];
+      let w = p.tags.filter(t => q.tags.includes(t)).length;
+      if (geoLinks) w += p.geo.filter(g => q.geo.includes(g)).length;
+      if (w >= minShared) links.push({ a:p, b:q, w });
+    }
+  }
+  document.getElementById("legend").innerHTML =
+    `${links.length} связей между ${nodes.length} темами ` +
+    `<span style="color:#e0b878">(верхушка по активности из ${TOPICS.length})</span><br>` +
+    `толщина ребра — сколько общего · цвет узла — домен`;
+}
+
+// ---------------------------------------------------------------- раскладка
+// В отличие от варианта 1 домены НЕ притягивают: положение задают связи.
+// Смысл в том, чтобы увидеть, совпадают ли кластеры по тегам с доменами —
+// или темы группируются иначе, чем мы их рубрицируем.
+// Граф связей принципиально не масштабируется на все 474 темы: рёбер выходят
+// десятки тысяч, раскладка считает все пары на каждом шаге, и вкладка встаёт.
+// Поэтому этот вариант работает с ВЕРХУШКОЙ по активности — и честно об этом
+// пишет. Ограничение регулируется: видно, где именно наступает каша.
+let TOP_N = 120;
+
+function layout() {
+  const subset = [...TOPICS].sort((a, b) => b.nodes - a.nodes).slice(0, TOP_N);
+  nodes = subset.map((t, i) => {
+    const a = (i / subset.length) * Math.PI * 2;
+    return { ...t, i, d: DOM_BY_ID[t.domain],
+             x: Math.cos(a) * 300, y: Math.sin(a) * 250,
+             vx:0, vy:0, r: 5 + Math.sqrt(t.nodes) * 1.5 };
+  });
+  buildLinks();
+  relax(320);
+}
+
+function relax(steps) {
+  for (let s = 0; s < steps; s++) {
+    const alpha = 1 - s / steps;
+    for (const l of links) {
+      const dx = l.b.x - l.a.x, dy = l.b.y - l.a.y;
+      const dist = Math.hypot(dx, dy) || 0.01;
+      const target = 120 - Math.min(l.w, 4) * 16;
+      const f = ((dist - target) / dist) * 0.018 * alpha * Math.min(l.w, 3);
+      l.a.vx += dx * f; l.a.vy += dy * f;
+      l.b.vx -= dx * f; l.b.vy -= dy * f;
+    }
+    for (let a = 0; a < nodes.length; a++) {
+      for (let b = a + 1; b < nodes.length; b++) {
+        const p = nodes[a], q = nodes[b];
+        let dx = q.x - p.x, dy = q.y - p.y;
+        const dist = Math.hypot(dx, dy) || 0.01;
+        const min = p.r + q.r + 26;
+        if (dist < min) {
+          const push = ((min - dist) / dist) * 0.45 * alpha;
+          p.vx -= dx * push; p.vy -= dy * push;
+          q.vx += dx * push; q.vy += dy * push;
+        }
+      }
+    }
+    for (const n of nodes) {
+      n.vx -= n.x * 0.0016 * alpha; n.vy -= n.y * 0.0016 * alpha;  // к центру
+      n.x += n.vx; n.y += n.vy; n.vx *= 0.8; n.vy *= 0.8;
+    }
+  }
+}
+
+const matches = n => matchTopic(n);
+function neighbors(n) {
+  return links.filter(l => l.a === n || l.b === n)
+              .map(l => ({ other: l.a === n ? l.b : l.a, w: l.w }))
+              .sort((x, y) => y.w - x.w);
+}
+
+// ---------------------------------------------------------------- отрисовка
+function resize() {
+  const dpr = window.devicePixelRatio || 1, s = cv.parentElement;
+  cv.width = s.clientWidth * dpr; cv.height = s.clientHeight * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+function toScreen(n) {
+  return { x: cv.clientWidth / 2 + (n.x + view.x) * view.k,
+           y: cv.clientHeight / 2 + (n.y + view.y) * view.k };
+}
+
+function draw() {
+  ctx.clearRect(0, 0, cv.clientWidth, cv.clientHeight);
+  const focus = hover || selected;
+  const near = focus ? new Set(neighbors(focus).map(x => x.other)) : null;
+
+  for (const l of links) {
+    const p = toScreen(l.a), q = toScreen(l.b);
+    const rel = focus && (l.a === focus || l.b === focus);
+    const on = matches(l.a) && matches(l.b);
+    ctx.globalAlpha = rel ? 0.85 : (focus ? 0.05 : (on ? 0.16 : 0.04));
+    ctx.strokeStyle = rel ? "#e0b878" : "#6f7688";
+    ctx.lineWidth = Math.max(0.6, Math.min(l.w, 4) * 0.7) * (rel ? 1.5 : 1);
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  for (const n of nodes) {
+    const p = toScreen(n), on = matches(n), r = n.r * view.k;
+    const rel = focus && (n === focus || near.has(n));
+    ctx.globalAlpha = !on ? 0.1 : (focus && !rel ? 0.22 : 1);
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7);
+    ctx.fillStyle = n.d.color + (n === focus ? "5a" : "2e"); ctx.fill();
+    ctx.lineWidth = n === focus ? 2.5 : rel ? 1.8 : 1.1;
+    ctx.strokeStyle = rel ? n.d.color : n.d.color + "8a";
+    ctx.stroke();
+    if ((view.k > 1.05 && on) || rel) {
+      ctx.globalAlpha = 1;
+      ctx.font = "500 11.5px Inter, sans-serif";
+      ctx.textAlign = "center"; ctx.fillStyle = rel ? "#edeef2" : "#9aa0b0";
+      const short = n.title.length > 32 ? n.title.slice(0, 30) + "…" : n.title;
+      ctx.fillText(short, p.x, p.y + r + 14);
+    }
+  }
+  ctx.globalAlpha = 1;
+  const filtered = QUERY || selectionCount();
+  document.getElementById("hits").textContent = filtered
+    ? `${nodes.filter(matches).length} из ${nodes.length}` : `${nodes.length} тем`;
+  const badge = document.getElementById("fxCount"), c = selectionCount();
+  badge.style.display = c ? "" : "none";
+  badge.textContent = c;
+}
+
+// ---------------------------------------------------------------- ввод
+function nodeAt(mx, my) {
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const n = nodes[i], p = toScreen(n);
+    if (Math.hypot(mx - p.x, my - p.y) <= n.r * view.k + 4 && matches(n)) return n;
+  }
+  return null;
+}
+let dragging = false, last = null;
+cv.addEventListener("mousedown", e => { dragging = true; last = e; cv.classList.add("drag"); });
+window.addEventListener("mouseup", () => { dragging = false; cv.classList.remove("drag"); });
+cv.addEventListener("mousemove", e => {
+  const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  if (dragging) {
+    view.x += (e.clientX - last.clientX) / view.k;
+    view.y += (e.clientY - last.clientY) / view.k;
+    last = e; draw(); return;
+  }
+  const n = nodeAt(mx, my), tip = document.getElementById("tip");
+  if (n !== hover) { hover = n; draw(); }
+  if (n) {
+    const nb = neighbors(n);
+    tip.style.display = "block";
+    tip.style.left = Math.min(mx + 16, cv.clientWidth - 300) + "px";
+    tip.style.top = (my + 16) + "px";
+    tip.innerHTML = `<div class="t">${n.title}</div><div class="m">${n.d.name}` +
+      (n.geo.length ? " · " + n.geo.join(", ") : "") +
+      `<br>${n.nodes} узлов · ${n.people} участников</div>` +
+      `<div class="n">связей: ${nb.length}</div>`;
+  } else tip.style.display = "none";
+});
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  view.k = Math.max(0.35, Math.min(2.6, view.k * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+  draw();
+}, { passive:false });
+cv.addEventListener("click", e => {
+  const r = cv.getBoundingClientRect();
+  const n = nodeAt(e.clientX - r.left, e.clientY - r.top);
+  n ? openPanel(n) : closePanel();
+});
+
+// ---------------------------------------------------------------- панель
+let BRANCH = [];
+
+async function openPanel(n) {
+  selected = n;
+  document.getElementById("panel").classList.add("open");
+  const pd = document.getElementById("pDom");
+  pd.textContent = n.d.name + (n.sub ? " · " + n.sub : ""); pd.style.color = n.d.color;
+  document.getElementById("pTitle").textContent = n.title;
+  document.getElementById("pMeta").innerHTML =
+    [...n.geo.map(g => `<span class="tag">📍 ${g}</span>`),
+     ...n.tags.map(t => `<span class="tag">#${t}</span>`)].join("");
+  document.getElementById("pNodes").textContent = n.nodes;
+  document.getElementById("pPeople").textContent = n.people;
+  document.getElementById("pPoi").textContent = n.poi;
+
+  const nb = neighbors(n).slice(0, 6);
+  document.getElementById("pNear").innerHTML = nb.length
+    ? nb.map((x, i) => `<div class="near" data-k="${i}">${x.other.title}
+        <span>· общего: ${x.w}</span></div>`).join("")
+    : `<div class="empty">связей нет — тема стоит особняком</div>`;
+  document.getElementById("pNear").querySelectorAll(".near").forEach(el => {
+    el.onclick = () => openPanel(nb[+el.dataset.k].other);
+  });
+
+  document.getElementById("pq").value = "";
+  draw();
+
+  BRANCH = [];
+  document.getElementById("pBody").innerHTML =
+    `<div class="empty">${n.id > 0 ? "загружаю ветку…" : "демо-тема — ветки нет"}</div>`;
+  BRANCH = await loadBranch(n.id);
+  if (selected === n) renderArgs("");
+}
+function closePanel() {
+  selected = null;
+  document.getElementById("panel").classList.remove("open");
+  draw();
+}
+document.getElementById("pClose").onclick = closePanel;
+
+function renderArgs(q) {
+  q = q.trim().toLowerCase();
+  const body = document.getElementById("pBody");
+  if (!BRANCH.length) {
+    body.innerHTML = `<div class="empty">в этой теме пока нет ответов — будь первым</div>`;
+    return;
+  }
+  let hit = 0;
+  body.innerHTML = BRANCH.map(a => {
+    const on = !q || a.t.toLowerCase().includes(q);
+    if (q && on) hit++;
+    const text = (q && on)
+      ? a.t.replace(new RegExp("(" + esc(q) + ")", "gi"), "<mark>$1</mark>")
+      : a.t;
+    return `<div class="arg ${a.s} ${on ? "" : "dim"}">${text}<div class="who">${a.who}</div></div>`;
+  }).join("");
+  if (q) body.insertAdjacentHTML("afterbegin",
+    `<div class="empty">${hit ? `нашлось ${hit}` : "ничего не нашлось"} в этой ветке</div>`);
+}
+document.getElementById("pq").addEventListener("input", e => renderArgs(e.target.value));
+
+document.getElementById("q").addEventListener("input", e => {
+  setQuery(e.target.value); facets.render(); draw();
+});
+document.getElementById("topn").addEventListener("change", e => {
+  TOP_N = +e.target.value;
+  document.getElementById("topnLab").textContent = TOP_N;
+  layout(); draw();
+});
+document.getElementById("topn").addEventListener("input", e => {
+  document.getElementById("topnLab").textContent = e.target.value;
+});
+document.getElementById("dens").addEventListener("input", e => {
+  minShared = +e.target.value;
+  document.getElementById("densLab").textContent =
+    `≥ ${minShared} общ${minShared === 1 ? "ий" : "их"} тег${minShared === 1 ? "" : minShared < 5 ? "а" : "ов"}`;
+  buildLinks(); relax(220); draw();
+});
+document.getElementById("tGeo").onclick = e => {
+  geoLinks = !geoLinks;
+  e.target.classList.toggle("on", geoLinks);
+  buildLinks(); relax(220); draw();
+};
+
+window.addEventListener("resize", resize);
+let facets = null;
+
+(async function init() {
+  try { await loadMapData(); }
+  catch (e) { document.getElementById("legend").textContent = "не загрузилось: " + e.message; return; }
+
+  setupScreen({ onResize: resize });
+  facets = buildFacets(document.getElementById("facets"), draw);
+  const drawer = document.getElementById("drawer");
+  document.getElementById("fxBtn").onclick = () => drawer.classList.toggle("open");
+  document.getElementById("drawerClose").onclick = () => drawer.classList.remove("open");
+
+  const demo = document.getElementById("demoBtn");
+  demo.textContent = DEMO ? "◆ демо-данные" : "◇ демо-данные";
+  demo.classList.toggle("on", DEMO);
+  demo.href = DEMO ? location.pathname : location.pathname + "?demo=1";
+
+  const composer = mountComposer(document.getElementById("composer"), {
+    onCreated: async () => { await loadMapData(); layout(); facets.render(); draw(); },
+  });
+  document.getElementById("newBtn").onclick = composer.open;
+
+  layout(); resize(); draw();
+})();
+</script>
+</body>
+</html>

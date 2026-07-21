@@ -1,0 +1,99 @@
+/* Общие стили дерева фильтров для всех вариантов карты. */
+
+.fx-head { display:flex; gap:8px; align-items:center; padding:10px 12px 8px; }
+.fx-find { flex:1 1 auto; min-width:0; padding:7px 10px; border-radius:7px;
+  border:1px solid var(--line2); background:var(--panel2); color:var(--ivory);
+  font-family:var(--sans); font-size:13.5px; }
+.fx-find:focus { outline:none; border-color:var(--bronze); }
+.fx-clear { font-size:12.5px; color:var(--blue); cursor:pointer; white-space:nowrap; }
+.fx-clear:hover { text-decoration:underline; }
+
+.fx-body { overflow-y:auto; flex:1 1 auto; padding-bottom:6px; }
+
+.fx-group { padding:4px 0 12px; }
+.fx-group h3 { font-family:var(--mono); font-size:10.5px; text-transform:uppercase;
+  letter-spacing:.12em; color:var(--dim2); margin:6px 0 5px; padding:0 12px;
+  font-weight:500; }
+
+.fx-row { display:flex; align-items:center; gap:6px; padding:4px 10px 4px 0;
+  border-radius:6px; cursor:pointer; user-select:none; font-size:13.5px;
+  color:var(--dim); margin:0 6px; }
+.fx-row:hover { background:var(--panel2); color:var(--ivory); }
+.fx-row.on { background:#2a2110; color:var(--bronze); }
+.fx-row.zero { opacity:.32; }
+.fx-caret { width:12px; flex:0 0 auto; color:var(--dim2); font-size:10px;
+  text-align:center; }
+.fx-caret:hover { color:var(--bronze); }
+.fx-dot { width:8px; height:8px; border-radius:99px; flex:0 0 auto; }
+.fx-nm { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fx-ct { font-family:var(--mono); font-size:11px; color:var(--dim2); flex:0 0 auto; }
+.fx-row.on .fx-ct { color:var(--bronze); }
+
+.fx-more { font-size:12px; color:var(--dim2); padding:6px 12px 2px; }
+.fx-empty { display:flex; align-items:center; gap:7px; font-size:12.5px;
+  color:var(--dim2); padding:8px 14px; border-top:1px solid var(--line);
+  cursor:pointer; flex:0 0 auto; }
+.fx-empty input { accent-color:var(--bronze); }
+
+/* Выдвижная панель фильтров — для вариантов, где нет постоянной колонки. */
+.drawer { position:absolute; top:0; left:0; bottom:0; width:min(310px,86vw);
+  background:var(--panel); border-right:1px solid var(--line); z-index:5;
+  transform:translateX(-102%); transition:transform .2s ease;
+  display:flex; flex-direction:column; }
+.drawer.open { transform:none; }
+.drawer-head { display:flex; align-items:center; justify-content:space-between;
+  padding:11px 14px; border-bottom:1px solid var(--line); flex:0 0 auto; }
+.drawer-head b { font-size:14px; font-weight:600; }
+.drawer-close { color:var(--dim2); cursor:pointer; font-size:19px; line-height:1; }
+.drawer-close:hover { color:var(--ivory); }
+.badge { display:inline-block; min-width:17px; padding:0 5px; border-radius:99px;
+  background:var(--bronze); color:#1a1408; font-size:11px; font-weight:600;
+  font-family:var(--mono); text-align:center; margin-left:5px; }
+
+/* ---- форма создания темы ---- */
+#composer { position:fixed; inset:0; z-index:20; display:none; }
+#composer.open { display:block; }
+.cmp-back { position:absolute; inset:0; background:rgba(6,7,11,.66); }
+.cmp { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  width:min(560px,94vw); max-height:90vh; background:var(--panel);
+  border:1px solid var(--line2); border-radius:14px; display:flex;
+  flex-direction:column; box-shadow:0 20px 60px rgba(0,0,0,.55); }
+.cmp-head { display:flex; justify-content:space-between; align-items:center;
+  padding:14px 18px; border-bottom:1px solid var(--line); }
+.cmp-head b { font-size:15px; }
+.cmp-x { color:var(--dim2); cursor:pointer; font-size:20px; line-height:1; }
+.cmp-x:hover { color:var(--ivory); }
+.cmp-body { padding:14px 18px; overflow-y:auto; }
+.cmp-body label { display:block; font-family:var(--mono); font-size:10.5px;
+  text-transform:uppercase; letter-spacing:.11em; color:var(--dim2);
+  margin:14px 0 6px; }
+.cmp-body label:first-child { margin-top:0; }
+.cmp-body .req { color:var(--bronze); text-transform:none; letter-spacing:0; }
+.cmp-body .opt { color:var(--dim2); text-transform:none; letter-spacing:0; }
+.cmp-body input, .cmp-body textarea, .cmp-body select {
+  width:100%; padding:9px 11px; border-radius:8px; border:1px solid var(--line2);
+  background:var(--panel2); color:var(--ivory); font-family:var(--sans);
+  font-size:14px; }
+.cmp-body textarea { resize:vertical; line-height:1.5; }
+.cmp-body input:focus, .cmp-body textarea:focus, .cmp-body select:focus {
+  outline:none; border-color:var(--bronze); }
+.cmp-row { display:flex; gap:12px; }
+.cmp-row > div { flex:1 1 0; min-width:0; }
+.cmp-geo-hits { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
+.cmp-hit { font-size:13px; color:var(--dim); border:1px solid var(--line2);
+  background:var(--panel2); border-radius:99px; padding:3px 10px; cursor:pointer; }
+.cmp-hit:hover { border-color:var(--bronze); color:var(--bronze); }
+.cmp-chosen { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.cmp-chip { font-size:13px; color:var(--bronze); background:#2a2110;
+  border:1px solid var(--bronze); border-radius:99px; padding:3px 9px; }
+.cmp-chip i { font-style:normal; margin-left:6px; cursor:pointer; opacity:.7; }
+.cmp-chip i:hover { opacity:1; }
+.cmp-err { color:var(--red); font-size:13px; margin-top:12px; min-height:18px; }
+.cmp-foot { display:flex; gap:10px; padding:13px 18px;
+  border-top:1px solid var(--line); }
+.cmp-foot button { flex:1 1 0; padding:10px; border-radius:8px; font-size:14px;
+  font-weight:600; cursor:pointer; font-family:var(--sans); }
+.cmp-cancel { border:1px solid var(--line2); background:var(--panel2);
+  color:var(--dim); }
+.cmp-send { border:1px solid var(--bronze); background:#2a2110; color:var(--bronze); }
+.cmp-send:disabled { opacity:.5; cursor:default; }

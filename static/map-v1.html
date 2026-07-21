@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noosphere — Карта тем (вариант 1: фасеты)</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/map-ui.css" />
+<style>
+  :root {
+    --bg:#0e1016; --panel:#161922; --panel2:#1d212c; --line:#272c39;
+    --line2:#333a49; --ivory:#edeef2; --dim:#9aa0b0; --dim2:#6f7688;
+    --bronze:#e0b878; --green:#5fd18f; --red:#ec6b66; --blue:#66b0ea;
+    --sans:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ivory);
+    font-family:var(--sans); font-size:15px; overflow:hidden; }
+  #app { display:flex; flex-direction:column; height:100vh; }
+
+  header { display:flex; align-items:center; gap:14px; padding:10px 16px;
+    border-bottom:1px solid var(--line); background:var(--panel); flex:0 0 auto; }
+  .word { font-family:var(--mono); letter-spacing:.22em; font-size:13px;
+    text-transform:uppercase; }
+  .word .noo { color:var(--blue); } .word .sphere { color:var(--bronze); }
+  .tagline { color:var(--dim2); font-size:13px; }
+  .variant { font-family:var(--mono); font-size:12px;
+    color:var(--dim2); border:1px solid var(--line2); border-radius:99px;
+    padding:4px 10px; }
+  .screen { margin-left:auto; display:flex; gap:8px; }
+  .btn { border:1px solid var(--line2); background:var(--panel2); color:var(--dim);
+    border-radius:99px; padding:5px 12px; font-size:13px; cursor:pointer;
+    user-select:none; white-space:nowrap; font-family:var(--sans); }
+  .btn:hover { border-color:var(--dim2); color:var(--ivory); }
+  .btn.on { background:#2a2110; border-color:var(--bronze); color:var(--bronze); }
+
+  /* Чистый режим: карта забирает всё, кроме тонкой шапки с кнопками.
+     Поиск и фасеты уезжают — но остаются доступны по клавише h. */
+  body.lean #search { display:none; }
+  #facets { display:flex; flex-direction:column; min-height:0; flex:1 1 auto; }
+  body.lean header { padding:6px 12px; }
+  body.lean .tagline, body.lean .variant { display:none; }
+
+  #search { flex:0 0 auto; padding:10px 16px; border-bottom:1px solid var(--line);
+    display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  input[type=search] { flex:1 1 260px; min-width:200px; padding:9px 12px;
+    border-radius:8px; border:1px solid var(--line2); background:var(--panel2);
+    color:var(--ivory); font-family:var(--sans); font-size:14px; }
+  input[type=search]:focus { outline:none; border-color:var(--bronze); }
+  .hits { font-family:var(--mono); font-size:12px; color:var(--dim2);
+    white-space:nowrap; }
+
+  #stage { flex:1 1 auto; position:relative; min-height:0; }
+  canvas { display:block; width:100%; height:100%; cursor:grab; }
+  canvas.drag { cursor:grabbing; }
+
+  #zoomhint { position:absolute; left:16px; bottom:14px; font-family:var(--mono);
+    font-size:11px; color:var(--dim2); pointer-events:none; }
+  #level { position:absolute; left:16px; top:14px; font-family:var(--mono);
+    font-size:12px; color:var(--dim); background:rgba(22,25,34,.82);
+    border:1px solid var(--line); border-radius:8px; padding:6px 10px;
+    pointer-events:none; }
+  #level b { color:var(--bronze); font-weight:500; }
+
+  #tip { position:absolute; pointer-events:none; display:none; max-width:270px;
+    background:rgba(13,15,21,.96); border:1px solid var(--line2);
+    border-radius:8px; padding:9px 11px; font-size:13px; line-height:1.45;
+    box-shadow:0 8px 26px rgba(0,0,0,.5); }
+  #tip .t { color:var(--ivory); margin-bottom:5px; }
+  #tip .m { font-family:var(--mono); font-size:11px; color:var(--dim2); }
+
+  /* ---- topic panel: drilling into one topic ---- */
+  #panel { position:absolute; top:0; right:0; bottom:0; width:min(430px,92vw);
+    background:var(--panel); border-left:1px solid var(--line);
+    transform:translateX(102%); transition:transform .22s ease;
+    display:flex; flex-direction:column; }
+  #panel.open { transform:none; }
+  .p-head { padding:16px 18px 12px; border-bottom:1px solid var(--line); }
+  .p-close { float:right; color:var(--dim2); cursor:pointer; font-size:20px;
+    line-height:1; margin:-2px -4px 0 8px; }
+  .p-close:hover { color:var(--ivory); }
+  .p-dom { font-family:var(--mono); font-size:11px; text-transform:uppercase;
+    letter-spacing:.1em; margin-bottom:7px; }
+  .p-title { font-size:17px; font-weight:600; line-height:1.35; margin-bottom:10px; }
+  .p-meta { display:flex; gap:6px; flex-wrap:wrap; }
+  .tag { font-size:12px; color:var(--dim); border:1px solid var(--line2);
+    border-radius:99px; padding:2px 9px; }
+  .p-stats { display:flex; gap:18px; padding:12px 18px;
+    border-bottom:1px solid var(--line); }
+  .p-stats div { font-family:var(--mono); font-size:12px; color:var(--dim2); }
+  .p-stats b { display:block; font-size:17px; color:var(--ivory); font-weight:600;
+    font-family:var(--sans); margin-bottom:2px; }
+  .p-search { padding:11px 18px; border-bottom:1px solid var(--line); }
+  .p-search input { width:100%; padding:8px 11px; border-radius:8px;
+    border:1px solid var(--line2); background:var(--panel2); color:var(--ivory);
+    font-size:14px; font-family:var(--sans); }
+  .p-search input:focus { outline:none; border-color:var(--bronze); }
+  .p-body { flex:1 1 auto; overflow-y:auto; padding:6px 18px 20px; }
+  .arg { border-left:2px solid var(--line2); padding:9px 0 9px 12px; margin:9px 0;
+    font-size:14px; line-height:1.5; color:var(--dim); }
+  .arg.support { border-left-color:var(--green); }
+  .arg.refute  { border-left-color:var(--red); }
+  .arg .who { font-family:var(--mono); font-size:11px; color:var(--dim2);
+    margin-top:5px; }
+  .arg mark { background:rgba(224,184,120,.25); color:var(--bronze);
+    border-radius:3px; padding:0 2px; }
+  .arg.dim { opacity:.28; }
+  .empty { color:var(--dim2); font-size:13px; padding:14px 0; }
+  .p-foot { padding:12px 18px; border-top:1px solid var(--line); }
+  .p-foot button { width:100%; padding:10px; border-radius:8px;
+    border:1px solid var(--bronze); background:#2a2110; color:var(--bronze);
+    font-weight:600; font-size:14px; cursor:pointer; font-family:var(--sans); }
+  .p-foot button:hover { background:#342815; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
+    <span class="tagline">карта тем</span>
+    <span class="variant">вариант 1 · фасеты</span>
+    <span class="screen">
+      <span class="btn" id="newBtn">+ Новая тема</span>
+      <a class="btn" id="demoBtn"></a>
+      <span class="btn" id="leanBtn">▢ скрыть панели</span>
+      <span class="btn" id="fsBtn">⤢ во весь экран</span>
+    </span>
+  </header>
+  <div id="composer"></div>
+
+  <div id="search">
+    <span class="btn" id="fxBtn">☰ фильтры<span class="badge" id="fxCount" style="display:none"></span></span>
+    <input type="search" id="q" placeholder="Поиск по темам, тегам и странам…" autocomplete="off" />
+    <span class="hits" id="hits"></span>
+  </div>
+
+  <div id="stage">
+    <canvas id="cv"></canvas>
+
+    <aside class="drawer" id="drawer">
+      <div class="drawer-head">
+        <b>Фильтры</b><span class="drawer-close" id="drawerClose">×</span>
+      </div>
+      <div id="facets"></div>
+    </aside>
+    <div id="level"></div>
+    <div id="zoomhint">колесо — масштаб · перетаскивание — панорама · клик по теме — открыть · f — во весь экран · h — скрыть панели</div>
+    <div id="tip"></div>
+
+    <aside id="panel">
+      <div class="p-head">
+        <span class="p-close" id="pClose">×</span>
+        <div class="p-dom" id="pDom"></div>
+        <div class="p-title" id="pTitle"></div>
+        <div class="p-meta" id="pMeta"></div>
+      </div>
+      <div class="p-stats">
+        <div><b id="pNodes">—</b>узлов</div>
+        <div><b id="pPeople">—</b>участников</div>
+        <div><b id="pPoi">—</b>PoI текста</div>
+      </div>
+      <div class="p-search">
+        <input type="search" id="pq" placeholder="Поиск внутри обсуждения…" autocomplete="off" />
+      </div>
+      <div class="p-body" id="pBody"></div>
+      <div class="p-foot"><button id="pOpen">Открыть обсуждение →</button></div>
+    </aside>
+  </div>
+</div>
+
+<script src="/map-data.js"></script>
+<script src="/map-ui.js"></script>
+<script>
+// ============================================================ STATE
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const dom = DOM_BY_ID;
+// Начальный масштаб подобран так, чтобы все двенадцать скоплений помещались
+// в экран целиком: иначе первое, что видит человек, — обрезанная карта.
+let nodes = [], view = { x:0, y:0, k:0.8 }, hover = null, selected = null;
+let facets = null;
+
+// ============================================================ LAYOUT
+// Домены раскладываются по кольцу; темы притягиваются к своему домену и
+// расталкивают друг друга. Это делает домен ВИДИМЫМ как скопление, не требуя
+// рамок и заголовков — то, чего не даёт ни дерево, ни плоский список.
+// Укладка «подсолнух» внутри каждого домена вместо силовой релаксации.
+// На 474 темах перебор всех пар (112 тысяч пар × сотни шагов) вешает вкладку
+// на секунды; здесь позиция считается сразу и без итераций. Крупные темы —
+// в центре скопления, мелкие по краю: домен читается как ядро с ореолом.
+function layout() {
+  const R = 470;
+  DOMAINS.forEach((d, i) => {
+    const a = (i / DOMAINS.length) * Math.PI * 2 - Math.PI / 2;
+    d.cx = Math.cos(a) * R; d.cy = Math.sin(a) * R * 0.78;
+  });
+
+  nodes = [];
+  const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+  for (const d of DOMAINS) {
+    const mine = TOPICS.filter(t => t.domain === d.id)
+                       .sort((a, b) => b.nodes - a.nodes);
+    const step = 12.5;
+    mine.forEach((t, i) => {
+      const ang = i * GOLDEN, rad = step * Math.sqrt(i);
+      nodes.push({ ...t, d,
+        x: d.cx + Math.cos(ang) * rad,
+        y: d.cy + Math.sin(ang) * rad,
+        r: 3.4 + Math.sqrt(t.nodes) * 1.25 });
+    });
+  }
+}
+
+// ============================================================ FILTERING
+const matches = n => matchTopic(n);
+
+function refresh() {
+  const n = nodes.filter(matches).length;
+  const filtered = QUERY || selectionCount();
+  document.getElementById("hits").textContent =
+    filtered ? `${n} из ${nodes.length}` : `${nodes.length} тем`;
+  const badge = document.getElementById("fxCount");
+  const c = selectionCount();
+  badge.style.display = c ? "" : "none";
+  badge.textContent = c;
+  draw();
+}
+
+// ============================================================ DRAW
+function resize() {
+  const dpr = window.devicePixelRatio || 1, s = cv.parentElement;
+  cv.width = s.clientWidth * dpr; cv.height = s.clientHeight * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  draw();
+}
+
+function toScreen(n) {
+  const w = cv.clientWidth / 2, h = cv.clientHeight / 2;
+  return { x: w + (n.x + view.x) * view.k, y: h + (n.y + view.y) * view.k };
+}
+
+function draw() {
+  const W = cv.clientWidth, H = cv.clientHeight;
+  ctx.clearRect(0, 0, W, H);
+
+  // Уровень масштаба решает, что показывать: издалека — домены, вблизи — темы.
+  // Иначе сотня пользовательских тем превращается в нечитаемую кашу подписей.
+  const zoomedOut = view.k < 0.55;
+  document.getElementById("level").innerHTML = zoomedOut
+    ? "уровень: <b>домены</b> · приблизь, чтобы увидеть темы"
+    : "уровень: <b>темы</b>";
+
+  // домены — мягкие подложки
+  for (const d of DOMAINS) {
+    const p = toScreen({ x: d.cx, y: d.cy });
+    const rad = (zoomedOut ? 150 : 185) * view.k;
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, rad);
+    g.addColorStop(0, d.color + (zoomedOut ? "26" : "18"));
+    g.addColorStop(1, d.color + "00");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(p.x, p.y, rad, 0, 7); ctx.fill();
+  }
+
+  if (zoomedOut) {
+    for (const d of DOMAINS) {
+      const p = toScreen({ x: d.cx, y: d.cy });
+      const list = nodes.filter(n => n.domain === d.id && matches(n));
+      ctx.fillStyle = list.length ? d.color : "#3a4050";
+      ctx.font = "600 15px Inter, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(d.name, p.x, p.y - 4);
+      ctx.font = "500 12px 'JetBrains Mono', monospace";
+      ctx.fillStyle = "#6f7688";
+      ctx.fillText(`${list.length} тем`, p.x, p.y + 15);
+    }
+    return;
+  }
+
+  // Название домена подписывается и на уровне тем: без него карта красивая,
+  // но немая — 12 разноцветных скоплений, про которые нельзя сказать, какое
+  // из них экономика. Подпись идёт НАД скоплением, чтобы не спорить с узлами.
+  for (const d of DOMAINS) {
+    const mine = nodes.filter(n => n.domain === d.id);
+    if (!mine.length) continue;
+    const top = Math.min(...mine.map(n => n.y - n.r));
+    const p = toScreen({ x: d.cx, y: top });
+    const shown = mine.filter(matches).length;
+    ctx.textAlign = "center";
+    ctx.font = "600 13px Inter, sans-serif";
+    ctx.fillStyle = shown ? d.color : "#3a4050";
+    ctx.fillText(d.name, p.x, p.y - 16);
+    ctx.font = "500 10.5px 'JetBrains Mono', monospace";
+    ctx.fillStyle = "#6f7688";
+    ctx.fillText(shown === mine.length ? `${mine.length}` : `${shown} из ${mine.length}`,
+                 p.x, p.y - 4);
+  }
+
+  for (const n of nodes) {
+    const p = toScreen(n), on = matches(n), r = n.r * view.k;
+    ctx.globalAlpha = on ? 1 : 0.13;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 7);
+    ctx.fillStyle = n.d.color + "2e"; ctx.fill();
+    ctx.lineWidth = (selected === n ? 2.5 : hover === n ? 2 : 1.2);
+    ctx.strokeStyle = (selected === n || hover === n) ? n.d.color : n.d.color + "9a";
+    ctx.stroke();
+    // Подписи только у крупных и только на большом увеличении: на 474 темах
+    // подписать всё — значит не подписать ничего, они лягут друг на друга.
+    if (view.k > 1.5 && on && (n.nodes > 25 || n === hover)) {
+      ctx.globalAlpha = 1;
+      ctx.font = "500 11px Inter, sans-serif";
+      ctx.textAlign = "center"; ctx.fillStyle = "#9aa0b0";
+      const short = n.title.length > 30 ? n.title.slice(0, 28) + "…" : n.title;
+      ctx.fillText(short, p.x, p.y + r + 12);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ============================================================ INTERACTION
+function nodeAt(mx, my) {
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const n = nodes[i], p = toScreen(n);
+    if (Math.hypot(mx - p.x, my - p.y) <= n.r * view.k + 3 && matches(n)) return n;
+  }
+  return null;
+}
+
+let dragging = false, last = null;
+cv.addEventListener("mousedown", e => { dragging = true; last = e; cv.classList.add("drag"); });
+window.addEventListener("mouseup", () => { dragging = false; cv.classList.remove("drag"); });
+cv.addEventListener("mousemove", e => {
+  const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  if (dragging) {
+    view.x += (e.clientX - last.clientX) / view.k;
+    view.y += (e.clientY - last.clientY) / view.k;
+    last = e; draw(); return;
+  }
+  const n = view.k < 0.55 ? null : nodeAt(mx, my);
+  const tip = document.getElementById("tip");
+  if (n !== hover) { hover = n; draw(); }
+  if (n) {
+    tip.style.display = "block";
+    tip.style.left = Math.min(mx + 16, cv.clientWidth - 290) + "px";
+    tip.style.top = (my + 16) + "px";
+    tip.innerHTML = `<div class="t">${n.title}</div><div class="m">${n.d.name}` +
+      (n.geo.length ? " · " + n.geo.join(", ") : "") +
+      `<br>${n.nodes} узлов · ${n.people} участников</div>`;
+  } else tip.style.display = "none";
+});
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  const f = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+  view.k = Math.max(0.3, Math.min(2.6, view.k * f));
+  draw();
+}, { passive:false });
+cv.addEventListener("click", e => {
+  const r = cv.getBoundingClientRect();
+  const n = view.k < 0.55 ? null : nodeAt(e.clientX - r.left, e.clientY - r.top);
+  if (n) openPanel(n); else closePanel();
+});
+
+// ============================================================ PANEL
+let BRANCH = [];
+
+async function openPanel(n) {
+  selected = n;
+  document.getElementById("panel").classList.add("open");
+  const pd = document.getElementById("pDom");
+  pd.textContent = n.d.name + (n.sub ? " · " + n.sub : ""); pd.style.color = n.d.color;
+  document.getElementById("pTitle").textContent = n.title;
+  document.getElementById("pMeta").innerHTML =
+    [...n.geo.map(g => `<span class="tag">📍 ${g}</span>`),
+     ...n.tags.map(t => `<span class="tag">#${t}</span>`)].join("");
+  document.getElementById("pNodes").textContent = n.nodes;
+  document.getElementById("pPeople").textContent = n.people;
+  document.getElementById("pPoi").textContent = n.poi;
+  document.getElementById("pq").value = "";
+  const open = document.getElementById("pOpen");
+  open.style.display = n.id > 0 ? "" : "none";
+  open.onclick = () => { location.href = `/?topic=${n.id}`; };
+  draw();
+
+  BRANCH = [];
+  document.getElementById("pBody").innerHTML =
+    `<div class="empty">${n.id > 0 ? "загружаю ветку…" : "демо-тема — ветки нет"}</div>`;
+  BRANCH = await loadBranch(n.id);
+  if (selected === n) renderArgs("");
+}
+function closePanel() {
+  selected = null;
+  document.getElementById("panel").classList.remove("open");
+  draw();
+}
+document.getElementById("pClose").onclick = closePanel;
+
+// Поиск ВНУТРИ обсуждения: не отдельная страница, а строка над веткой —
+// совпадения подсвечиваются на месте, остальное гасится, структура ветки видна.
+function renderArgs(q) {
+  q = q.trim().toLowerCase();
+  const body = document.getElementById("pBody");
+  if (!BRANCH.length) {
+    body.innerHTML = `<div class="empty">в этой теме пока нет ответов — будь первым</div>`;
+    return;
+  }
+  let hit = 0;
+  body.innerHTML = BRANCH.map(a => {
+    const on = !q || a.t.toLowerCase().includes(q);
+    if (q && on) hit++;
+    const text = (q && on)
+      ? a.t.replace(new RegExp("(" + q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "gi"),
+                    "<mark>$1</mark>")
+      : a.t;
+    return `<div class="arg ${a.s} ${on ? "" : "dim"}">${text}<div class="who">${a.who}</div></div>`;
+  }).join("");
+  if (q) body.insertAdjacentHTML("afterbegin",
+    `<div class="empty">${hit ? `нашлось ${hit}` : "ничего не нашлось"} в этой ветке</div>`);
+}
+document.getElementById("pq").addEventListener("input", e => renderArgs(e.target.value));
+
+// ============================================================ FACETS
+const drawer = document.getElementById("drawer");
+document.getElementById("fxBtn").onclick = () => drawer.classList.toggle("open");
+document.getElementById("drawerClose").onclick = () => drawer.classList.remove("open");
+
+document.getElementById("q").addEventListener("input", e => {
+  setQuery(e.target.value);
+  facets.render();      // счётчики зависят и от строки поиска, не только от фасетов
+  refresh();
+});
+
+window.addEventListener("resize", resize);
+
+(async function init() {
+  const lvl = document.getElementById("level");
+  lvl.textContent = "загружаю…";
+  try { await loadMapData(); }
+  catch (e) { lvl.textContent = "не загрузилось: " + e.message; return; }
+
+  setupScreen({ onResize: resize });
+  facets = buildFacets(document.getElementById("facets"), refresh);
+
+  const demo = document.getElementById("demoBtn");
+  demo.textContent = DEMO ? "◆ демо-данные" : "◇ демо-данные";
+  demo.classList.toggle("on", DEMO);
+  demo.href = DEMO ? location.pathname : location.pathname + "?demo=1";
+
+  const composer = mountComposer(document.getElementById("composer"), {
+    onCreated: async () => { await loadMapData(); layout(); facets.render(); refresh(); },
+  });
+  document.getElementById("newBtn").onclick = composer.open;
+
+  layout(); resize(); refresh();
+})();
+</script>
+</body>
+</html>

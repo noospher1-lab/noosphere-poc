@@ -32,7 +32,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
 
-from . import (auth, db, dialogue as dialogue_mod, material, poi, voteweight,
+from . import (auth, db, dialogue as dialogue_mod, material, poi, taxonomy,
+               voteweight,
                votedialogue, pools as pools_mod)
 
 
@@ -463,6 +464,12 @@ class ArgumentIn(BaseModel):
     edge_type: str | None = "support"     # support / refute / qualify / question
     kind: str | None = "argument"         # "question" marks a question node (a root can be one)
     title: str | None = None              # required when this opens a new topic (connect_to is None)
+    # Рубрика — только для новой темы (connect_to is None). Ответу внутри
+    # ветки она не нужна: он наследует рубрику корня.
+    domain: str | None = None
+    sub: str | None = None
+    geo: list[str] | None = None
+    tags: list[str] | None = None
 
 
 class EdgeIn(BaseModel):
@@ -525,6 +532,55 @@ async def get_topics():
     return await db.list_topics()
 
 
+@app.get("/api/taxonomy")
+async def get_taxonomy():
+    """Направления, подветви и география — один источник для карты и формы.
+
+    Открыто без входа: это справочник, а не данные участников, и карта должна
+    рисоваться до того, как человек залогинился.
+    """
+    return taxonomy.as_dict()
+
+
+@app.get("/api/map/topics")
+async def get_map_topics():
+    """Темы с рубрикой и статистикой — то, из чего строится карта."""
+    return await db.map_topics()
+
+
+class FacetsIn(BaseModel):
+    domain: str
+    sub: str | None = None
+    geo: list[str] | None = None
+    tags: list[str] | None = None
+
+
+@app.put("/api/topics/{topic_root_id}/facets")
+async def put_topic_facets(topic_root_id: int, body: FacetsIn,
+                           author=Depends(current_author)):
+    """Проставить или поменять рубрику темы.
+
+    Правит любой участник, а не только автор: рубрика — это навигация, общая
+    для всех, и одна чужая опечатка иначе заперла бы тему в неверной ветке.
+    Правка попадает в event log, так что видно, кто менял.
+    """
+    node = await db.get_node(topic_root_id)
+    if node is None:
+        raise HTTPException(404, f"тема {topic_root_id} не найдена")
+    if node.get("topic_root_id") != topic_root_id:
+        raise HTTPException(400, "рубрика ставится только корню обсуждения")
+    try:
+        dom, sub, geo, tags = taxonomy.validate(body.domain, body.sub,
+                                                body.geo, body.tags)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await db.set_topic_facets(topic_root_id, dom, sub,
+                              sorted(taxonomy.geo_closure(geo)), tags,
+                              author_id=author["id"], event="topic_recategorized")
+    return {"ok": True, "topic": topic_root_id,
+            "domain": dom, "sub": sub, "geo": geo, "tags": tags}
+
+
 # The tree UI's read contract (scaling draft, principle 3): the client asks for
 # the NODE it looks at and a RANKED PAGE of children — never the whole graph.
 # /api/graph stays only for the force-directed visualization mode.
@@ -565,6 +621,16 @@ async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
         title = (arg.title or "").strip()
         if not title:
             raise HTTPException(400, "title is required to open a new topic")
+        # Рубрика проверяется ДО создания узла: тема, созданная и тут же
+        # оставшаяся без рубрики из-за отказа валидации, потерялась бы на
+        # карте — видимая в дереве, но не находимая ни одним фильтром.
+        if arg.domain:
+            try:
+                facets = taxonomy.validate(arg.domain, arg.sub, arg.geo, arg.tags)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+        else:
+            facets = None
 
     # questions, proposals and explorations are first-class contributions
     # anywhere — as a reply (edge_type) or as a topic root (kind, no edge)
@@ -575,6 +641,12 @@ async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
     # 1. persist the node RIGHT AWAY, unscored (poi_score = NULL)
     node_id = await db.add_node(arg.text, author_id=author["id"], kind=kind,
                                 topic_root_id=root_id, title=title)
+
+    # 1b. рубрика новой темы — сразу после узла, тем же запросом-цепочкой
+    if arg.connect_to is None and facets:
+        dom, sub, geo, tags = facets
+        await db.set_topic_facets(node_id, dom, sub,
+                                  sorted(taxonomy.geo_closure(geo)), tags)
 
     # 2. optional typed edge to an existing node (None = a new root branch)
     edge = None
