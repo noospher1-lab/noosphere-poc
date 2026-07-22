@@ -66,6 +66,17 @@
   .vote .meta .st { color:var(--dim); }
   .vote .why { color:var(--dim); font-size:13px; margin-top:6px; line-height:1.55;
     border-left:2px solid var(--line2); padding-left:10px; }
+  /* активность по текстам */
+  .act { border-top:1px solid var(--line); padding:11px 0; }
+  .act:first-child { border-top:0; }
+  .act .disc { font-weight:600; line-height:1.4; }
+  .act .disc a { color:var(--ivory); }
+  .act .badge { font-size:11px; padding:1px 8px; border-radius:99px;
+    border:1px solid var(--line2); color:var(--dim2); margin-left:8px; font-weight:500; }
+  .act .badge.made { color:var(--bronze); border-color:var(--bronze); }
+  .act .item { margin-top:7px; padding-left:10px; border-left:2px solid var(--line2); }
+  .act .item .rel { font-size:11.5px; color:var(--dim2); font-family:var(--mono); }
+  .act .item .t { color:var(--dim); line-height:1.5; margin-top:2px; }
 </style>
 </head>
 <body>
@@ -102,6 +113,13 @@
         складывается доверие к нему. Система репутацию не считает и не хранит:
         она лишь показывает след, а судят люди сами.</p>
       <div id="votesList"></div>
+    </div>
+
+    <div class="card hidden" id="activityCard">
+      <div class="section-title">Активность по текстам</div>
+      <p class="note">В каких обсуждениях участвовал, что писал, какие темы и
+        проблемы создавал.</p>
+      <div id="activityList"></div>
     </div>
 
     <div class="card" id="contribCard">
@@ -176,6 +194,44 @@ async function loadVotes(id) {
   } catch (_) { return null; }
 }
 
+const KIND_LABEL = { problem: "проблема", argument: "тезис", question: "вопрос",
+  proposal: "предложение", exploration: "разбор", attribution: "атрибуция" };
+const REL_LABEL = { support: "за", refute: "против", qualify: "уточнение",
+  question: "вопрос", undercut: "подрыв", proposal: "предложение", exploration: "разбор" };
+
+function renderActivity(activity) {
+  const box = $("#activityList");
+  if (!activity || !activity.length) {
+    box.innerHTML = '<p class="muted" style="margin:0">Пока ничего не написано.</p>';
+    $("#activityCard").classList.remove("hidden");
+    return;
+  }
+  box.innerHTML = activity.map((g) => {
+    const made = g.created
+      ? `<span class="badge made">создал ${g.topic_kind === "problem" ? "проблему" : "тему"}</span>`
+      : "";
+    const items = g.items.filter((it) => !it.is_root).map((it) => {
+      const label = it.rel ? (REL_LABEL[it.rel] || it.rel) : (KIND_LABEL[it.kind] || it.kind);
+      const poi = it.poi_score != null ? ` · PoI ${it.poi_score}` : "";
+      return `<div class="item"><span class="rel">${esc(label)}${poi}</span>
+        <div class="t">${esc(it.text)}</div></div>`;
+    }).join("");
+    return `<div class="act">
+      <div class="disc"><a href="/?topic=${g.topic_root_id}" target="_blank">${esc(g.topic_title)}</a>${made}</div>
+      ${items}
+    </div>`;
+  }).join("");
+  $("#activityCard").classList.remove("hidden");
+}
+
+async function loadActivity(id) {
+  try {
+    const r = await fetch(`/api/authors/${id}/activity`);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (_) { return null; }
+}
+
 // Публичный профиль другого аккаунта: только то, что публично — имя и история
 // голосований. Приватное (счёт, вклад, данные) скрыто.
 async function loadPublic(id) {
@@ -193,6 +249,8 @@ async function loadPublic(id) {
   $("#contribCard").classList.add("hidden");
   $("#accountCard").classList.add("hidden");
   renderVotes(data.votes);
+  const act = await loadActivity(id);
+  if (act) renderActivity(act.activity);
   $("#content").classList.remove("hidden");
 }
 
@@ -253,6 +311,8 @@ async function load() {
   $("#content").classList.remove("hidden");
   const mine = await loadVotes(a.id);
   if (mine) renderVotes(mine.votes);
+  const myActivity = await loadActivity(a.id);
+  if (myActivity) renderActivity(myActivity.activity);
 }
 
 const _pid = new URLSearchParams(location.search).get("id");

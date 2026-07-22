@@ -1427,6 +1427,47 @@ async def author_votes(author_id):
     return out
 
 
+async def author_activity(author_id):
+    """Полная текстовая активность аккаунта: что писал и в каких обсуждениях,
+    какие темы/проблемы создавал. Сгруппировано по обсуждению; внутри — вклады
+    автора (тезисы, ответы, вопросы, атрибуции) с типом связи и PoI текста.
+    Материал транзакционной репутации наравне с историей голосований."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT n.id, n.text, n.title, n.kind, n.poi_score, n.created_at,
+                   n.topic_root_id, (n.id = n.topic_root_id) AS is_root,
+                   r.title AS topic_title, r.text AS topic_text, r.kind AS topic_kind,
+                   (SELECT e.type FROM edges e WHERE e.source_id = n.id LIMIT 1) AS rel
+            FROM nodes n
+            JOIN nodes r ON r.id = n.topic_root_id
+            WHERE n.author_id = $1 AND n.atom_group IS NULL
+            ORDER BY n.created_at DESC
+            """, author_id)
+    groups, order = {}, []
+    for r in rows:
+        t = r["topic_root_id"]
+        g = groups.get(t)
+        if g is None:
+            g = {"topic_root_id": t,
+                 "topic_title": r["topic_title"]
+                     or (r["topic_text"][:60] if r["topic_text"] else "#" + str(t)),
+                 "topic_kind": r["topic_kind"],
+                 "created": False, "items": []}
+            groups[t] = g
+            order.append(t)
+        if r["is_root"]:
+            g["created"] = True     # автор создал это обсуждение (написал корень)
+        g["items"].append({
+            "id": r["id"], "text": r["text"], "kind": r["kind"],
+            "is_root": r["is_root"], "rel": r["rel"],
+            "poi_score": r["poi_score"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        })
+    return [groups[t] for t in order]
+
+
 async def set_balance(author_id, amount_usd):
     pool = _pool_or_raise()
     async with pool.acquire() as conn:

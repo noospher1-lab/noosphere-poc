@@ -999,6 +999,17 @@ async def get_author_votes(author_id: int):
             "votes": await db.author_votes(author_id)}
 
 
+@app.get("/api/authors/{author_id}/activity")
+async def get_author_activity(author_id: int):
+    """Публичная текстовая активность аккаунта — что писал и в каких обсуждениях,
+    какие темы/проблемы создавал. Материал транзакционной репутации."""
+    a = await db.get_author(author_id)
+    if a is None:
+        raise HTTPException(404, f"аккаунт {author_id} не найден")
+    return {"author": {k: a.get(k) for k in ("id", "name", "color", "username")},
+            "activity": await db.author_activity(author_id)}
+
+
 @app.post("/api/authors", dependencies=[Depends(dev_only)])
 async def create_author(author: AuthorIn):
     if not author.name.strip():
