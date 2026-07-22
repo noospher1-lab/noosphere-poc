@@ -138,6 +138,7 @@ function normalize(data) {
       poi_score: score01,                       // 0..1 for the HUD bar
       confidence: maxIn > 0 ? inD / maxIn : 0,   // centrality proxy (in-degree)
       author: n.author || null,
+      author_id: n.author_id ?? null,           // для ссылки на профиль автора в HUD
       authorColor: n.author_color || null,
       breakdown: bd,
     };
@@ -372,8 +373,6 @@ async function renderDiscussion() {
   // Deterministic tree: a reply branches off the node it answers (X = depth).
   layoutTree(nodes, edges, currentTopicId);
   installGraph(nodes, edges, true);
-  await loadTopicPoi();
-  applyLens();
 }
 
 // Tear down all rebuildable content (meshes, pipes, DOM labels, pulses).
@@ -751,16 +750,17 @@ function openHud(n) {
     c.textContent = n.label || '—';
   }
 
-  // null-safe: у проблемы/неоценённого узла confidence может отсутствовать
-  const conf = (n.confidence == null || isNaN(n.confidence)) ? 0 : n.confidence;
-  document.getElementById('hud-conf').textContent = conf.toFixed(2);
-  document.getElementById('hud-conf-fill').style.width = `${conf*100}%`;
-
-  document.getElementById('hud-author').textContent = n.author || '—';
-  const ap = n.author != null ? topicPoi[n.author] : null;
-  document.getElementById('hud-rep').textContent = ap == null ? '—' : ap.toFixed(0);
-  document.getElementById('hud-weight').textContent =
-    (n.weight != null ? n.weight : computeWeight(n.poi_score)).toFixed(2);
+  // имя автора → его публичный профиль (история голосований), новая вкладка.
+  // «PoI автора в теме», «Вес аргумента», Centrality убраны — старая модель/мертво.
+  const authEl = document.getElementById('hud-author');
+  authEl.innerHTML = '';
+  if (n.author_id) {
+    const a = document.createElement('a');
+    a.textContent = n.author || '—';
+    a.href = '/profile.html?id=' + n.author_id;
+    a.target = '_blank'; a.style.color = 'var(--bronze)';
+    authEl.appendChild(a);
+  } else { authEl.textContent = n.author || '—'; }
 
   updateHudScore(n.poi_score, 0);
   updateArgTarget();   // a node is now selected — reflect it in the add form
@@ -955,15 +955,8 @@ function updateArgTarget() {
 }
 
 async function loadAuthorsForForm() {
-  try { authorsCache = await (await fetch('/api/authors')).json(); }
-  catch (e) { console.error('authors load failed', e); return; }
-  // who is reacting (in the HUD reaction row)
-  const rx = document.getElementById('rx-author');
-  if (rx) {
-    const rp = rx.value;
-    rx.innerHTML = authorsCache.map((a) => `<option value="${a.id}">${a.name}</option>`).join('');
-    if (rp) rx.value = rp;
-  }
+  // персон-дропдаунов больше нет — реакции и действия с пулами идут от твоего
+  // аккаунта (сессия), без подмены. Оставлено пустым (вызовы не трогаем).
 }
 
 // PoI-weighted reactions on the open node.
@@ -979,38 +972,20 @@ async function loadReactions(nodeId) {
   // поощряет накрутку числом. Вес голоса восстановлен (poi-weight-restored,
   // 2026-07-21), но формула ещё не зафиксирована — витрину не трогаем.
   // (a sum would read as a PoI-weighted vote). The histogram below shows spread.
-  const avgTag = (s) => s.avg != null ? ` (ср. PoI ${Math.round(s.avg)})` : '';
-  summary.innerHTML = `· 👍 ${d.agree.count}${avgTag(d.agree)} · 👎 ${d.disagree.count}${avgTag(d.disagree)}`;
-
-  const maxCount = Math.max(1, ...d.agree.buckets.map((b) => b.count), ...d.disagree.buckets.map((b) => b.count));
-  const UNIT = 70;
-  let rows = '';
-  for (let i = 0; i < 10; i++) {
-    const a = d.agree.buckets[i].count, dd = d.disagree.buckets[i].count;
-    if (!a && !dd) continue;
-    rows += `<div class="rx-row">
-      <span class="lab">${d.agree.buckets[i].label}</span>
-      <span class="bars">
-        ${a ? `<span class="bar a" style="width:${(a / maxCount) * UNIT}px"></span>` : ''}
-        ${dd ? `<span class="bar d" style="width:${(dd / maxCount) * UNIT}px"></span>` : ''}
-      </span>
-      <span class="cnt">${a ? '+' + a : ''}${dd ? ' −' + dd : ''}</span>
-    </div>`;
-  }
-  const nd = d.agree.no_data + d.disagree.no_data;
-  if (!rows) rows = '<div class="rx-empty">пока нет реакций</div>';
-  else if (nd) rows += `<div class="rx-empty">без PoI в теме: ${nd}</div>`;
-  hist.innerHTML = rows;
+  // счётчики — одна голова один сигнал; PoI-веса у реакции больше нет
+  summary.innerHTML = `· 👍 ${d.agree.count} · 👎 ${d.disagree.count}`;
+  hist.innerHTML = (d.agree.count || d.disagree.count)
+    ? '' : '<div class="rx-empty">пока нет реакций</div>';
 }
 
 async function react(stance) {
   if (selectedId == null) return;
-  const aid = document.getElementById('rx-author').value;
-  if (!aid) return;
-  await fetch('/api/reactions', {
+  // от твоего аккаунта (сессия) — без подмены персон
+  const r = await fetch('/api/reactions', {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ node_id: selectedId, author_id: parseInt(aid), stance }),
+    body: JSON.stringify({ node_id: selectedId, stance }),
   });
+  if (r.status === 401) { setArgStatus('Войди, чтобы реагировать', 'err'); return; }
   await loadReactions(selectedId);
 }
 
@@ -1038,13 +1013,11 @@ function renderPoolHud(n) {
   document.getElementById('hud-label').textContent = truncate(n.label, 60);
   const s = n.support;
   const args = n.member_texts.map((t) => `<div style="${SRC}">${escapeHtml(t)}</div>`).join('');
-  const personas = authorsCache.map((a) => `<option value="${a.id}">${a.name}</option>`).join('');
   document.getElementById('hud-content').innerHTML =
     `<div style="margin-bottom:10px;color:#ece6d8;white-space:pre-wrap;line-height:1.55">${escapeHtml(n.composed || n.label)}</div>`
     + `<div style="color:var(--bronze);font-size:11px;margin-bottom:12px">👥 поддержали: ${s.count}</div>`
     + `<div style="border-top:1px solid rgba(216,175,110,0.18);padding-top:10px;margin-bottom:8px">`
-    + `<div style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--bronze);margin-bottom:6px">Действие с позицией</div>`
-    + `<select id="pool-author" style="width:100%;font-family:var(--mono);font-size:10px;color:var(--ivory);background:rgba(5,6,10,0.6);border:1px solid rgba(216,175,110,0.22);border-radius:3px;padding:5px;margin-bottom:6px">${personas}</select>`
+    + `<div style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--bronze);margin-bottom:6px">Действие с позицией (от твоего аккаунта)</div>`
     + `<div style="display:flex;flex-wrap:wrap;gap:5px">`
     + `<button id="pool-support" class="rx-btn agree" style="flex:1 1 45%">👍 Поддержать</button>`
     + `<button id="pool-contest" class="rx-btn disagree" style="flex:1 1 45%">👎 Оспорить</button>`
@@ -1095,12 +1068,12 @@ function renderPlanetHud(n) {
 
 // Support a position: a PoI-weighted vote ON the position (stable id).
 async function poolVote(n) {
-  const aid = document.getElementById('pool-author').value;
-  if (!aid) return;
-  await fetch(`/api/positions/${n.posId}/vote`, {
+  // от твоего аккаунта (сессия), без подмены персон
+  const r = await fetch(`/api/positions/${n.posId}/vote`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ author_id: parseInt(aid), stance: 'agree' }),
+    body: JSON.stringify({ stance: 'agree' }),
   });
+  if (r.status === 401) { setArgStatus('Войди, чтобы поддержать', 'err'); return; }
   await buildPoolGraph(false);
   hud.classList.remove('open');
 }
@@ -1225,9 +1198,6 @@ async function togglePools(on) {
   document.getElementById('poolspanel').classList.toggle('open', poolsOn);
   hud.classList.remove('open');
   if (poolsOn) {
-    lensOn = false;
-    document.getElementById('tab-lens').classList.remove('active');
-    document.getElementById('lens-legend').classList.remove('show');
     await buildPoolGraph(false);
   } else {
     await renderDiscussion();
@@ -1236,70 +1206,17 @@ async function togglePools(on) {
 
 // Each persona's PoI IN THE CURRENT TOPIC — drives both the lens and the test
 // sliders. PoI is domain-specific, so this is fetched per discussion.
-async function loadTopicPoi() {
-  // Линза PoI отключена (решение 2026-07-22): система не считает и не показывает
-  // постоянное «стояние» участника. Эндпоинт /api/topic_poi удалён — не дёргаем
-  // его (иначе 404 → объект вместо массива → падение всей отрисовки графа).
-  topicPoi = {}; topicPoiRows = [];
-  renderTopicPanel();
-}
-
-function renderTopicPanel() {
-  const list = document.getElementById('authors-list');
-  if (!list) return;
-  if (currentTopicId == null) { list.innerHTML = '<div class="hint">нет активной темы</div>'; return; }
-  list.innerHTML = topicPoiRows.map((a) => `
-    <div class="author-row" data-id="${a.author_id}">
-      <div class="top">
-        <span class="nm"><span class="dot" style="background:${a.color || '#8899aa'}"></span>${a.name}</span>
-        <span class="rep">${a.poi == null ? '—' : a.poi.toFixed(0)}</span>
-      </div>
-      <input type="range" min="0" max="100" value="${a.poi == null ? 50 : a.poi}" />
-    </div>`).join('');
-
-  list.querySelectorAll('.author-row').forEach((row) => {
-    const id = parseInt(row.dataset.id);
-    const range = row.querySelector('input[type=range]');
-    const rep = row.querySelector('.rep');
-    range.addEventListener('input', () => { rep.textContent = range.value; });
-    range.addEventListener('change', async () => {
-      await fetch(`/api/topic_poi/${currentTopicId}/${id}`, {
-        method: 'PATCH', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ poi: parseFloat(range.value) }),
-      });
-      await loadTopicPoi();   // refresh map + sliders
-      applyLens();            // recolor nodes if lens is on
-    });
-  });
-}
-
-// PoI lens: colour each node by its AUTHOR'S PoI in the current topic — so you
-// can see at a glance who argued from understanding and who didn't. This never
-// touches argument weight; it's purely a viewing lens.
-function poiTier(poi) {
-  if (poi == null) return 0x555a66;   // no data — grey
-  if (poi >= 70) return 0x57d98a;     // high — green
-  if (poi >= 40) return 0xe2933f;     // mid — orange
-  return 0xe25b56;                    // low — red
-}
-function applyLens() {
-  for (const nm of nodeMeshes.values()) {
-    const n = nm.node;
-    const col = lensOn
-      ? new THREE.Color(poiTier(n.author != null ? topicPoi[n.author] : null))
-      : nodeColor(n);
-    nm.mesh.material.color.copy(col);
-    nm.mesh.material.emissive.copy(col).multiplyScalar(0.35);
-    nm.glow.material.color.copy(col);
-  }
-}
+// Линза PoI удалена полностью (решение 2026-07-22): система не считает и не
+// показывает постоянное «стояние» участника. Узлы окрашиваются по автору (nodeColor).
 
 async function refreshWeights() {
+  const el = document.getElementById('weights-list');
+  if (!el) return;   // таблицы весов нет в разметке (дев-стенд убран) — тихо выходим
   let rows;
   try { rows = await (await fetch('/api/weights')).json(); }
   catch (e) { return; }
   rows.sort((a, b) => (b.weight || 0) - (a.weight || 0));
-  document.getElementById('weights-list').innerHTML = rows.slice(0, 30).map((r) => `
+  el.innerHTML = rows.slice(0, 30).map((r) => `
     <div class="wrow">
       <span class="t">${truncate(r.text || '', 26)}</span>
       <span class="a">${r.author || '—'}</span>
@@ -1420,14 +1337,6 @@ function initPanels() {
   document.getElementById('rx-agree').onclick = () => react('agree');
   document.getElementById('rx-disagree').onclick = () => react('disagree');
 
-  // PoI lens toggle
-  const tabLens = document.getElementById('tab-lens');
-  tabLens.onclick = () => {
-    lensOn = !lensOn;
-    tabLens.classList.toggle('active', lensOn);
-    document.getElementById('lens-legend').classList.toggle('show', lensOn);
-    applyLens();
-  };
 
   // topic (discussion) switcher — stub for the future topics menu
   document.getElementById('topicsel').onchange = async (e) => {

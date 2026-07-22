@@ -122,15 +122,6 @@
     border: 1px solid var(--line2); border-radius: 6px; padding: 6px 10px;
   }
 
-  /* ---- PoI lens tier legend ---- */
-  #lens-legend {
-    position: fixed; bottom: 40px; left: 20px; font-family: var(--mono);
-    font-size: 9px; letter-spacing: 0.1em; color: #8a8576; display: none; gap: 14px;
-  }
-  #lens-legend.show { display: flex; }
-  #lens-legend span { display: inline-flex; align-items: center; gap: 6px; }
-  #lens-legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
-
   /* ---- HUD panel ---- */
   #hud {
     position: fixed; top: calc(var(--header-h) + 12px); right: 18px; width: 300px; max-width: calc(100vw - 36px);
@@ -334,18 +325,11 @@
       <div class="track"><div class="fill poi" id="hud-poi-fill"></div></div>
     </div>
     <div class="meter">
-      <div class="row"><span class="k">Centrality</span><span class="v" id="hud-conf">0.00</span></div>
-      <div class="track"><div class="fill" id="hud-conf-fill"></div></div>
-    </div>
-    <div class="meter">
       <div class="row"><span class="k">Автор</span><span class="v" id="hud-author">—</span></div>
-      <div class="row"><span class="k">PoI автора в теме</span><span class="v" id="hud-rep">—</span></div>
-      <div class="row"><span class="k">Вес аргумента</span><span class="v" id="hud-weight">—</span></div>
     </div>
     <div id="hud-reactions">
       <div class="rx-head">Реакции <span id="rx-summary"></span></div>
       <div class="rx-act">
-        <select id="rx-author"></select>
         <button id="rx-agree" class="rx-btn agree">👍 За</button>
         <button id="rx-disagree" class="rx-btn disagree">👎 Против</button>
       </div>
@@ -366,15 +350,7 @@
   <!-- left toolbar -->
   <div id="tools">
     <button id="tab-add">+ Новая тема</button>
-    <button id="tab-lens">Линза PoI</button>
     <button id="tab-pools">Пулы (ИИ)</button>
-  </div>
-
-  <div id="lens-legend">
-    <span><i style="background:#57d98a"></i>высокий ≥70</span>
-    <span><i style="background:#e2933f"></i>средний 40–69</span>
-    <span><i style="background:#e25b56"></i>низкий &lt;40</span>
-    <span><i style="background:#555a66"></i>нет данных</span>
   </div>
 
   <!-- Новая тема. Только корень: «ответ на узел» отсюда убран — на графе не
