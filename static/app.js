@@ -784,8 +784,13 @@ function updateHudScore(score, delta) {
 document.getElementById('hud-close').onclick = () => { hud.classList.remove('open'); selectedId = null; };
 
 renderer.domElement.addEventListener('pointerdown', (e) => {
-  pointer.x = (e.clientX / innerWidth) * 2 - 1;
-  pointer.y = -(e.clientY / innerHeight) * 2 + 1;
+  // Координаты клика — ОТНОСИТЕЛЬНО канваса, а не окна: канвас смещён вниз под
+  // шапку (~49px). Без вычета offset рейкастер целился на ~49px выше узла, и
+  // обычный клик по узлу всегда промахивался. getBoundingClientRect надёжен при
+  // любом смещении и размере.
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
   // non-recursive: hit only the node spheres, not their glow sprites (which
   // carry no id and otherwise swallow clicks)
