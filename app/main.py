@@ -990,6 +990,18 @@ async def get_authors():
     return await db.list_authors()
 
 
+@app.get("/api/authors/{author_id}/votes")
+async def get_author_votes(author_id: int):
+    """Публичная история голосований аккаунта — материал транзакционной репутации.
+    Открыто без входа: судить о том, как и за что голосует аккаунт, должны мочь все.
+    Система репутацию не считает, только показывает след."""
+    a = await db.get_author(author_id)
+    if a is None:
+        raise HTTPException(404, f"аккаунт {author_id} не найден")
+    return {"author": {k: a.get(k) for k in ("id", "name", "color", "username")},
+            "votes": await db.author_votes(author_id)}
+
+
 @app.post("/api/authors", dependencies=[Depends(dev_only)])
 async def create_author(author: AuthorIn):
     if not author.name.strip():

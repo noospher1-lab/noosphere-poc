@@ -1389,6 +1389,44 @@ async def activity_summary(author_id):
     return d
 
 
+async def author_votes(author_id):
+    """Публичная история голосований аккаунта: за что и как голосовал, с каким
+    весом, в каком голосовании, и «почему» (резюме диалога-обоснования). Это
+    материал, из которого люди сами строят транзакционную репутацию — система
+    ничего не оценивает, только показывает след. Сгруппировано по голосованию
+    (approval: один голос может отметить несколько опций)."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT v.decision_id, d.question, d.status, d.topic_root_id,
+                   v.weight, v.revision, v.cast_at,
+                   COALESCE(o.label, p.headline) AS option_label, o.origin,
+                   vd.summary AS why, vd.score AS dialogue_score
+            FROM votes v
+            JOIN decisions d ON d.id = v.decision_id
+            JOIN decision_options o ON o.id = v.option_id
+            LEFT JOIN positions p ON p.id = o.position_id
+            LEFT JOIN vote_dialogues vd ON vd.id = v.vote_dialogue_id
+            WHERE v.author_id = $1
+            ORDER BY v.cast_at DESC NULLS LAST, v.decision_id DESC
+            """, author_id)
+    out, by_dec = [], {}
+    for r in rows:
+        d = by_dec.get(r["decision_id"])
+        if d is None:
+            d = {"decision_id": r["decision_id"], "question": r["question"],
+                 "status": r["status"], "topic_root_id": r["topic_root_id"],
+                 "weight": r["weight"], "revision": r["revision"],
+                 "cast_at": r["cast_at"].isoformat() if r["cast_at"] else None,
+                 "why": r["why"], "dialogue_score": r["dialogue_score"],
+                 "options": []}
+            by_dec[r["decision_id"]] = d
+            out.append(d)
+        d["options"].append({"label": r["option_label"], "origin": r["origin"]})
+    return out
+
+
 async def set_balance(author_id, amount_usd):
     pool = _pool_or_raise()
     async with pool.acquire() as conn:

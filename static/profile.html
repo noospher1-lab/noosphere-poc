@@ -53,6 +53,19 @@
   .err { background:rgba(236,107,102,.1); border:1px solid rgba(236,107,102,.35);
     color:#ffb3b0; padding:11px 14px; border-radius:8px; margin:14px 0; }
   .hidden { display:none; }
+  /* история голосований — материал транзакционной репутации */
+  .vote { border-top:1px solid var(--line); padding:11px 0; }
+  .vote:first-child { border-top:0; }
+  .vote .q { font-weight:600; line-height:1.4; }
+  .vote .opts { margin:6px 0; display:flex; flex-wrap:wrap; gap:6px; }
+  .vote .opt { font-size:12.5px; padding:2px 9px; border-radius:99px;
+    border:1px solid var(--line2); color:var(--ivory); }
+  .vote .opt.reframe { color:var(--bronze); border-color:var(--bronze); }
+  .vote .meta { color:var(--dim2); font-size:12px; font-family:var(--mono); }
+  .vote .meta .w { color:var(--bronze); font-weight:600; }
+  .vote .meta .st { color:var(--dim); }
+  .vote .why { color:var(--dim); font-size:13px; margin-top:6px; line-height:1.55;
+    border-left:2px solid var(--line2); padding-left:10px; }
 </style>
 </head>
 <body>
@@ -71,7 +84,7 @@
     <h1 id="name">—</h1>
     <p class="muted" id="handle"></p>
 
-    <div class="card">
+    <div class="card" id="budgetCard">
       <div class="section-title">Счёт для работы с ИИ</div>
       <div class="grid">
         <div class="stat"><div class="v green" id="left">—</div><div class="k">осталось</div></div>
@@ -83,7 +96,15 @@
       <p class="note" id="balanceNote"></p>
     </div>
 
-    <div class="card">
+    <div class="card hidden" id="votesCard">
+      <div class="section-title">История голосований</div>
+      <p class="note" id="votesNote">Как и за что голосует аккаунт — из этого
+        складывается доверие к нему. Система репутацию не считает и не хранит:
+        она лишь показывает след, а судят люди сами.</p>
+      <div id="votesList"></div>
+    </div>
+
+    <div class="card" id="contribCard">
       <div class="section-title">Мой вклад</div>
       <div class="rows">
         <div class="r"><span class="k">узлов в графе</span><span id="nodes">—</span></div>
@@ -96,7 +117,7 @@
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" id="accountCard">
       <div class="section-title">Аккаунт и данные</div>
       <p class="note">
         Аккаунт и всё, что ты написал, остаются за тобой. Тексты, их оценки и
@@ -115,6 +136,64 @@ function when(iso) {
   if (!iso) return "—";
   return new Date(iso).toLocaleDateString("ru-RU",
     { day: "numeric", month: "short", year: "numeric" });
+}
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : s; return d.innerHTML; }
+
+function renderVotes(votes) {
+  const box = $("#votesList");
+  if (!votes || !votes.length) {
+    box.innerHTML = '<p class="muted" style="margin:0">Аккаунт ещё не голосовал.</p>';
+    $("#votesCard").classList.remove("hidden");
+    return;
+  }
+  box.innerHTML = votes.map((v) => {
+    const opts = v.options.map((o) =>
+      `<span class="opt ${o.origin === "reframe" ? "reframe" : ""}">`
+      + esc(o.label || "(опция)") + (o.origin === "reframe" ? " · переформулировка" : "")
+      + "</span>").join("");
+    const w = v.weight != null ? Number(v.weight).toFixed(1) : "1.0";
+    const st = { open: "идёт", closed: "закрыто", draft: "черновик" }[v.status] || v.status;
+    const why = v.why ? `<div class="why">${esc(v.why)}</div>` : "";
+    return `<div class="vote">
+      <div class="q">${esc(v.question)}</div>
+      <div class="opts">${opts}</div>
+      <div class="meta">вес <span class="w">×${w}</span>
+        · <span class="st">${st}</span>
+        ${v.dialogue_score != null ? "· понимание " + v.dialogue_score + "/100 " : ""}
+        · ${when(v.cast_at)}</div>
+      ${why}
+    </div>`;
+  }).join("");
+  $("#votesCard").classList.remove("hidden");
+}
+
+async function loadVotes(id) {
+  try {
+    const r = await fetch(`/api/authors/${id}/votes`);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (_) { return null; }
+}
+
+// Публичный профиль другого аккаунта: только то, что публично — имя и история
+// голосований. Приватное (счёт, вклад, данные) скрыто.
+async function loadPublic(id) {
+  const data = await loadVotes(id);
+  if (!data) {
+    $("#err").textContent = "Аккаунт не найден.";
+    $("#err").classList.remove("hidden");
+    return;
+  }
+  document.querySelector("header .tagline").textContent = "публичный профиль";
+  $("#name").textContent = data.author.name || data.author.username || ("#" + id);
+  if (data.author.color) $("#name").style.color = data.author.color;
+  $("#handle").textContent = data.author.username ? "@" + data.author.username : "";
+  $("#budgetCard").classList.add("hidden");
+  $("#contribCard").classList.add("hidden");
+  $("#accountCard").classList.add("hidden");
+  renderVotes(data.votes);
+  $("#content").classList.remove("hidden");
 }
 
 async function load() {
@@ -172,9 +251,12 @@ async function load() {
   $("#lastAt").textContent = when(act.last_at);
 
   $("#content").classList.remove("hidden");
+  const mine = await loadVotes(a.id);
+  if (mine) renderVotes(mine.votes);
 }
 
-load();
+const _pid = new URLSearchParams(location.search).get("id");
+if (_pid) loadPublic(_pid); else load();
 </script>
 </body>
 </html>

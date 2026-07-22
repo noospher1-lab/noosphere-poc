@@ -416,10 +416,18 @@ async function selectNode(id) {
   tw.appendChild(textEl);
   card.appendChild(tw);
   const meta = el("div", "muted");
+  // имя автора ведёт на его публичный профиль — историю голосований, из которой
+  // люди сами строят транзакционную репутацию
+  let authorEl = node.author || "—";
+  if (node.author_id) {
+    authorEl = el("a", null, node.author || "—");
+    authorEl.href = "/profile.html?id=" + node.author_id;
+    authorEl.title = "профиль и история голосований";
+  }
   // an atom of an exploration is a point under investigation: it carries no
   // LLM base score (the разбор was scored as a whole) and no taken position
   meta.append(
-    "автор: ", node.author || "—",
+    "автор: ", authorEl,
     "  ·  PoI: " + (node.poi_score != null ? node.poi_score
                     : node.atom_group ? "— (атом разбора, живёт реакциями)" : "оценивается…"),
     "  ·  тип: " + (node.kind || "argument"),
