@@ -1177,16 +1177,20 @@ async def _recompute_positions(topic_root_id):
 
 
 async def _position_support(position_id, topic_root_id):
-    """Supporters of a position = authors of its member args + agree-voters."""
-    poi_map = {r["author_id"]: r["poi"] for r in await db.get_topic_poi(topic_root_id)}
-    supporters = {}
+    """Сколько РАЗНЫХ людей стоит за позицией: авторы её аргументов + голоса «за».
+
+    Число людей, НЕ взвешенное по PoI (решение 2026-07-22: система не считает и не
+    показывает постоянное «стояние» участника). Отвязано от накопительного слоя —
+    больше не читает author_topic_poi.
+    """
+    supporters = set()
     for n in await db.position_nodes(position_id, "argument"):
         if n.get("author_id"):
-            supporters[n["author_id"]] = poi_map.get(n["author_id"])
+            supporters.add(n["author_id"])
     for r in await db.get_position_reactions(position_id, topic_root_id):
         if r["stance"] == "agree":
-            supporters[r["author_id"]] = r["poi"]
-    return _bucket_support(list(supporters.values()))
+            supporters.add(r["author_id"])
+    return {"count": len(supporters)}
 
 
 async def _position_payload(p):

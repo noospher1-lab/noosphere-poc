@@ -667,20 +667,8 @@ function renderAtomPreview(box, node, groups) {
   box.appendChild(act);
 }
 
-function bucketRow(data, cls) {
-  const wrap = el("div");
-  const bars = el("div", "buckets");
-  const max = Math.max(1, ...data.buckets.map((b) => b.count));
-  for (const b of data.buckets) {
-    const col = el("div", "bk " + cls);
-    col.style.height = (10 + (b.count / max) * 90) + "%";
-    col.title = b.label + ": " + b.count;
-    if (!b.count) col.style.opacity = ".25";
-    bars.appendChild(col);
-  }
-  wrap.appendChild(bars);
-  return wrap;
-}
+// bucketRow (PoI-гистограмма поддержки) удалена 2026-07-22: поддержка позиции —
+// число людей, не распределение по PoI-«стоянию».
 
 async function loadReactions(id, root, target) {
   try {
@@ -1488,12 +1476,9 @@ function positionCard(p, root, byId, links) {
   if (p.composed) box.appendChild(el("div", "muted", p.composed));
   if (p.author) box.appendChild(el("div", "muted", "✍ вывод подписал: " + p.author));
   const sup = p.support;
-  // читаем группу, а не суммируем: показываем СКОЛЬКО поддержало позицию
-  // and their AVERAGE PoI (not the sum — a sum would smuggle "more heads = more
-  // power" back in). The little histogram shows the spread.
-  const avg = sup.avg != null ? "средний PoI " + Math.round(sup.avg) : "PoI ещё считается";
-  box.appendChild(el("div", "muted meta-poi", `сторонников: ${sup.count} · ${avg}`));
-  if (sup.count) box.appendChild(bucketRow(sup, "agree"));
+  // сколько ЛЮДЕЙ за позицией — число, без PoI-взвешивания (решение 2026-07-22:
+  // система не показывает постоянное «стояние»)
+  box.appendChild(el("div", "muted meta-poi", `сторонников: ${sup.count}`));
 
   // inter-position links, both directions (oppose / conclusion)
   const LINK_OUT = { oppose: "⚔ оспаривает: ", conclusion: "✦ вывод из: " };
