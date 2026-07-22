@@ -1032,8 +1032,7 @@ function renderPoolHud(n) {
   const personas = authorsCache.map((a) => `<option value="${a.id}">${a.name}</option>`).join('');
   document.getElementById('hud-content').innerHTML =
     `<div style="margin-bottom:10px;color:#ece6d8;white-space:pre-wrap;line-height:1.55">${escapeHtml(n.composed || n.label)}</div>`
-    + `<div style="color:var(--bronze);font-size:11px;margin-bottom:8px">👥 поддержали: ${s.count}${s.avg != null ? ` · средний PoI ${Math.round(s.avg)}` : ''}</div>`
-    + `<div style="margin-bottom:12px">${bucketBarsHTML(s, STANCE_COLOR[n.stance] || '#888')}</div>`
+    + `<div style="color:var(--bronze);font-size:11px;margin-bottom:12px">👥 поддержали: ${s.count}</div>`
     + `<div style="border-top:1px solid rgba(216,175,110,0.18);padding-top:10px;margin-bottom:8px">`
     + `<div style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--bronze);margin-bottom:6px">Действие с позицией</div>`
     + `<select id="pool-author" style="width:100%;font-family:var(--mono);font-size:10px;color:var(--ivory);background:rgba(5,6,10,0.6);border:1px solid rgba(216,175,110,0.22);border-radius:3px;padding:5px;margin-bottom:6px">${personas}</select>`
@@ -1229,13 +1228,11 @@ async function togglePools(on) {
 // Each persona's PoI IN THE CURRENT TOPIC — drives both the lens and the test
 // sliders. PoI is domain-specific, so this is fetched per discussion.
 async function loadTopicPoi() {
+  // Линза PoI отключена (решение 2026-07-22): система не считает и не показывает
+  // постоянное «стояние» участника. Эндпоинт /api/topic_poi удалён — не дёргаем
+  // его (иначе 404 → объект вместо массива → падение всей отрисовки графа).
   topicPoi = {}; topicPoiRows = [];
-  if (currentTopicId == null) { renderTopicPanel(); return; }
-  try { topicPoiRows = await (await fetch('/api/topic_poi/' + currentTopicId)).json(); }
-  catch (e) { return; }
-  for (const r of topicPoiRows) if (r.poi != null) topicPoi[r.name] = r.poi;
   renderTopicPanel();
-  if (selectedId != null && nodeById.has(selectedId)) openHud(nodeById.get(selectedId));
 }
 
 function renderTopicPanel() {
