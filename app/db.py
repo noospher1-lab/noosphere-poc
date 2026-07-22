@@ -853,7 +853,7 @@ async def get_children(node_id, limit=20, offset=0):
         rows = await conn.fetch(
             """
             SELECT n.id, n.text, n.poi_score, n.kind, n.atom_group, e.type AS rel,
-                   e.anchor_start, e.anchor_end, e.anchor_quote,
+                   e.anchor_start, e.anchor_end, e.anchor_quote, n.author_id,
                    a.name AS author, a.color AS author_color,
                    (SELECT count(*) FROM edges e2 WHERE e2.target_id = n.id) AS reply_count
             FROM edges e
@@ -2075,7 +2075,7 @@ async def workspace_topics(author_id):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT n.id, n.text, n.title, n.poi_score, n.kind,
+            SELECT n.id, n.text, n.title, n.poi_score, n.kind, n.author_id,
                    a.name AS author, a.color AS author_color,
                    w.added_at,
                    (SELECT count(*) FROM edges e2
@@ -2216,7 +2216,7 @@ async def list_topics():
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT n.id, n.text, n.title, n.poi_score, n.kind,
+            SELECT n.id, n.text, n.title, n.poi_score, n.kind, n.author_id,
                    a.name AS author, a.color AS author_color,
                    (SELECT count(*) FROM edges e2
                     JOIN nodes cn ON cn.id = e2.source_id

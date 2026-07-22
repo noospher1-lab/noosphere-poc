@@ -91,10 +91,11 @@ function guidePanel() {
       "с родителем: <b>за</b>, <b>против</b>, <b>уточнение</b>, <b>вопрос</b>."],
     ["2", "PoI — это качество довода",
       "PoI оценивает, насколько аргумент проработан: логика, полнота, работа с " +
-      "неопределённостью и с возражениями. Проработанные доводы весят в " +
-      "голосованиях больше — влияние зарабатывается качеством мысли, а не " +
-      "капиталом и не громкостью. Высокий PoI не значит «прав», значит " +
-      "«сделан добросовестно»."],
+      "неопределённостью и с возражениями. Проработанные доводы <b>поднимаются " +
+      "выше</b> в дереве — так качество мысли определяет видимость, а не капитал " +
+      "и не громкость. Высокий PoI не значит «прав», значит «сделан " +
+      "добросовестно». <b>Вес в голосовании</b> — отдельное: его даёт разбор темы " +
+      "с ИИ в момент голосования, а не PoI твоих доводов."],
     ["3", "Реагируй: ▲ согласен / ▼ не согласен",
       "Так ты показываешь своё отношение к доводу. Согласие и несогласие — это " +
       "не оценка качества: сильный довод остаётся сильным, даже когда с ним " +
@@ -308,9 +309,19 @@ function nodeRow(node, type) {
   const poi = el("span", "poi");
   poi.innerHTML = node.poi_score != null ? "PoI <b>" + node.poi_score + "</b>" : "…";
   row.appendChild(poi);
-  const who = el("span", "who", node.author || "—");
+  // имя автора → его публичный профиль (история голосований). Новая вкладка,
+  // чтобы не терять обсуждение; клик не выбирает узел.
+  let who;
+  if (node.author_id) {
+    who = el("a", "who", node.author || "—");
+    who.href = "/profile.html?id=" + node.author_id;
+    who.target = "_blank";
+    who.title = "профиль и история голосований — " + (node.author || "");
+    who.onclick = (e) => e.stopPropagation();
+  } else {
+    who = el("span", "who muted", node.author || "—");
+  }
   if (node.author_color) who.style.color = node.author_color;
-  else who.classList.add("muted");
   row.appendChild(who);
 
   // Управление подборкой — только у корней и только у вошедшего.
@@ -422,6 +433,7 @@ async function selectNode(id) {
   if (node.author_id) {
     authorEl = el("a", null, node.author || "—");
     authorEl.href = "/profile.html?id=" + node.author_id;
+    authorEl.target = "_blank";
     authorEl.title = "профиль и история голосований";
   }
   // an atom of an exploration is a point under investigation: it carries no
@@ -437,7 +449,8 @@ async function selectNode(id) {
   );
   card.appendChild(meta);
   appendHint(card, "<b>PoI</b> — насколько довод проработан, а не «правота». " +
-    "Проработанные доводы весят в голосованиях больше.");
+    "Проработанные доводы поднимаются выше в дереве. Вес в голосовании — отдельное: " +
+    "его даёт разбор темы с ИИ при голосовании, не PoI доводов.");
   if (node.poi_breakdown && !node.poi_breakdown.seed) card.appendChild(critBreakdown(node.poi_breakdown));
 
   // reactions live INSIDE the argument card, right under the text — not a

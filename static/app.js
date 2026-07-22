@@ -751,8 +751,10 @@ function openHud(n) {
     c.textContent = n.label || '—';
   }
 
-  document.getElementById('hud-conf').textContent = n.confidence.toFixed(2);
-  document.getElementById('hud-conf-fill').style.width = `${n.confidence*100}%`;
+  // null-safe: у проблемы/неоценённого узла confidence может отсутствовать
+  const conf = (n.confidence == null || isNaN(n.confidence)) ? 0 : n.confidence;
+  document.getElementById('hud-conf').textContent = conf.toFixed(2);
+  document.getElementById('hud-conf-fill').style.width = `${conf*100}%`;
 
   document.getElementById('hud-author').textContent = n.author || '—';
   const ap = n.author != null ? topicPoi[n.author] : null;
@@ -771,9 +773,11 @@ function computeWeight(poiScore01) {
   return (poiScore01 || 0) * 10;
 }
 function updateHudScore(score, delta) {
-  document.getElementById('hud-poi').textContent = score.toFixed(2);
+  // null-safe: проблема и ещё не оценённый узел приходят с poi_score = null
+  const s = (score == null || isNaN(score)) ? null : score;
+  document.getElementById('hud-poi').textContent = s == null ? '…' : s.toFixed(2);
   const fill = document.getElementById('hud-poi-fill');
-  fill.style.width = `${score*100}%`;
+  fill.style.width = `${(s || 0)*100}%`;
   fill.classList.remove('up','down');
   if (delta > 0) fill.classList.add('up'); else if (delta < 0) fill.classList.add('down');
 }
