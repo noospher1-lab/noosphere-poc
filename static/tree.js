@@ -408,11 +408,13 @@ async function selectNode(id) {
     card.appendChild(el("h2", null, node.title));
     textEl = el("div", null, node.text);
     textEl.style.marginBottom = "8px";
-    card.appendChild(textEl);
   } else {
     textEl = el("h2", null, node.text);
-    card.appendChild(textEl);
   }
+  // обёртка с левым полем под маркеры оспоренных участков
+  const tw = el("div", "hasmargins");
+  tw.appendChild(textEl);
+  card.appendChild(tw);
   const meta = el("div", "muted");
   // an atom of an exploration is a point under investigation: it carries no
   // LLM base score (the разбор was scored as a whole) and no taken position
@@ -454,11 +456,12 @@ async function selectNode(id) {
   // оспоренных участков — до реакций визуально не мешают, кладём в конец карточки
   if (node.belongings && node.belongings.length > 1)
     card.appendChild(belongingBar(node.belongings));
-  if (node.fragment_replies && node.fragment_replies.length)
-    card.appendChild(fragmentMarkers(node.fragment_replies));
   d.appendChild(card);
   // выделение текста узла → всплывающее меню типизированного ответа с якорем
   attachFragmentSelection(textEl);
+  // маркеры оспоренных участков «на полях» — после вставки в DOM (нужен layout)
+  if (node.fragment_replies && node.fragment_replies.length)
+    renderMarginMarkers(tw, textEl, node.fragment_replies);
   loadReactions(id, root, rbody);
 
   // страница проблемы: причины, масштаб, реестр решений, атрибуции
@@ -914,19 +917,38 @@ function showFragPop(range, anchor) {
   fragPopEl = pop;
 }
 
-// маркеры: какие участки этого узла уже оспорены и чем
-function fragmentMarkers(fr) {
-  const box = el("div", "fragmark");
-  box.appendChild(el("div", "section-title", "оспоренные участки · " + fr.length));
-  for (const a of fr) {
-    const line = el("div", "fm" + (a.stale ? " stale" : ""));
-    line.appendChild(el("span", "rel " + a.type, relLabel(a.type)));
-    line.append(" ");
-    line.appendChild(el("span", "q", "«" + shortLabel(a.anchor_quote, 80) + "»"));
-    if (a.author) line.append("  — " + a.author);
-    box.appendChild(line);
+// маркеры оспоренных участков «на полях»: один маркер с ЧИСЛОМ у каждого участка,
+// к которому есть ответы (не подсветка всего текста). Позиция берётся из реального
+// прямоугольника участка в тексте — маркер стоит на строке своего фрагмента.
+function renderMarginMarkers(wrap, textEl, replies) {
+  const textNode = textEl.firstChild;
+  if (!textNode || textNode.nodeType !== 3) return;
+  const len = textNode.textContent.length;
+  const groups = new Map();
+  for (const a of replies) {
+    if (a.anchor_start == null) continue;
+    const key = a.anchor_start + ":" + a.anchor_end;
+    (groups.get(key) || groups.set(key, { s: a.anchor_start, e: a.anchor_end, items: [] }).get(key))
+      .items.push(a);
   }
-  return box;
+  const wrect = wrap.getBoundingClientRect();
+  for (const g of groups.values()) {
+    let top;
+    try {
+      const r = document.createRange();
+      r.setStart(textNode, Math.min(g.s, len));
+      r.setEnd(textNode, Math.min(g.e, len));
+      top = r.getBoundingClientRect().top - wrect.top;
+    } catch (_) { continue; }
+    const stale = g.items.every(x => x.stale);
+    const mk = el("span", "margmark m-" + g.items[0].type + (stale ? " stale" : ""),
+      String(g.items.length));
+    mk.style.top = Math.max(0, top) + "px";
+    mk.title = g.items.map(x => relLabel(x.type) + ": «" + shortLabel(x.anchor_quote, 60) + "»"
+      + (x.author ? " — " + x.author : "") + (x.stale ? " · участок изменился" : "")).join("\n");
+    mk.onclick = () => selectNode(g.items[0].source_id);
+    wrap.appendChild(mk);
+  }
 }
 
 // принадлежность узла нескольким проблемам (домашняя + принесённые)
@@ -985,10 +1007,99 @@ async function problemCard(nodeId) {
     reg.appendChild(sum);
   }
   const ivs = p.interventions || [];
-  if (!ivs.length) reg.appendChild(el("div", "muted", "пока нет записей"));
+  if (!ivs.length) reg.appendChild(el("div", "muted",
+    "пока нет записей — пустая проблема хуже пустой темы, внеси первую попытку"));
   for (const iv of ivs) reg.appendChild(await interventionCard(iv));
   body.appendChild(reg);
+
+  // авторские действия: заполнить состояние и накопитель (иначе страница пустая)
+  if (ME) {
+    const foot = el("div", "actions"); foot.style.marginTop = "12px";
+    const editBtn = el("button", "mini", "✎ править состояние");
+    editBtn.onclick = () => {
+      const f = problemEditForm(nodeId, p, () => selectNode(nodeId));
+      if (f) { card.appendChild(f); editBtn.disabled = true; }
+    };
+    const ivBtn = el("button", "mini", "+ вмешательство");
+    ivBtn.onclick = () => interventionForm(nodeId, card);
+    foot.append(editBtn, ivBtn);
+    card.appendChild(foot);
+  }
   return card;
+}
+
+// правка состояния проблемы: причины + масштаб (данные извне с выдержкой)
+function problemEditForm(nodeId, p, rerender) {
+  if (!requireAuth()) return null;
+  const f = el("div", "pedit prob-block");
+  f.appendChild(el("div", "section-title", "Состояние проблемы"));
+  const causes = el("textarea"); causes.placeholder = "Причины и составные части";
+  causes.value = p.causes || "";
+  const note = el("input"); note.placeholder = "Масштаб — где, сколько (своими словами)";
+  note.value = p.scale_note || "";
+  const url = el("input"); url.placeholder = "Ссылка на данные (внешняя)";
+  url.value = p.scale_url || "";
+  const exc = el("textarea"); exc.placeholder = "Сохранённая выдержка из источника (текст)";
+  exc.value = p.scale_excerpt || "";
+  f.append(causes, note, url, exc);
+  const act = el("div", "actions");
+  const save = el("button", "primary mini", "сохранить состояние");
+  save.onclick = async () => {
+    try {
+      await api(`/api/problems/${nodeId}`, {
+        method: "PUT", headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          causes: causes.value.trim() || null, scale_note: note.value.trim() || null,
+          scale_url: url.value.trim() || null, scale_excerpt: exc.value.trim() || null,
+        }),
+      });
+      toast("состояние сохранено"); rerender();
+    } catch (e) { toast("ошибка: " + e.message); }
+  };
+  act.appendChild(save); f.appendChild(act);
+  return f;
+}
+
+// запись в накопитель решений — факт (провал регистрируется наравне с успехом)
+function interventionForm(nodeId, mount) {
+  if (!requireAuth()) return;
+  const f = el("div", "pedit prob-block");
+  f.appendChild(el("div", "section-title", "Внести вмешательство"));
+  const what = el("input"); what.placeholder = "Что пробовали (вмешательство)";
+  const two1 = el("div", "two");
+  const actor = el("input"); actor.placeholder = "Кто";
+  const geo = el("input"); geo.placeholder = "Где — страна/регион (необязательно)";
+  two1.append(actor, geo);
+  const two2 = el("div", "two");
+  const when = el("input"); when.placeholder = "Когда (год/период)";
+  const oc = el("select");
+  for (const [v, l] of Object.entries(OC_LABEL)) oc.appendChild(new Option(l, v));
+  two2.append(when, oc);
+  const outcome = el("textarea"); outcome.placeholder = "Что вышло (исход)";
+  const cond = el("input"); cond.placeholder = "От каких условий зависело";
+  const url = el("input"); url.placeholder = "Ссылка на источник (необязательно)";
+  const exc = el("textarea"); exc.placeholder = "Выдержка из источника (текст)";
+  f.append(what, two1, two2, outcome, cond, url, exc);
+  const act = el("div", "actions");
+  const save = el("button", "primary mini", "внести в реестр");
+  save.onclick = async () => {
+    if (!what.value.trim()) { toast("опиши, что пробовали"); return; }
+    try {
+      await api(`/api/problems/${nodeId}/interventions`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          what: what.value.trim(), actor: actor.value.trim() || null,
+          geo: geo.value.trim() || null, when_text: when.value.trim() || null,
+          outcome: outcome.value.trim() || null, outcome_kind: oc.value,
+          conditions: cond.value.trim() || null,
+          source_url: url.value.trim() || null, source_excerpt: exc.value.trim() || null,
+        }),
+      });
+      toast("вмешательство внесено"); selectNode(nodeId);
+    } catch (e) { toast("ошибка: " + e.message); }
+  };
+  act.appendChild(save); f.appendChild(act);
+  mount.appendChild(f); what.focus();
 }
 
 async function interventionCard(iv) {
@@ -1186,6 +1297,29 @@ function newTopicForm() {
   titleIn.style.width = "100%";
   titleIn.style.marginBottom = "8px";
   card.appendChild(titleIn);
+  // подсказка дублей: по мере ввода заголовка показываем соседние проблемы —
+  // ПРЕДЛОЖЕНИЕ, не гейт. Создать своё всё равно можно.
+  const dupes = el("div", "dupes");
+  card.appendChild(dupes);
+  let dupT;
+  const checkDupes = async () => {
+    const q = titleIn.value.trim();
+    if (q.length < 3) { dupes.innerHTML = ""; return; }
+    let hits;
+    try { hits = await api("/api/problems/suggest?title=" + encodeURIComponent(q)); }
+    catch (_) { return; }
+    dupes.innerHTML = "";
+    if (!hits || !hits.length) return;
+    dupes.appendChild(el("div", "section-title", "похожие уже есть — может, сюда?"));
+    for (const h of hits) {
+      const row = el("div", "d");
+      row.appendChild(el("span", "t", h.title || shortLabel(h.text, 60)));
+      row.appendChild(el("span", "m", "   · " + (h.nodes || 0) + " узлов"));
+      row.onclick = () => selectNode(h.id);
+      dupes.appendChild(row);
+    }
+  };
+  titleIn.addEventListener("input", () => { clearTimeout(dupT); dupT = setTimeout(checkDupes, 350); });
   const ta = el("textarea");
   ta.placeholder = "тезис, вопрос, предложение или разбор, открывающий обсуждение…";
   card.appendChild(ta);
@@ -1262,11 +1396,23 @@ function newTopicForm() {
 
   const act = el("div", "actions");
   const kindSel = el("select");
+  kindSel.appendChild(new Option("проблема", "problem"));
   kindSel.appendChild(new Option("тезис", "argument"));
   kindSel.appendChild(new Option("вопрос", "question"));
   kindSel.appendChild(new Option("предложение", "proposal"));
   kindSel.appendChild(new Option("разбор", "exploration"));
   const send = el("button", "primary", "создать тему");
+  // проблема — единица по умолчанию: форма открывается в режиме проблемы
+  const syncKind = () => {
+    const isProb = kindSel.value === "problem";
+    send.textContent = isProb ? "создать проблему" : "создать тему";
+    titleIn.placeholder = isProb ? "Проблема — заявленный вред, коротко"
+      : "Название темы — коротко, одним предложением";
+    ta.placeholder = isProb ? "Постановка: в чём вред, кого касается, каков масштаб…"
+      : "тезис, вопрос, предложение или разбор, открывающий обсуждение…";
+  };
+  kindSel.onchange = syncKind;
+  syncKind();
   const cancel = el("button", "mini", "отмена");
   cancel.onclick = () => { renderEmptyDetail(); };
   const hint = el("div");                       // the navigator's suggestion box
@@ -1289,9 +1435,10 @@ function newTopicForm() {
           tags: tagsIn.value.split(",").map(s => s.trim()).filter(Boolean),
         }),
       });
-      toast(domSel.value
-        ? "тема создана — PoI оценивается в фоне…"
-        : "тема создана, но без рубрики — на карте её найдут только поиском");
+      const noun = kindSel.value === "problem" ? "проблема создана" : "тема создана";
+      toast(kindSel.value === "problem" ? noun + " — заполни состояние ниже"
+        : domSel.value ? noun + " — PoI оценивается в фоне…"
+        : noun + ", но без рубрики — на карте её найдут только поиском");
       ROOT.set(node.id, node.id);
       await loadTopics();
       MapView.reload();                 // карта должна увидеть тему сразу
@@ -1307,6 +1454,9 @@ function newTopicForm() {
     if (!text) return;
     if (!titleIn.value.trim()) { toast("укажи название темы"); titleIn.focus(); return; }
     if (!requireAuth()) return;
+    // проблема — не черновик, который навигатор классифицирует по типам
+    // (тезис/вопрос/…): создаём сразу, состояние заполняется на её странице.
+    if (kindSel.value === "problem") { await doCreate(text); return; }
     send.disabled = true; send.textContent = "ИИ читает черновик…";
     const rev = await reviewDraft({ text, kind: kindSel.value });
     send.disabled = false; send.textContent = "создать тему";

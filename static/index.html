@@ -212,6 +212,26 @@
     border-radius: 7px; padding: 3px 9px; }
   .anchor-chip .x { cursor: pointer; color: var(--dim); }
   .anchor-chip .x:hover { color: var(--red); }
+  /* маркеры оспоренных участков «на полях» текста (число, не подсветка всего) */
+  .hasmargins { position: relative; padding-left: 26px; }
+  .margmark { position: absolute; left: 0; width: 19px; text-align: center;
+    font-size: 11px; font-family: var(--mono); font-weight: 600; color: var(--bg);
+    border-radius: 4px; cursor: pointer; line-height: 17px; user-select: none; }
+  .margmark:hover { outline: 1px solid var(--ivory); }
+  .margmark.stale { opacity: .45; }
+  .margmark.m-refute   { background: var(--red); }
+  .margmark.m-undercut { background: var(--violet); }
+  .margmark.m-support  { background: var(--green); }
+  .margmark.m-qualify  { background: var(--orange); }
+  .margmark.m-question { background: var(--blue); }
+
+  /* форма состояния проблемы и вмешательства */
+  .pedit { margin-top: 8px; display: flex; flex-direction: column; gap: 7px; }
+  .pedit input, .pedit textarea, .pedit select { width: 100%; }
+  .pedit .two { display: flex; gap: 7px; }
+  .pedit .two > * { flex: 1 1 0; }
+  .prob-block > .actions { margin-top: 6px; }
+
   /* подсказка дублей при создании */
   .dupes { margin-top: 8px; }
   .dupes .d { display: block; padding: 5px 9px; margin-top: 5px; border-radius: 7px;
