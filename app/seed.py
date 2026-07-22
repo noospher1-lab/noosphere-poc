@@ -246,13 +246,9 @@ async def _seed():
             ids.append(nid)
         for s, t, typ in topic["edges"]:
             await db.add_edge(ids[s], ids[t], typ)
-        # topic_poi values seed the PRIOR (P₀) — a stand-in for the onboarding
-        # dialogue; the current poi is then recomputed by the accrual formula.
-        for ai, poi in topic["topic_poi"].items():
-            await db.set_topic_prior(author_ids[ai], root_id, poi)
-        # authors with contributions but no seeded prior accrue from default 10
-        for aid in set(author_ids) - {author_ids[ai] for ai in topic["topic_poi"]}:
-            await db.recompute_topic_poi(aid, root_id)
+        # Накопительный per-topic PoI отключён (2026-07-22): приоры больше не
+        # засеваются. Поле topic_poi в TOPICS оставлено как справочное, но в
+        # накопительный слой не идёт — PoI считает ИИ-судья при голосовании.
         n_nodes += len(ids)
         n_edges += len(topic["edges"])
 

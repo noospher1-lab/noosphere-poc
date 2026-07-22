@@ -146,12 +146,9 @@ async def _score_later(node_id: int, text: str, kind: str = "argument", parent_t
         "poi_score": score,
         "weight": voteweight.vote_weight(score),
     })
-    # the author's topic PoI accrues from their scored contributions
-    node = await db.get_node(node_id)
-    if node and node.get("author_id") and node.get("topic_root_id"):
-        value = await db.recompute_topic_poi(node["author_id"], node["topic_root_id"])
-        hub.publish({"type": "topic_poi_updated", "author_id": node["author_id"],
-                     "topic_root_id": node["topic_root_id"], "poi": value})
+    # Накопительный per-topic PoI отключён (решение 2026-07-22): PoI считает только
+    # ИИ-судья при голосовании; система не копит «стояние» из вкладов. poi_score
+    # текста остаётся (ранжирует довод), но в репутацию автора не складывается.
 
 
 async def _assign_position_later(node_id: int, text: str):
@@ -1090,20 +1087,9 @@ def _aggregate_reactions(rows):
     return out
 
 
-# ---------------------------------------------------------------- per-topic PoI
-@app.get("/api/topic_poi/{topic_root_id}")
-async def get_topic_poi(topic_root_id: int):
-    return await db.get_topic_poi(topic_root_id)
-
-
-# Dev tool: sets the PRIOR (P₀) — the stand-in for the onboarding dialogue's
-# score. The current poi is then recomputed by the formula (retroactive).
-@app.patch("/api/topic_poi/{topic_root_id}/{author_id}", dependencies=[Depends(dev_only)])
-async def set_topic_prior(topic_root_id: int, author_id: int, body: TopicPoiIn):
-    if await db.get_author(author_id) is None:
-        raise HTTPException(404, f"author {author_id} not found")
-    await db.set_topic_prior(author_id, topic_root_id, body.poi)
-    return await db.get_topic_poi(topic_root_id)
+# Эндпоинты /api/topic_poi (линза «PoI в теме») и PATCH prior удалены 2026-07-22:
+# накопительного per-topic PoI больше нет. PoI считает только ИИ-судья при
+# голосовании; репутацию люди строят по истории голосований (GET .../votes).
 
 
 # ---------------------------------------------------------------- reactions
@@ -1114,19 +1100,10 @@ async def post_reaction(r: ReactionIn, author=Depends(current_author)):
     node = await db.get_node(r.node_id)
     if node is None:
         raise HTTPException(404, f"node {r.node_id} not found")
-    # freeze the reactor's topic PoI at cast time — the reaction counts this
-    # value forever, so a later change to the reactor's PoI can't retroactively
-    # (and order-dependently) reweight votes already cast
-    root = node.get("topic_root_id") or await db.topic_root_of(r.node_id)
-    reactor_weight = await db.topic_poi_of(author["id"], root) if root else None
-    await db.set_reaction(author["id"], r.node_id, r.stance, reactor_weight)
-    # reactions nudge the NODE AUTHOR's topic PoI (bounded ±5 by the formula);
-    # self-reactions are excluded inside the recompute query
-    if node.get("author_id") and node.get("topic_root_id") \
-            and node["author_id"] != author["id"]:
-        value = await db.recompute_topic_poi(node["author_id"], node["topic_root_id"])
-        hub.publish({"type": "topic_poi_updated", "author_id": node["author_id"],
-                     "topic_root_id": node["topic_root_id"], "poi": value})
+    # Реакция — сигнал «согласен/не согласен», одна голова. PoI автора она больше
+    # не двигает (накопительный слой отключён 2026-07-22): вес реактора не
+    # замораживается и не пересчитывает ничей PoI.
+    await db.set_reaction(author["id"], r.node_id, r.stance, reactor_weight=None)
     return {"ok": True}
 
 
@@ -1931,12 +1908,10 @@ async def dialogue_finalize(body: DialoguePostIn, author=Depends(current_author)
         # phase stays 'post' — finalize can be retried without losing anything
         raise HTTPException(502, f"оценка не удалась, попробуй ещё раз: {e}")
     await db.update_dialogue(author["id"], phase="results", scores=scores)
-    # the score becomes the author's default prior — retroactively
+    # Онбординг-диалог остаётся тренажёром: его балл сохраняется как справочный
+    # (кабинет показывает «PoI диалога»), но больше НЕ становится приором и не
+    # пересчитывает накопительный PoI — накопительного слоя нет (2026-07-22).
     await db.set_dialogue_poi(author["id"], total)
-    for root in await db.author_topic_roots(author["id"]):
-        value = await db.recompute_topic_poi(author["id"], root)
-        hub.publish({"type": "topic_poi_updated", "author_id": author["id"],
-                     "topic_root_id": root, "poi": value})
     return _dlg_meta(await db.get_dialogue(author["id"]))
 
 
