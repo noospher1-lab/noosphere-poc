@@ -146,7 +146,19 @@ PROBLEMS = [
                            "сопровождение; без запаса квартир не масштабируется.",
              "source_url": "https://ysaatio.fi",
              "source_excerpt": "Жильё предоставляется первым, без требования сперва "
-                               "решить зависимость или найти работу."},
+                               "решить зависимость или найти работу.",
+             # атрибуция (причинная претензия) и спор по ней — вся петля реестра
+             "attributions": [
+                 {"text": "Сработало благодаря готовому фонду соцжилья, "
+                          "а не самой модели «жильё сначала».",
+                  "poi": 60, "author_idx": 0,
+                  "disputes": [
+                      {"text": "Модель как раз и создаёт политический спрос на "
+                               "фонд — без неё квартиры не выделяли бы.",
+                       "edge_type": "undercut", "quote": "а не самой модели",
+                       "poi": 57, "author_idx": 2},
+                  ]},
+             ]},
             {"what": "Криминализация ночёвки в публичных местах",
              "actor": "Муниципалитеты", "geo": "США", "when_text": "разное",
              "outcome": "Перемещает людей между районами, повышает издержки, "
@@ -161,7 +173,7 @@ PROBLEMS = [
 
 async def _seed_problems(author_ids):
     """Проблемы с реестром попыток — поверх обычных тем, аддитивно."""
-    n_problems = n_interv = 0
+    n_problems = n_interv = n_attr = 0
     for p in PROBLEMS:
         root_id = await db.add_node(
             p["statement"], author_id=author_ids[p["author_idx"]],
@@ -175,7 +187,7 @@ async def _seed_problems(author_ids):
             scale_retrieved_at=datetime.now(timezone.utc) if p.get("scale_url") else None,
             author_id=author_ids[p["author_idx"]])
         for iv in p["interventions"]:
-            await db.add_intervention(
+            row = await db.add_intervention(
                 root_id, what=iv["what"], actor=iv.get("actor"),
                 geo=iv.get("geo"), when_text=iv.get("when_text"),
                 outcome=iv.get("outcome"), outcome_kind=iv["outcome_kind"],
@@ -184,8 +196,31 @@ async def _seed_problems(author_ids):
                 source_retrieved_at=datetime.now(timezone.utc) if iv.get("source_url") else None,
                 author_id=author_ids[p["author_idx"]])
             n_interv += 1
+            # атрибуции о факте — узлы-аргументы, по ним спорят рёбрами (undercut
+            # на участок): вся петля реестра «факт → причинная претензия → подрыв»
+            for at in iv.get("attributions", []):
+                attr_id = await db.add_node(
+                    at["text"], poi_score=at.get("poi"),
+                    poi_breakdown={"seed": True}, kind="attribution",
+                    author_id=author_ids[at.get("author_idx", p["author_idx"])],
+                    topic_root_id=root_id, intervention_id=row["id"])
+                n_attr += 1
+                for dsp in at.get("disputes", []):
+                    dnode = await db.add_node(
+                        dsp["text"], poi_score=dsp.get("poi"),
+                        poi_breakdown={"seed": True}, topic_root_id=root_id,
+                        author_id=author_ids[dsp.get("author_idx", p["author_idx"])])
+                    q = dsp.get("quote")
+                    a_s = a_e = a_hash = None
+                    if q and q in at["text"]:
+                        a_s = at["text"].index(q); a_e = a_s + len(q)
+                        a_hash = db.text_hash(at["text"])
+                    await db.add_edge(dnode, attr_id, dsp["edge_type"],
+                                      anchor_hash=a_hash, anchor_start=a_s,
+                                      anchor_end=a_e,
+                                      anchor_quote=q if a_hash else None)
         n_problems += 1
-    return n_problems, n_interv
+    return n_problems, n_interv, n_attr
 
 
 async def _seed():
@@ -221,11 +256,12 @@ async def _seed():
         n_nodes += len(ids)
         n_edges += len(topic["edges"])
 
-    n_problems, n_interv = await _seed_problems(author_ids)
+    n_problems, n_interv, n_attr = await _seed_problems(author_ids)
 
     print(f"seeded {len(author_ids)} authors, {len(TOPICS)} topics, "
           f"{n_nodes} nodes, {n_edges} edges, "
-          f"{n_problems} problems, {n_interv} interventions")
+          f"{n_problems} problems, {n_interv} interventions, "
+          f"{n_attr} attributions")
 
 
 async def run_within_pool():

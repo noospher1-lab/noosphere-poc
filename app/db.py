@@ -555,6 +555,15 @@ _SCHEMA = [
         PRIMARY KEY (node_id, topic_root_id)
     )
     """,
+    # АТРИБУЦИЯ как аргумент о вмешательстве. Запись в реестре (interventions) —
+    # это ФАКТ. Утверждение «сработало благодаря X» / «переносимо на страну Y» —
+    # оспоримое ПРИЧИННОЕ утверждение, и место ему в графе, а не в реестре. Узел
+    # kind='attribution' ССЫЛАЕТСЯ на запись реестра (intervention_id) и живёт в
+    # теме проблемы; по нему бьют обычными рёбрами (refute/undercut на участок) —
+    # здесь REBUTS/UNDERCUTS применяются по прямому назначению. CASCADE: атрибуция
+    # о стёртом факте теряет смысл, поэтому уходит вместе с записью.
+    "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS intervention_id INTEGER "
+    "REFERENCES interventions(id) ON DELETE CASCADE",
 ]
 
 
@@ -588,6 +597,8 @@ _INDEXES = [
     "CREATE INDEX IF NOT EXISTS node_topics_topic_idx "
     "ON node_topics(topic_root_id, node_id)",
     "CREATE INDEX IF NOT EXISTS node_topics_node_idx ON node_topics(node_id)",
+    # атрибуции одной записи реестра — индексный поиск, не скан таблицы узлов
+    "CREATE INDEX IF NOT EXISTS idx_nodes_intervention ON nodes(intervention_id)",
 ]
 
 
@@ -665,18 +676,21 @@ async def wipe(force=False):
 # ---------------------------------------------------------------- nodes
 async def add_node(text, poi_score=None, poi_breakdown=None, author_id=None,
                    kind="argument", position_id=None, topic_root_id=None,
-                   atom_group=None, title=None):
-    """topic_root_id=None means the node IS a new topic root (points to itself)."""
+                   atom_group=None, title=None, intervention_id=None):
+    """topic_root_id=None means the node IS a new topic root (points to itself).
+    intervention_id set marks the node as an ATTRIBUTION claim about a registry
+    record (a disputable causal statement, argued against in the graph)."""
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         async with conn.transaction():
             node_id = await conn.fetchval(
                 "INSERT INTO nodes (text, poi_score, poi_breakdown, author_id, kind, "
-                "position_id, topic_root_id, atom_group, title) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
+                "position_id, topic_root_id, atom_group, title, intervention_id) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
                 text, poi_score,
                 json.dumps(poi_breakdown) if poi_breakdown else None,
                 author_id, kind, position_id, topic_root_id, atom_group, title,
+                intervention_id,
             )
             if topic_root_id is None:
                 await conn.execute(
@@ -2276,6 +2290,30 @@ async def get_intervention(intervention_id):
         row = await conn.fetchrow(
             "SELECT * FROM interventions WHERE id = $1", intervention_id)
     return _intervention_dict(row) if row else None
+
+
+async def intervention_attributions(intervention_id):
+    """Атрибуции об этой записи реестра — узлы-претензии «сработало благодаря X»
+    с числом ответов (плотность спора по каждой). По ним бьют обычными рёбрами."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT n.id, n.text, n.poi_score, n.kind, n.created_at,
+                   a.name AS author, a.color AS author_color,
+                   (SELECT count(*) FROM edges e WHERE e.target_id = n.id) AS reply_count
+            FROM nodes n
+            LEFT JOIN authors a ON a.id = n.author_id
+            WHERE n.intervention_id = $1
+            ORDER BY n.poi_score DESC NULLS LAST, n.id
+            """, intervention_id)
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d.get("created_at") is not None:
+            d["created_at"] = d["created_at"].isoformat()
+        out.append(d)
+    return out
 
 
 # ------------------------------------------------------------ belonging (edges)

@@ -710,6 +710,56 @@ async def post_intervention(topic_root_id: int, body: InterventionIn,
     return row
 
 
+class AttributionIn(BaseModel):
+    text: str                            # претензия «сработало благодаря X» / «переносимо на Y»
+
+
+@app.get("/api/interventions/{intervention_id}")
+async def read_intervention(intervention_id: int):
+    """Запись реестра + атрибуции о ней. Запись — факт; атрибуции — оспоримые
+    причинные утверждения, по которым идёт спор в графе. Открыто без входа."""
+    iv = await db.get_intervention(intervention_id)
+    if iv is None:
+        raise HTTPException(404, f"запись реестра {intervention_id} не найдена")
+    iv["attributions"] = await db.intervention_attributions(intervention_id)
+    return iv
+
+
+@app.post("/api/interventions/{intervention_id}/attribution",
+          dependencies=[Depends(llm_budget)])
+async def post_attribution(intervention_id: int, body: AttributionIn,
+                           author=Depends(current_author)):
+    """Заявить атрибуцию/переносимость по записи реестра — причинную претензию.
+
+    Это НЕ правка факта: создаётся узел-аргумент kind='attribution' в теме
+    проблемы, ссылающийся на запись. По нему затем бьют обычными рёбрами
+    (опровергнуть/подорвать участок) через /api/argument — атрибуция всегда
+    оспорима, в этом её природа.
+    """
+    iv = await db.get_intervention(intervention_id)
+    if iv is None:
+        raise HTTPException(404, f"запись реестра {intervention_id} не найдена")
+    if not body.text.strip():
+        raise HTTPException(400, "пустая атрибуция")
+    node_id = await db.add_node(
+        body.text.strip(), author_id=author["id"], kind="attribution",
+        topic_root_id=iv["topic_root_id"], intervention_id=intervention_id)
+    # оценивается как аргумент (претензия с истинностным значением), в фоне
+    _spawn(_score_later(node_id, body.text.strip(), "attribution"))
+    node = await db.get_node(node_id)
+    node["author"] = author["name"]
+    node["author_color"] = author["color"]
+    node["scoring"] = "pending"
+    hub.publish({
+        "type": "node_added",
+        "node": {"id": node_id, "text": body.text.strip(), "poi_score": None,
+                 "weight": 0.0, "author": author["name"],
+                 "author_color": author["color"]},
+        "intervention_id": intervention_id,
+    })
+    return node
+
+
 # The tree UI's read contract (scaling draft, principle 3): the client asks for
 # the NODE it looks at and a RANKED PAGE of children — never the whole graph.
 # /api/graph stays only for the force-directed visualization mode.
