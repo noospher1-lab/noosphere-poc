@@ -15,17 +15,28 @@ All access goes through a shared asyncpg pool created at startup.
 
 import os
 import json
+import hashlib
 
 import asyncpg
 
 from . import poiformula
 
+
+def text_hash(text):
+    """Хеш версии текста узла — снимок, к которому привязывается якорь на участок.
+    Если текст потом изменится, хеш разойдётся, и якорь считается устаревшим
+    (цитата остаётся для перепривязки)."""
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
 DATABASE_URL = os.environ.get(
     "DATABASE_URL", "postgresql://noosphere:noosphere@localhost/noosphere"
 )
 
+# undercut (подорвать) — новый тип: целится в конкретное предложение (участок),
+# а не в узел целиком, чем и отличается от refute (опровергнуть). Именно ответ на
+# фрагмент делает различие REBUTS/UNDERCUTS различимым на практике.
 EDGE_TYPES = ("support", "refute", "qualify", "question",
-              "proposal", "exploration", "atom")
+              "proposal", "exploration", "atom", "undercut")
 
 _pool: asyncpg.Pool | None = None
 
@@ -202,13 +213,22 @@ _SCHEMA = [
         source_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
         target_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
         type      TEXT NOT NULL CHECK (type IN
-            ('support','refute','qualify','question','proposal','exploration','atom'))
+            ('support','refute','qualify','question','proposal','exploration','atom','undercut'))
     )
     """,
-    # existing databases carry the four-type CHECK — recreate it (idempotent pair)
+    # existing databases carry the older CHECK — recreate it (idempotent pair)
     "ALTER TABLE edges DROP CONSTRAINT IF EXISTS edges_type_check",
     """ALTER TABLE edges ADD CONSTRAINT edges_type_check CHECK (type IN
-       ('support','refute','qualify','question','proposal','exploration','atom'))""",
+       ('support','refute','qualify','question','proposal','exploration','atom','undercut'))""",
+    # ОТВЕТ НА ФРАГМЕНT: якорь ребра на УЧАСТОК текста цели, а не на узел целиком.
+    # Все nullable — NULL означает ответ на весь узел (прежнее поведение). Якорь =
+    # хеш версии текста + смещения + сохранённая цитата: цитата переживает правку
+    # текста (по ней перепривязываемся), хеш ловит расхождение версий. Пишется в
+    # append-only лог вместе с ребром. undercut без якоря не имеет смысла (см. route).
+    "ALTER TABLE edges ADD COLUMN IF NOT EXISTS anchor_hash  TEXT",
+    "ALTER TABLE edges ADD COLUMN IF NOT EXISTS anchor_start INTEGER",
+    "ALTER TABLE edges ADD COLUMN IF NOT EXISTS anchor_end   INTEGER",
+    "ALTER TABLE edges ADD COLUMN IF NOT EXISTS anchor_quote TEXT",
     # poi = the CURRENT computed value (poiformula.topic_poi over the event-
     # logged history). prior = P₀: onboarding-dialogue score / seeded test
     # value; NULL means the default prior (10).
@@ -807,6 +827,7 @@ async def get_children(node_id, limit=20, offset=0):
         rows = await conn.fetch(
             """
             SELECT n.id, n.text, n.poi_score, n.kind, n.atom_group, e.type AS rel,
+                   e.anchor_start, e.anchor_end, e.anchor_quote,
                    a.name AS author, a.color AS author_color,
                    (SELECT count(*) FROM edges e2 WHERE e2.target_id = n.id) AS reply_count
             FROM edges e
@@ -1887,18 +1908,26 @@ async def get_position_reactions(position_id, topic_root_id):
 
 
 # ---------------------------------------------------------------- edges / graph
-async def add_edge(source_id, target_id, edge_type):
+async def add_edge(source_id, target_id, edge_type, anchor_hash=None,
+                   anchor_start=None, anchor_end=None, anchor_quote=None):
+    """Ребро source→target. Опциональный якорь привязывает его к УЧАСТКУ текста
+    цели (хеш версии + смещения + цитата); без якоря ребро относится к узлу целиком."""
     if edge_type not in EDGE_TYPES:
         raise ValueError(f"edge type must be one of {EDGE_TYPES}")
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         async with conn.transaction():
             edge_id = await conn.fetchval(
-                "INSERT INTO edges (source_id, target_id, type) VALUES ($1, $2, $3) RETURNING id",
-                source_id, target_id, edge_type)
+                "INSERT INTO edges (source_id, target_id, type, anchor_hash, "
+                "anchor_start, anchor_end, anchor_quote) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+                source_id, target_id, edge_type, anchor_hash,
+                anchor_start, anchor_end, anchor_quote)
             await _log(conn, "edge_added",
                        {"edge_id": edge_id, "source_id": source_id,
-                        "target_id": target_id, "edge_type": edge_type})
+                        "target_id": target_id, "edge_type": edge_type,
+                        "anchor_start": anchor_start, "anchor_end": anchor_end,
+                        "anchor_quote": anchor_quote, "anchor_hash": anchor_hash})
     return edge_id
 
 
@@ -2315,6 +2344,36 @@ async def node_topics_of(node_id):
         d = dict(r)
         if d.get("created_at") is not None:
             d["created_at"] = d["created_at"].isoformat()
+        out.append(d)
+    return out
+
+
+async def node_anchors(node_id):
+    """Входящие рёбра, целящиеся в УЧАСТКИ текста этого узла — для маркеров на
+    полях (маркер с числом, не подсветка всего). Каждое несёт участок, цитату,
+    тип и флаг stale: текст узла разошёлся с хешем, к которому привязывались
+    (сейчас текст неизменяем, поэтому stale=false, но механизм на месте)."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        target = await conn.fetchval("SELECT text FROM nodes WHERE id = $1", node_id)
+        if target is None:
+            return []
+        rows = await conn.fetch(
+            """
+            SELECT e.id AS edge_id, e.source_id, e.type,
+                   e.anchor_start, e.anchor_end, e.anchor_quote, e.anchor_hash,
+                   a.name AS author, a.color AS author_color
+            FROM edges e
+            JOIN nodes sn ON sn.id = e.source_id
+            LEFT JOIN authors a ON a.id = sn.author_id
+            WHERE e.target_id = $1 AND e.anchor_start IS NOT NULL
+            ORDER BY e.anchor_start, e.id
+            """, node_id)
+    current = text_hash(target)
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["stale"] = (d.pop("anchor_hash") != current)
         out.append(d)
     return out
 

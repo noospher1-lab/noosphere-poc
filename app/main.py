@@ -458,12 +458,23 @@ async def me(request: Request):
     return None
 
 
+class AnchorIn(BaseModel):
+    """Якорь ответа на УЧАСТОК текста цели: смещения + сохранённая цитата.
+    Хеш версии считает сервер по актуальному тексту цели, клиент его не шлёт."""
+    start: int
+    end: int
+    quote: str
+
+
 class ArgumentIn(BaseModel):
     text: str
     connect_to: int | None = None         # optional: target node id (None = new branch / root)
-    edge_type: str | None = "support"     # support / refute / qualify / question
+    edge_type: str | None = "support"     # support / refute / qualify / undercut / question
     kind: str | None = "argument"         # "question" marks a question node (a root can be one)
     title: str | None = None              # required when this opens a new topic (connect_to is None)
+    # Ответ на фрагмент: якорь на участок текста цели (только с connect_to).
+    # None = ответ на весь узел. undercut (подорвать) без якоря не принимается.
+    anchor: AnchorIn | None = None
     # Рубрика — только для новой темы (connect_to is None). Ответу внутри
     # ветки она не нужна: он наследует рубрику корня.
     domain: str | None = None
@@ -709,6 +720,8 @@ async def get_node(node_id: int):
         raise HTTPException(404, f"node {node_id} not found")
     # under which problems this node appears (belonging edges) — the home first
     node["belongings"] = await db.node_topics_of(node_id)
+    # replies anchored to SPANS of this node's text — the margin markers
+    node["fragment_replies"] = await db.node_anchors(node_id)
     return node
 
 
@@ -793,17 +806,36 @@ async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
         else:
             facets = None
 
+    # questions, proposals and explorations are first-class contributions
+    # anywhere — as a reply (edge_type) or as a topic root (kind, no edge)
+    _SPECIAL = {"question", "proposal", "exploration"}
     # 'problem' is a ROOT-ONLY kind: a discussion that carries STATE (postановка,
     # причины, реестр попыток, спор, решения), never a reply edge type. Only a
     # new topic (connect_to is None) may open as a problem.
     if arg.connect_to is None and arg.kind == "problem":
         kind = "problem"
     else:
-        # questions, proposals and explorations are first-class contributions
-        # anywhere — as a reply (edge_type) or as a topic root (kind, no edge)
-        _SPECIAL = {"question", "proposal", "exploration"}
         kind = (arg.kind if arg.kind in _SPECIAL
                 else arg.edge_type if arg.edge_type in _SPECIAL else "argument")
+
+    # ответ на фрагмент: тип ребра и валидация якоря ДО создания узла (как с
+    # рубрикой — не плодим узел, который тут же отклонён валидацией).
+    edge_type = None
+    anchor_hash = anchor_start = anchor_end = anchor_quote = None
+    if arg.connect_to is not None:
+        edge_type = kind if kind in _SPECIAL else (arg.edge_type or "support")
+        if arg.anchor is not None:
+            t = parent_text or ""
+            a = arg.anchor
+            if not (0 <= a.start < a.end <= len(t)):
+                raise HTTPException(400, "смещения якоря вне текста цели")
+            if t[a.start:a.end] != a.quote:
+                raise HTTPException(400, "цитата якоря не совпадает с текстом по смещениям")
+            anchor_start, anchor_end, anchor_quote = a.start, a.end, a.quote
+            anchor_hash = db.text_hash(t)
+        # подрыв целится в конкретное предложение — без якоря это refute
+        if edge_type == "undercut" and anchor_hash is None:
+            raise HTTPException(400, "подрыв (undercut) целится в участок — нужен якорь")
 
     # 1. persist the node RIGHT AWAY, unscored (poi_score = NULL)
     node_id = await db.add_node(arg.text, author_id=author["id"], kind=kind,
@@ -820,15 +852,20 @@ async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
     # потерял ветку, потому что забыл подписаться.
     await db.workspace_add(author["id"], root_id or node_id)
 
-    # 2. optional typed edge to an existing node (None = a new root branch)
+    # 2. optional typed edge to an existing node (None = a new root branch).
+    #    edge_type + anchor were resolved and validated above.
     edge = None
     if arg.connect_to is not None:
-        edge_type = kind if kind in _SPECIAL else (arg.edge_type or "support")
-        await db.add_edge(node_id, arg.connect_to, edge_type)
+        await db.add_edge(node_id, arg.connect_to, edge_type,
+                          anchor_hash=anchor_hash, anchor_start=anchor_start,
+                          anchor_end=anchor_end, anchor_quote=anchor_quote)
         edge = {
             "source_id": node_id,
             "target_id": arg.connect_to,
             "type": edge_type,
+            "anchor_start": anchor_start,
+            "anchor_end": anchor_end,
+            "anchor_quote": anchor_quote,
         }
 
     # 3. scoring AND pool assignment happen in the background
