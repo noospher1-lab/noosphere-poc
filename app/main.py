@@ -660,6 +660,16 @@ async def _problem_root_or_404(topic_root_id: int):
     return node
 
 
+@app.get("/api/problems/suggest")
+async def problem_suggestions(title: str = "", limit: int = 5):
+    """Похожие существующие проблемы — подсказка при создании, НЕ гейт и не слияние.
+
+    Объявлен ДО /api/problems/{topic_root_id}, иначе 'suggest' попал бы в int-параметр.
+    Открыт без входа: карта и форма создания рисуются до логина.
+    """
+    return await db.suggest_problems(title, limit=max(1, min(10, limit)))
+
+
 @app.get("/api/problems/{topic_root_id}")
 async def read_problem(topic_root_id: int):
     """Состояние проблемы: авторская рамка (причины, масштаб), сводка исходов и

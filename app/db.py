@@ -40,6 +40,11 @@ EDGE_TYPES = ("support", "refute", "qualify", "question",
 
 _pool: asyncpg.Pool | None = None
 
+# Есть ли триграммное сходство (pg_trgm) для подсказки дублей при создании.
+# Ставится best-effort в init_db: если расширение не поднялось (нет прав), падаем
+# на фолбэк по совпадению слов (ILIKE) — подсказка не должна валить старт.
+_has_trgm = False
+
 
 async def init_pool():
     """Create the shared connection pool (idempotent)."""
@@ -603,12 +608,19 @@ _INDEXES = [
 
 
 async def init_db():
+    global _has_trgm
     pool = await init_pool()
     async with pool.acquire() as conn:
         for stmt in _SCHEMA:
             await conn.execute(stmt)
         for stmt in _INDEXES:
             await conn.execute(stmt)
+        # триграммы для подсказки дублей — best-effort, старт не зависит от них
+        try:
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+            _has_trgm = True
+        except Exception:
+            _has_trgm = False
         # backfill topic_root_id for rows that predate the column (walk up once)
         orphans = [r["id"] for r in await conn.fetch(
             "SELECT id FROM nodes WHERE topic_root_id IS NULL")]
@@ -2232,6 +2244,59 @@ async def get_problem(topic_root_id):
     d["outcomes"] = {r["outcome_kind"]: r["n"] for r in totals}
     d["interventions_total"] = sum(d["outcomes"].values())
     return d
+
+
+async def suggest_problems(query, limit=5, exclude_id=None):
+    """Соседние проблемы, похожие на черновик, — ПОДСКАЗКА при создании, не гейт и
+    не слияние. Свободное создание остаётся: это лишь «может, вот эта уже есть?».
+    С pg_trgm — триграммное сходство заголовка/текста; без него — совпадение
+    значимых слов (ILIKE-фолбэк)."""
+    q = " ".join((query or "").split()).strip()
+    if len(q) < 3:
+        return []
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        if _has_trgm:
+            rows = await conn.fetch(
+                """
+                SELECT n.id, n.title, n.text,
+                       GREATEST(similarity(coalesce(n.title,''), $1),
+                                similarity(left(n.text, 240), $1)) AS sim,
+                       (SELECT count(*) FROM node_topics nt
+                        WHERE nt.topic_root_id = n.id) AS nodes
+                FROM nodes n
+                WHERE n.kind = 'problem' AND n.id = n.topic_root_id
+                  AND ($2::int IS NULL OR n.id <> $2)
+                ORDER BY sim DESC
+                LIMIT $3
+                """, q, exclude_id, limit * 3)
+            out = []
+            for r in rows:
+                if float(r["sim"]) < 0.15:      # ниже — уже не «сосед», а шум
+                    continue
+                d = dict(r); d["sim"] = round(float(d["sim"]), 3); out.append(d)
+            return out[:limit]
+        # фолбэк без расширения: значимые слова (>3 букв), ранг по числу совпадений
+        words = [w for w in q.lower().split() if len(w) > 3][:8]
+        if not words:
+            return []
+        rows = await conn.fetch(
+            """
+            SELECT n.id, n.title, n.text,
+                   (SELECT count(*) FROM node_topics nt
+                    WHERE nt.topic_root_id = n.id) AS nodes
+            FROM nodes n
+            WHERE n.kind = 'problem' AND n.id = n.topic_root_id
+              AND ($1::int IS NULL OR n.id <> $1)
+            """, exclude_id)
+        scored = []
+        for r in rows:
+            hay = ((r["title"] or "") + " " + (r["text"] or "")).lower()
+            hits = sum(1 for w in words if w in hay)
+            if hits:
+                d = dict(r); d["sim"] = round(hits / len(words), 3); scored.append(d)
+        scored.sort(key=lambda d: d["sim"], reverse=True)
+        return scored[:limit]
 
 
 # ------------------------------------------------------------ interventions
