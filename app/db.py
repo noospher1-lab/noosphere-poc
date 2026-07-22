@@ -514,6 +514,27 @@ _SCHEMA = [
         created_at          TIMESTAMPTZ DEFAULT now()
     )
     """,
+    # ПРИНАДЛЕЖНОСТЬ как РЕБРО, а не скаляр. Раньше узел жил ровно в одной теме
+    # (nodes.topic_root_id). Теперь принадлежность — строка node→проблема с
+    # АВТОРОМ и ВРЕМЕНЕМ: один канонический узел может стоять под несколькими
+    # проблемами без копии-цитаты (многодомность аргумента). author_id здесь —
+    # кто ПОЛОЖИЛ узел под эту проблему (для домашней = автор узла; для доп.
+    # проблемы может быть другой человек: «этот довод из X бьёт и по Y»).
+    #
+    # nodes.topic_root_id НЕ удаляется: он остаётся указателем на ДОМАШНЮЮ
+    # проблему — ту, где начисляется PoI автора (ключ author_topic_poi). node_topics
+    # — истина принадлежности для КОРПУСА (где довод появляется); домашняя тема —
+    # для НАЧИСЛЕНИЯ (где копится компетенция). Второе завязано на решение по
+    # области PoI, которое отложено, поэтому скаляр пока живёт как home-указатель.
+    """
+    CREATE TABLE IF NOT EXISTS node_topics (
+        node_id       INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        topic_root_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        author_id     INTEGER REFERENCES authors(id) ON DELETE SET NULL,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (node_id, topic_root_id)
+    )
+    """,
 ]
 
 
@@ -542,6 +563,11 @@ _INDEXES = [
     "CREATE INDEX IF NOT EXISTS interventions_topic_idx "
     "ON interventions(topic_root_id, id)",
     "CREATE INDEX IF NOT EXISTS interventions_geo_idx ON interventions(geo)",
+    # "какие узлы под этой проблемой" (включая многодомные) и "под какими
+    # проблемами этот узел" — оба должны быть индексным поиском, не сканом
+    "CREATE INDEX IF NOT EXISTS node_topics_topic_idx "
+    "ON node_topics(topic_root_id, node_id)",
+    "CREATE INDEX IF NOT EXISTS node_topics_node_idx ON node_topics(node_id)",
 ]
 
 
@@ -560,6 +586,18 @@ async def init_db():
         async with pool.acquire() as conn:
             await conn.execute(
                 "UPDATE nodes SET topic_root_id = $1 WHERE id = $2", root, nid)
+    # backfill belonging edges: each existing node's scalar topic_root_id becomes
+    # one node_topics row (its HOME belonging), carrying the node's own author and
+    # creation time. Idempotent — re-running init_db never duplicates. Runs after
+    # the topic_root_id backfill above so no node is missing its home edge.
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO node_topics (node_id, topic_root_id, author_id, created_at)
+            SELECT id, topic_root_id, author_id, created_at
+            FROM nodes WHERE topic_root_id IS NOT NULL
+            ON CONFLICT (node_id, topic_root_id) DO NOTHING
+            """)
     # backfill reactor_weight for reactions cast before the column existed:
     # a best-effort one-time freeze of the reactor's CURRENT topic PoI (the
     # true value is unrecoverable, but this beats treating every legacy vote as
@@ -623,10 +661,17 @@ async def add_node(text, poi_score=None, poi_breakdown=None, author_id=None,
             if topic_root_id is None:
                 await conn.execute(
                     "UPDATE nodes SET topic_root_id = id WHERE id = $1", node_id)
+            # home belonging edge (node_topics is the belonging truth; the scalar
+            # above stays as the home pointer). For a root, home is itself.
+            home = topic_root_id or node_id
+            await conn.execute(
+                "INSERT INTO node_topics (node_id, topic_root_id, author_id) "
+                "VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                node_id, home, author_id)
             await _log(conn, "node_added",
                        {"node_id": node_id, "text": text, "kind": kind,
                         "position_id": position_id, "poi_score": poi_score,
-                        "topic_root_id": topic_root_id or node_id,
+                        "topic_root_id": home,
                         "atom_group": atom_group},
                        author_id)
     return node_id
@@ -677,6 +722,10 @@ async def add_atoms_once(exploration_id, root_id, author_id, atoms):
                     "INSERT INTO nodes (text, author_id, kind, topic_root_id, "
                     "atom_group) VALUES ($1, $2, $3, $4, $5) RETURNING id",
                     a["text"], author_id, a["kind"], root_id, a["group"])
+                await conn.execute(
+                    "INSERT INTO node_topics (node_id, topic_root_id, author_id) "
+                    "VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+                    nid, root_id, author_id)
                 await _log(conn, "node_added",
                            {"node_id": nid, "text": a["text"], "kind": a["kind"],
                             "position_id": None, "poi_score": None,
@@ -2198,3 +2247,93 @@ async def get_intervention(intervention_id):
         row = await conn.fetchrow(
             "SELECT * FROM interventions WHERE id = $1", intervention_id)
     return _intervention_dict(row) if row else None
+
+
+# ------------------------------------------------------------ belonging (edges)
+async def add_belonging(node_id, topic_root_id, author_id=None):
+    """Поставить узел под ещё одну проблему — многодомность без копии-цитаты.
+
+    Идемпотентно (повторное размещение не ошибка). author_id — кто ПОЛОЖИЛ связь,
+    не обязательно автор узла: смысл ребра в том, что чужой довод можно принести
+    под свою проблему, и видно, кто это сделал и когда. Возвращает True, если
+    связь создана, False, если уже была.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            created = await conn.fetchval(
+                "INSERT INTO node_topics (node_id, topic_root_id, author_id) "
+                "VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING node_id",
+                node_id, topic_root_id, author_id) is not None
+            if created:
+                await _log(conn, "belonging_added",
+                           {"node_id": node_id, "topic_root_id": topic_root_id},
+                           author_id)
+    return created
+
+
+async def remove_belonging(node_id, topic_root_id):
+    """Снять ДОПОЛНИТЕЛЬНУЮ принадлежность. Домашнюю (== nodes.topic_root_id)
+    снять нельзя: это первичная тема узла и ключ начисления PoI. Возвращает
+    False, если пытались снять домашнюю или связи не было."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        home = await conn.fetchval(
+            "SELECT topic_root_id FROM nodes WHERE id = $1", node_id)
+        if home == topic_root_id:
+            return False
+        async with conn.transaction():
+            deleted = await conn.fetchval(
+                "DELETE FROM node_topics WHERE node_id = $1 AND topic_root_id = $2 "
+                "RETURNING node_id", node_id, topic_root_id) is not None
+            if deleted:
+                await _log(conn, "belonging_removed",
+                           {"node_id": node_id, "topic_root_id": topic_root_id})
+    return deleted
+
+
+async def node_topics_of(node_id):
+    """Проблемы, под которыми стоит узел (с автором связи, временем и пометкой
+    домашней). Домашняя — та, что совпадает с nodes.topic_root_id."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT nt.topic_root_id, nt.author_id, nt.created_at,
+                   (nt.topic_root_id = n.topic_root_id) AS is_home,
+                   r.title AS topic_title, r.text AS topic_text, r.kind AS topic_kind,
+                   a.name AS placed_by
+            FROM node_topics nt
+            JOIN nodes n ON n.id = nt.node_id
+            JOIN nodes r ON r.id = nt.topic_root_id
+            LEFT JOIN authors a ON a.id = nt.author_id
+            WHERE nt.node_id = $1
+            ORDER BY is_home DESC, nt.created_at
+            """, node_id)
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d.get("created_at") is not None:
+            d["created_at"] = d["created_at"].isoformat()
+        out.append(d)
+    return out
+
+
+async def topic_nodes(topic_root_id):
+    """Узлы, принадлежащие проблеме ЧЕРЕЗ node_topics — включая многодомные,
+    принесённые из других проблем. Отличается от scalar-фильтра `topic_root_id`:
+    тот видит только «родные» узлы, этот — весь корпус, собранный под проблему."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT n.id, n.text, n.title, n.kind, n.poi_score,
+                   (n.topic_root_id = $1) AS is_home,
+                   a.name AS author, a.color AS author_color
+            FROM node_topics nt
+            JOIN nodes n ON n.id = nt.node_id
+            LEFT JOIN authors a ON a.id = n.author_id
+            WHERE nt.topic_root_id = $1
+            ORDER BY n.poi_score DESC NULLS LAST, n.id
+            """, topic_root_id)
+    return [dict(r) for r in rows]

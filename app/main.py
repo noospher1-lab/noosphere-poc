@@ -707,7 +707,50 @@ async def get_node(node_id: int):
     node = await db.get_node_full(node_id)
     if node is None:
         raise HTTPException(404, f"node {node_id} not found")
+    # under which problems this node appears (belonging edges) — the home first
+    node["belongings"] = await db.node_topics_of(node_id)
     return node
+
+
+@app.post("/api/nodes/{node_id}/belong/{topic_root_id}")
+async def belong_node(node_id: int, topic_root_id: int,
+                      author=Depends(current_author)):
+    """Положить существующий узел под ещё одну проблему — многодомность без копии.
+
+    Ребро несёт автора (кто положил) и время. Класть можно чужой довод под свою
+    проблему: «этот аргумент из X бьёт и по Y». Домашняя тема узла не трогается.
+    """
+    node = await db.get_node(node_id)
+    if node is None:
+        raise HTTPException(404, f"node {node_id} not found")
+    target = await db.get_node(topic_root_id)
+    if target is None:
+        raise HTTPException(404, f"проблема {topic_root_id} не найдена")
+    if target.get("topic_root_id") != topic_root_id:
+        raise HTTPException(400, "узел кладётся под КОРЕНЬ проблемы, не под узел внутри")
+    created = await db.add_belonging(node_id, topic_root_id, author_id=author["id"])
+    return {"ok": True, "node_id": node_id, "topic_root_id": topic_root_id,
+            "created": created, "belongings": await db.node_topics_of(node_id)}
+
+
+@app.delete("/api/nodes/{node_id}/belong/{topic_root_id}")
+async def unbelong_node(node_id: int, topic_root_id: int,
+                        author=Depends(current_author)):
+    """Снять дополнительную принадлежность. Домашнюю снять нельзя."""
+    removed = await db.remove_belonging(node_id, topic_root_id)
+    if not removed:
+        raise HTTPException(400, "нельзя снять домашнюю принадлежность или её нет")
+    return {"ok": True, "node_id": node_id, "topic_root_id": topic_root_id,
+            "belongings": await db.node_topics_of(node_id)}
+
+
+@app.get("/api/topics/{topic_root_id}/nodes")
+async def topic_corpus(topic_root_id: int):
+    """Корпус проблемы через принадлежность-рёбра — включая многодомные узлы,
+    принесённые из других проблем. Открыто без входа: это корпус для чтения."""
+    if await db.get_node(topic_root_id) is None:
+        raise HTTPException(404, f"проблема {topic_root_id} не найдена")
+    return await db.topic_nodes(topic_root_id)
 
 
 @app.get("/api/nodes/{node_id}/children")
