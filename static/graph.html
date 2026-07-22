@@ -4,6 +4,9 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>Noosphere — Argument Graph</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
 <style>
   /* Одна палитра с деревом обсуждений (index.html): мягче чистого чёрного,
      Inter для текста и JetBrains Mono для чисел и меток. Раньше здесь была
@@ -147,8 +150,8 @@
   #hud .fill { height: 100%; width: 0; background: var(--bronze); transition: width .5s ease; }
   #hud .fill.poi.up { background: var(--green); }
   #hud .fill.poi.down { background: var(--red); }
-  #hud .close { position: absolute; top: 10px; right: 12px; cursor: pointer; color: var(--dim2); font-size: 15px; line-height: 1; }
-  #hud .close:hover { color: var(--ivory); }
+  .close { position: absolute; top: 10px; right: 12px; cursor: pointer; color: var(--dim2); font-size: 15px; line-height: 1; }
+  .close:hover { color: var(--ivory); }
 
   /* ---- reactions (PoI-weighted votes on a node) ---- */
   #hud-reactions { border-top: 1px solid rgba(216,175,110,0.18); margin-top: 12px; padding-top: 10px; }
@@ -348,8 +351,9 @@
   <div id="feed"></div>
 
   <!-- left toolbar -->
+  <!-- «Новая тема» убрана: граф показывает ОДНУ выбранную тему; темы создаются
+       в дереве. Панель ниже открывается только для ответа/действия из HUD. -->
   <div id="tools">
-    <button id="tab-add">+ Новая тема</button>
     <button id="tab-pools">Пулы (ИИ)</button>
   </div>
 
@@ -358,9 +362,10 @@
        вопрос без ответа. Отвечать на конкретный узел можно из HUD («ответить
        на этот узел») и из дерева обсуждений, где родитель виден. -->
   <div id="addpanel" class="panel">
-    <h2 id="arg-h2">Новая тема</h2>
-    <label>Текст темы</label>
-    <textarea id="arg-text" placeholder="Сформулируй тезис…"></textarea>
+    <span class="close" id="add-close">✕</span>
+    <h2 id="arg-h2">Ответ на узел</h2>
+    <label>Текст</label>
+    <textarea id="arg-text" placeholder="Сформулируй ответ…"></textarea>
 
     <!-- Тип связи нужен только когда отвечаешь на конкретный узел из HUD:
          там цель названа по имени, в отличие от прежнего «ответ на узел». -->

@@ -1105,7 +1105,6 @@ function setFormChrome(c) {
 function _openActionForm(note, chrome) {
   setFormChrome(chrome || DEFAULT_CHROME);
   document.getElementById('addpanel').classList.add('open');
-  document.getElementById('tab-add').classList.add('active');
   setArgStatus(note, 'busy');
   hud.classList.remove('open');
   document.getElementById('arg-text').focus();
@@ -1126,7 +1125,6 @@ function branchAction(n, planetKind) {
 function clearPendingAction() {
   pendingAction = null;
   setFormChrome(DEFAULT_CHROME);
-  document.getElementById('arg-h2').textContent = 'Новая тема';
   document.getElementById('arg-reply-opts').style.display = 'none';
   setArgStatus('');
 }
@@ -1322,15 +1320,13 @@ async function submitArgument() {
 
 function initPanels() {
   const addPanel = document.getElementById('addpanel');
-  const tabAdd = document.getElementById('tab-add');
 
-  // Панель одна: «новая тема». Тест-панель (персоны, веса, reseed) и выбор
-  // «куда добавить» убраны из разметки — это был стенд для соло-разработки,
-  // а не то, что должен видеть участник.
-  tabAdd.onclick = () => {
-    if (pendingAction) clearPendingAction();
-    const open = addPanel.classList.toggle('open');
-    tabAdd.classList.toggle('active', open);
+  // «Новая тема» убрана из графа: граф показывает одну выбранную тему, темы
+  // создаются в дереве. Панель открывается только для ответа/действия из HUD;
+  // закрытие — крестиком.
+  document.getElementById('add-close').onclick = () => {
+    clearPendingAction();
+    addPanel.classList.remove('open');
   };
 
   document.getElementById('arg-submit').onclick = submitArgument;
@@ -1362,7 +1358,6 @@ function initPanels() {
     const target = nodeById.get(selectedId);
     pendingAction = { kind: 'reply', nodeId: selectedId };
     document.getElementById('addpanel').classList.add('open');
-    document.getElementById('tab-add').classList.add('active');
     document.getElementById('arg-h2').textContent = 'Ответ на узел';
     document.getElementById('arg-reply-opts').style.display = 'block';
     setArgStatus('Отвечаешь на: «' + truncate(nodeLabelText(target) || '', 34) + '»', 'busy');
