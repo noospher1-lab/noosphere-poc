@@ -1008,32 +1008,35 @@ function bucketBarsHTML(support, color) {
 
 const SRC = 'font-size:10px;color:#c4bfb2;padding-left:8px;border-left:1px solid rgba(255,255,255,.12);margin-top:4px';
 
+// Позиция (пул) — СБОРКА ИИ, а не чей-то довод. Спорить/отвечать НА неё нельзя:
+// это был бы спор с синтезом ИИ (против принципа брифа «ИИ указывает на реальные
+// узлы, не на свой синтез»). HUD показывает сборку для чтения и список РЕАЛЬНЫХ
+// аргументов — клик по любому уводит к настоящему узлу, где ответ прикрепится
+// к нему, а не к сборке.
 function renderPoolHud(n) {
-  document.getElementById('hud-type').textContent = 'позиция · ' + (STANCE_LABEL[n.stance] || n.stance);
+  document.getElementById('hud-type').textContent = 'сборка ИИ · ' + (STANCE_LABEL[n.stance] || n.stance);
   document.getElementById('hud-label').textContent = truncate(n.label, 60);
-  const s = n.support;
-  const args = n.member_texts.map((t) => `<div style="${SRC}">${escapeHtml(t)}</div>`).join('');
+  const ids = n.member_ids || [], texts = n.member_texts || [];
+  const args = ids.map((mid, i) =>
+    `<div class="pool-arg" data-mid="${mid}" style="${SRC};cursor:pointer">${escapeHtml(texts[i] || '')}</div>`
+  ).join('');
   document.getElementById('hud-content').innerHTML =
     `<div style="margin-bottom:10px;color:#ece6d8;white-space:pre-wrap;line-height:1.55">${escapeHtml(n.composed || n.label)}</div>`
-    + `<div style="color:var(--bronze);font-size:11px;margin-bottom:12px">👥 поддержали: ${s.count}</div>`
-    + `<div style="border-top:1px solid rgba(216,175,110,0.18);padding-top:10px;margin-bottom:8px">`
-    + `<div style="font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--bronze);margin-bottom:6px">Действие с позицией (от твоего аккаунта)</div>`
-    + `<div style="display:flex;flex-wrap:wrap;gap:5px">`
-    + `<button id="pool-support" class="rx-btn agree" style="flex:1 1 45%">👍 Поддержать</button>`
-    + `<button id="pool-contest" class="rx-btn disagree" style="flex:1 1 45%">👎 Оспорить</button>`
-    + `<button id="pool-continue" class="rx-btn" style="flex:1 1 45%;color:var(--bronze);border:1px solid rgba(216,175,110,0.4)">➕ Развить</button>`
-    + `<button id="pool-question" class="rx-btn" style="flex:1 1 45%;color:#b98cff;border:1px solid rgba(185,140,255,0.4)">❓ Спросить</button>`
-    + `</div>`
-    + `<button id="pool-conclude" class="rx-btn" style="width:100%;margin-top:6px;color:#05060a;background:var(--bronze);border:none">🔭 Сделать вывод из орбиты</button>`
-    + `</div>`
-    + `<div style="color:#8a8576;font-size:9px;letter-spacing:.1em;text-transform:uppercase">Исходные аргументы (${n.member_ids.length})</div>`
+    + `<div style="color:var(--bronze);font-size:11px;margin-bottom:12px">👥 поддержали: ${n.support.count}</div>`
+    + `<div style="border-top:1px solid rgba(216,175,110,0.18);padding-top:10px;font-size:11.5px;color:var(--dim);line-height:1.5;margin-bottom:10px">Это сборка ИИ, не отдельный довод. Чтобы возразить или ответить — открой конкретный аргумент ниже: ответ прикрепится к нему.</div>`
+    + `<div style="color:#8a8576;font-size:9px;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px">Реальные аргументы (${ids.length}) — открыть</div>`
     + args;
 
-  document.getElementById('pool-support').onclick = () => poolVote(n);
-  document.getElementById('pool-contest').onclick = () => poolAction(n, 'oppose');
-  document.getElementById('pool-continue').onclick = () => poolAction(n, 'continue');
-  document.getElementById('pool-question').onclick = () => poolAction(n, 'question');
-  document.getElementById('pool-conclude').onclick = () => concludePosition(n);
+  // клик по реальному аргументу → выйти из пулов и открыть этот узел в графе,
+  // где есть «Ответить на этот узел» (ответ цепляется к реальному доводу)
+  document.querySelectorAll('.pool-arg').forEach((el) => {
+    el.onclick = async () => {
+      const mid = parseInt(el.dataset.mid);
+      await togglePools(false);
+      const node = nodeById.get(mid);
+      if (node) openHud(node);
+    };
+  });
 }
 
 // "Сделать вывод": synthesize the star + its orbit into the next node forward.
@@ -1186,7 +1189,10 @@ async function buildPoolGraph(refresh) {
       });
     }
   });
-  radialLayout(nodes, edges, currentTopicId);
+  // Та же раскладка, что и у обсуждения (layoutTree): слева-направо, кадрируется
+  // при камере по умолчанию. radialLayout (орбиты) выносил корень и позиции за
+  // край экрана — визуально ломался при входе в пулы.
+  layoutTree(nodes, edges, currentTopicId);
   installGraph(nodes, edges, true);
 }
 
