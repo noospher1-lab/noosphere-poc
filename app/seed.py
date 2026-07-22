@@ -14,8 +14,9 @@ Model (per the design discussion):
 """
 
 import asyncio
+from datetime import datetime, timezone
 
-from . import db
+from . import db, taxonomy
 
 # Test personas. Real influence is per-topic PoI (seeded below). (name, color)
 AUTHORS = [
@@ -70,6 +71,123 @@ TOPICS = [
 ]
 
 
+# Проблемы — единица навигации. У проблемы есть СОСТОЯНИЕ: постановка (текст
+# корня), причины, масштаб (данные извне) и реестр попыток с исходами. Реестр
+# копит провалы наравне с успехами — «пробовали там, не сработало, из-за чего»
+# самое ценное. source_* — несущая внешняя ссылка + текстовая выдержка (блоб не
+# хостим). Данные здесь ИЛЛЮСТРАТИВНЫЕ, для демонстрации формы, не справка.
+PROBLEMS = [
+    {
+        "title": "Пытки в полиции остаются безнаказанными",
+        "statement": "Насилие при задержании и в отделах массово не доходит до "
+                     "приговора: жалоба уходит тем же ведомствам, что и подозреваемые.",
+        "author_idx": 1,
+        "domain": "society", "sub": "Права человека",
+        "geo": ["Россия"], "tags": ["полиция", "безнаказанность"],
+        "causes": "Расследование ведёт та же система, чьих сотрудников проверяет; "
+                  "нет независимой экспертизы травм; свидетели зависят от той же "
+                  "полиции; сроки давности гасят дела.",
+        "scale_note": "Доля жалоб на насилие, дошедших до приговора, — единицы процентов.",
+        "scale_url": "https://www.coe.int",
+        "scale_excerpt": "Профильные доклады фиксируют разрыв в разы между числом "
+                         "заявлений о насилии и числом осуждённых сотрудников.",
+        "interventions": [
+            {"what": "Независимый орган расследования жалоб на полицию (IPCC/IOPC)",
+             "actor": "Государство", "geo": "Великобритания", "when_text": "2004→2018",
+             "outcome": "Часть дел дошла до суда, но доля обоснованных жалоб с "
+                        "санкциями осталась низкой; критика за медлительность.",
+             "outcome_kind": "partial",
+             "conditions": "Работает при реальной независимости бюджета и доступа к "
+                           "материалам; без этого превращается в фильтр.",
+             "source_url": "https://www.policeconduct.gov.uk",
+             "source_excerpt": "Отдельный орган принимает и расследует жалобы на "
+                               "полицию, минуя саму полицию."},
+            {"what": "Нагрудные камеры на патрульных",
+             "actor": "Полиция", "geo": "США", "when_text": "2014→",
+             "outcome": "Снижение жалоб в части округов, но эффект исчезал там, где "
+                        "запись включалась по усмотрению сотрудника.",
+             "outcome_kind": "mixed",
+             "conditions": "Даёт эффект только при жёстком правиле обязательной "
+                           "записи и внешнем доступе к архиву.",
+             "source_url": "https://bja.ojp.gov",
+             "source_excerpt": "Массовые программы нательных камер; результаты по "
+                               "снижению применения силы неоднородны между сайтами."},
+            {"what": "Внутренняя проверка силами того же ведомства",
+             "actor": "МВД", "geo": "Россия", "when_text": "постоянно",
+             "outcome": "Подавляющее большинство проверок — отказ в возбуждении дела.",
+             "outcome_kind": "failure",
+             "conditions": "Провал воспроизводится везде, где проверяющий и "
+                           "проверяемый — одна вертикаль.",
+             "source_url": None, "source_excerpt": None},
+        ],
+    },
+    {
+        "title": "Уличная бездомность в крупных городах",
+        "statement": "Люди годами живут на улице; ночлежки снимают симптом на ночь, "
+                     "но не выводят из бездомности.",
+        "author_idx": 2,
+        "domain": "society", "sub": "Социальная поддержка",
+        "geo": ["Финляндия", "США"], "tags": ["бездомность", "жильё"],
+        "causes": "Дефицит доступного жилья; потеря жилья опережает помощь; "
+                  "требование сначала «решить» зависимость/занятость как условие "
+                  "жилья замыкает круг.",
+        "scale_note": "Финляндия — единственная страна ЕС с устойчивым снижением "
+                      "бездомности за десятилетие.",
+        "scale_url": "https://ec.europa.eu",
+        "scale_excerpt": "На фоне роста бездомности в большинстве стран ЕС Финляндия "
+                         "показывает обратную динамику.",
+        "interventions": [
+            {"what": "Housing First — жильё без предварительных условий",
+             "actor": "Государство + НКО", "geo": "Финляндия", "when_text": "2008→",
+             "outcome": "Устойчивое сокращение длительной бездомности; высокий "
+                        "процент удержавшихся в жилье.",
+             "outcome_kind": "success",
+             "conditions": "Опирается на реальный фонд социального жилья и "
+                           "сопровождение; без запаса квартир не масштабируется.",
+             "source_url": "https://ysaatio.fi",
+             "source_excerpt": "Жильё предоставляется первым, без требования сперва "
+                               "решить зависимость или найти работу."},
+            {"what": "Криминализация ночёвки в публичных местах",
+             "actor": "Муниципалитеты", "geo": "США", "when_text": "разное",
+             "outcome": "Перемещает людей между районами, повышает издержки, "
+                        "бездомность не снижает.",
+             "outcome_kind": "failure",
+             "conditions": "Провал устойчив: наказание не создаёт жилья.",
+             "source_url": None, "source_excerpt": None},
+        ],
+    },
+]
+
+
+async def _seed_problems(author_ids):
+    """Проблемы с реестром попыток — поверх обычных тем, аддитивно."""
+    n_problems = n_interv = 0
+    for p in PROBLEMS:
+        root_id = await db.add_node(
+            p["statement"], author_id=author_ids[p["author_idx"]],
+            kind="problem", topic_root_id=None, title=p["title"])
+        await db.set_topic_facets(
+            root_id, p["domain"], p.get("sub"),
+            sorted(taxonomy.geo_closure(p.get("geo"))), p.get("tags", []))
+        await db.set_problem(
+            root_id, causes=p.get("causes"), scale_note=p.get("scale_note"),
+            scale_url=p.get("scale_url"), scale_excerpt=p.get("scale_excerpt"),
+            scale_retrieved_at=datetime.now(timezone.utc) if p.get("scale_url") else None,
+            author_id=author_ids[p["author_idx"]])
+        for iv in p["interventions"]:
+            await db.add_intervention(
+                root_id, what=iv["what"], actor=iv.get("actor"),
+                geo=iv.get("geo"), when_text=iv.get("when_text"),
+                outcome=iv.get("outcome"), outcome_kind=iv["outcome_kind"],
+                conditions=iv.get("conditions"), source_url=iv.get("source_url"),
+                source_excerpt=iv.get("source_excerpt"),
+                source_retrieved_at=datetime.now(timezone.utc) if iv.get("source_url") else None,
+                author_id=author_ids[p["author_idx"]])
+            n_interv += 1
+        n_problems += 1
+    return n_problems, n_interv
+
+
 async def _seed():
     """Wipe and re-seed. Assumes the pool + schema are already up."""
     await db.wipe()
@@ -103,8 +221,11 @@ async def _seed():
         n_nodes += len(ids)
         n_edges += len(topic["edges"])
 
+    n_problems, n_interv = await _seed_problems(author_ids)
+
     print(f"seeded {len(author_ids)} authors, {len(TOPICS)} topics, "
-          f"{n_nodes} nodes, {n_edges} edges")
+          f"{n_nodes} nodes, {n_edges} edges, "
+          f"{n_problems} problems, {n_interv} interventions")
 
 
 async def run_within_pool():

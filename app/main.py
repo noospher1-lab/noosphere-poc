@@ -616,6 +616,89 @@ async def put_topic_facets(topic_root_id: int, body: FacetsIn,
             "domain": dom, "sub": sub, "geo": geo, "tags": tags}
 
 
+# ---------------------------------------------------------------- problems
+OUTCOME_KINDS = {"success", "partial", "failure", "mixed", "unclear"}
+
+
+class ProblemIn(BaseModel):
+    causes: str | None = None            # причины и составные части
+    scale_note: str | None = None        # где, сколько — своими словами
+    scale_url: str | None = None         # несущая внешняя ссылка на данные
+    scale_excerpt: str | None = None     # сохранённая выдержка (текст, не блоб)
+
+
+class InterventionIn(BaseModel):
+    what: str                            # что пробовали (вмешательство)
+    actor: str | None = None             # кто
+    geo: str | None = None               # где (метка географии)
+    when_text: str | None = None         # когда (год/период, свободный текст)
+    outcome: str | None = None           # что вышло
+    outcome_kind: str = "unclear"        # success/partial/failure/mixed/unclear
+    conditions: str | None = None        # от каких условий зависело
+    source_url: str | None = None        # несущая внешняя ссылка
+    source_excerpt: str | None = None    # сохранённая выдержка (текст, не блоб)
+
+
+async def _problem_root_or_404(topic_root_id: int):
+    """Проблема ставится только КОРНЮ обсуждения, и корень должен быть kind='problem'."""
+    node = await db.get_node(topic_root_id)
+    if node is None:
+        raise HTTPException(404, f"тема {topic_root_id} не найдена")
+    if node.get("topic_root_id") != topic_root_id:
+        raise HTTPException(400, "проблема — это корень обсуждения, не узел внутри")
+    return node
+
+
+@app.get("/api/problems/{topic_root_id}")
+async def read_problem(topic_root_id: int):
+    """Состояние проблемы: авторская рамка (причины, масштаб), сводка исходов и
+    сам реестр вмешательств. Открыто без входа — это корпус для чтения."""
+    node = await db.get_node(topic_root_id)
+    if node is None:
+        raise HTTPException(404, f"проблема {topic_root_id} не найдена")
+    problem = await db.get_problem(topic_root_id)
+    problem["interventions"] = await db.list_interventions(topic_root_id)
+    problem["kind"] = node.get("kind")
+    return problem
+
+
+@app.put("/api/problems/{topic_root_id}")
+async def put_problem(topic_root_id: int, body: ProblemIn,
+                      author=Depends(current_author)):
+    """Проставить/поменять состояние проблемы. Правит любой участник, как и
+    рубрику: постановка проблемы — общее навигационное благо, а правки видны в
+    event log."""
+    await _problem_root_or_404(topic_root_id)
+    retrieved = datetime.now(timezone.utc) if body.scale_url else None
+    await db.set_problem(topic_root_id, causes=body.causes,
+                         scale_note=body.scale_note, scale_url=body.scale_url,
+                         scale_excerpt=body.scale_excerpt,
+                         scale_retrieved_at=retrieved, author_id=author["id"])
+    return {"ok": True, **await db.get_problem(topic_root_id)}
+
+
+@app.post("/api/problems/{topic_root_id}/interventions")
+async def post_intervention(topic_root_id: int, body: InterventionIn,
+                            author=Depends(current_author)):
+    """Внести запись в накопитель решений. Запись факта, свободно, без гейта:
+    провал регистрируется наравне с успехом."""
+    await _problem_root_or_404(topic_root_id)
+    if not body.what.strip():
+        raise HTTPException(400, "нужно описать, что пробовали (поле what)")
+    if body.outcome_kind not in OUTCOME_KINDS:
+        raise HTTPException(400, f"outcome_kind ∈ {sorted(OUTCOME_KINDS)}")
+    if body.geo and body.geo not in taxonomy.VALID_GEO:
+        raise HTTPException(400, f"неизвестная география: {body.geo!r}")
+    retrieved = datetime.now(timezone.utc) if body.source_url else None
+    row = await db.add_intervention(
+        topic_root_id, what=body.what.strip(), actor=body.actor,
+        geo=body.geo, when_text=body.when_text, outcome=body.outcome,
+        outcome_kind=body.outcome_kind, conditions=body.conditions,
+        source_url=body.source_url, source_excerpt=body.source_excerpt,
+        source_retrieved_at=retrieved, author_id=author["id"])
+    return row
+
+
 # The tree UI's read contract (scaling draft, principle 3): the client asks for
 # the NODE it looks at and a RANKED PAGE of children — never the whole graph.
 # /api/graph stays only for the force-directed visualization mode.
@@ -667,11 +750,17 @@ async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
         else:
             facets = None
 
-    # questions, proposals and explorations are first-class contributions
-    # anywhere — as a reply (edge_type) or as a topic root (kind, no edge)
-    _SPECIAL = {"question", "proposal", "exploration"}
-    kind = (arg.kind if arg.kind in _SPECIAL
-            else arg.edge_type if arg.edge_type in _SPECIAL else "argument")
+    # 'problem' is a ROOT-ONLY kind: a discussion that carries STATE (postановка,
+    # причины, реестр попыток, спор, решения), never a reply edge type. Only a
+    # new topic (connect_to is None) may open as a problem.
+    if arg.connect_to is None and arg.kind == "problem":
+        kind = "problem"
+    else:
+        # questions, proposals and explorations are first-class contributions
+        # anywhere — as a reply (edge_type) or as a topic root (kind, no edge)
+        _SPECIAL = {"question", "proposal", "exploration"}
+        kind = (arg.kind if arg.kind in _SPECIAL
+                else arg.edge_type if arg.edge_type in _SPECIAL else "argument")
 
     # 1. persist the node RIGHT AWAY, unscored (poi_score = NULL)
     node_id = await db.add_node(arg.text, author_id=author["id"], kind=kind,
@@ -700,8 +789,11 @@ async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
         }
 
     # 3. scoring AND pool assignment happen in the background
-    # (questions get the QUESTION rubric and never join position pools)
-    _spawn(_score_later(node_id, arg.text, kind, parent_text))
+    # (questions get the QUESTION rubric and never join position pools;
+    #  a problem root is a framing with STATE, not a claim judged for weight —
+    #  it stays unscored, its "state" is the registry summary, not a PoI)
+    if kind != "problem":
+        _spawn(_score_later(node_id, arg.text, kind, parent_text))
     if kind == "argument":
         _spawn(_assign_position_later(node_id, arg.text))
 

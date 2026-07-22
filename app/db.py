@@ -461,6 +461,59 @@ _SCHEMA = [
         PRIMARY KEY (topic_root_id, tag)
     )
     """,
+    # ПРОБЛЕМА — надстройка над корнем обсуждения (nodes.kind='problem'). У темы
+    # нет состояния, у проблемы есть: постановка (это text/title узла), причины
+    # и составные части, масштаб. «Что пробовали» вынесено в реестр
+    # (interventions), «где спор» — это сам граф, «решения на столе» — позиции.
+    # Отдельной таблицей по той же причине, что topic_facets: поле есть только у
+    # КОРНЯ-проблемы, держать его на всех узлах — хранить пустоту в 99% строк.
+    #
+    # Масштаб (где, сколько) — это ДАННЫЕ извне, а не аргумент: несущая внешняя
+    # ссылка + сохранённая ВЫДЕРЖКА текстом (блоб не хостим — «только текст»),
+    # чтобы страница пережила исчезновение источника и дала превью без перехода.
+    """
+    CREATE TABLE IF NOT EXISTS problems (
+        topic_root_id       INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+        causes              TEXT,
+        scale_note          TEXT,
+        scale_url           TEXT,
+        scale_excerpt       TEXT,
+        scale_retrieved_at  TIMESTAMPTZ,
+        updated_at          TIMESTAMPTZ DEFAULT now()
+    )
+    """,
+    # НАКОПИТЕЛЬ РЕШЕНИЙ — реестр вмешательств. Запись ФАКТА, не аргумент: что
+    # пробовали, где, когда, кто, что вышло, от каких условий зависело. Копит
+    # провалы наравне с успехами — outcome_kind='failure' первоклассное значение,
+    # «пробовали там, не сработало, из-за чего» самое ценное. Растёт в цене со
+    # временем и переносится между странами (отсюда индекс по geo).
+    #
+    # Атрибуция («благодаря чему сработало») сюда НЕ пишется — это оспоримое
+    # причинное утверждение, ему место в графе (REBUTS/UNDERCUTS), следующим
+    # заходом. Здесь только регистрируемый факт вмешательства и его исход.
+    #
+    # source_* — та же несущая внешняя ссылка + выдержка текстом: доказательство
+    # живёт снаружи, здесь его текстовый след, переживающий линк-рот.
+    """
+    CREATE TABLE IF NOT EXISTS interventions (
+        id                  SERIAL PRIMARY KEY,
+        topic_root_id       INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        what                TEXT NOT NULL,
+        actor               TEXT,
+        geo                 TEXT,
+        when_text           TEXT,
+        outcome             TEXT,
+        outcome_kind        TEXT NOT NULL DEFAULT 'unclear'
+                            CHECK (outcome_kind IN
+                                ('success','partial','failure','mixed','unclear')),
+        conditions          TEXT,
+        source_url          TEXT,
+        source_excerpt      TEXT,
+        source_retrieved_at TIMESTAMPTZ,
+        author_id           INTEGER REFERENCES authors(id) ON DELETE SET NULL,
+        created_at          TIMESTAMPTZ DEFAULT now()
+    )
+    """,
 ]
 
 
@@ -484,6 +537,11 @@ _INDEXES = [
     # (topic_root_id[, author_id]) — index it so they don't scan the table
     "CREATE INDEX IF NOT EXISTS idx_nodes_topic_author "
     "ON nodes(topic_root_id, author_id)",
+    # the registry is read per-problem, and its whole value is transfer ACROSS
+    # problems/countries — so it is also read by geo (see the interventions comment)
+    "CREATE INDEX IF NOT EXISTS interventions_topic_idx "
+    "ON interventions(topic_root_id, id)",
+    "CREATE INDEX IF NOT EXISTS interventions_geo_idx ON interventions(geo)",
 ]
 
 
@@ -2023,8 +2081,120 @@ async def list_topics():
                     WHERE e2.target_id = n.id) AS reply_count
             FROM nodes n
             LEFT JOIN authors a ON a.id = n.author_id
-            WHERE n.kind IN ('argument', 'question', 'proposal', 'exploration')
+            WHERE n.kind IN
+                  ('argument', 'question', 'proposal', 'exploration', 'problem')
               AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_id = n.id)
             ORDER BY n.id
             """)
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------- problems
+async def set_problem(topic_root_id, causes=None, scale_note=None,
+                      scale_url=None, scale_excerpt=None,
+                      scale_retrieved_at=None, author_id=None):
+    """Проставить/переписать состояние проблемы (причины, масштаб). Идемпотентно.
+
+    Масштаб — данные извне: ссылка живёт вместе с текстовой выдержкой, чтобы
+    страница не осыпалась, когда источник исчезнет. Пишется в той же транзакции,
+    что и событие: лог обязан сходиться с состоянием.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                INSERT INTO problems (topic_root_id, causes, scale_note,
+                                      scale_url, scale_excerpt, scale_retrieved_at,
+                                      updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, now())
+                ON CONFLICT (topic_root_id) DO UPDATE SET
+                    causes = EXCLUDED.causes,
+                    scale_note = EXCLUDED.scale_note,
+                    scale_url = EXCLUDED.scale_url,
+                    scale_excerpt = EXCLUDED.scale_excerpt,
+                    scale_retrieved_at = EXCLUDED.scale_retrieved_at,
+                    updated_at = now()
+                """, topic_root_id, causes, scale_note, scale_url,
+                scale_excerpt, scale_retrieved_at)
+            await _log(conn, "problem_set",
+                       {"topic_root_id": topic_root_id, "causes": causes,
+                        "scale_url": scale_url}, author_id)
+
+
+async def get_problem(topic_root_id):
+    """Состояние проблемы: авторская рамка (причины, масштаб) + сводка исходов
+    из реестра. Сводка и есть «состояние»: у темы её нет, у проблемы есть."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM problems WHERE topic_root_id = $1", topic_root_id)
+        totals = await conn.fetch(
+            "SELECT outcome_kind, count(*) AS n FROM interventions "
+            "WHERE topic_root_id = $1 GROUP BY outcome_kind", topic_root_id)
+    d = dict(row) if row else {"topic_root_id": topic_root_id}
+    if d.get("scale_retrieved_at") is not None:
+        d["scale_retrieved_at"] = d["scale_retrieved_at"].isoformat()
+    if d.get("updated_at") is not None:
+        d["updated_at"] = d["updated_at"].isoformat()
+    d["outcomes"] = {r["outcome_kind"]: r["n"] for r in totals}
+    d["interventions_total"] = sum(d["outcomes"].values())
+    return d
+
+
+# ------------------------------------------------------------ interventions
+async def add_intervention(topic_root_id, what, actor=None, geo=None,
+                           when_text=None, outcome=None, outcome_kind="unclear",
+                           conditions=None, source_url=None, source_excerpt=None,
+                           source_retrieved_at=None, author_id=None):
+    """Внести запись в реестр решений. Запись факта, не аргумент."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                INSERT INTO interventions
+                    (topic_root_id, what, actor, geo, when_text, outcome,
+                     outcome_kind, conditions, source_url, source_excerpt,
+                     source_retrieved_at, author_id)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                RETURNING *
+                """, topic_root_id, what, actor, geo, when_text, outcome,
+                outcome_kind, conditions, source_url, source_excerpt,
+                source_retrieved_at, author_id)
+            await _log(conn, "intervention_added",
+                       {"intervention_id": row["id"],
+                        "topic_root_id": topic_root_id, "geo": geo,
+                        "outcome_kind": outcome_kind}, author_id)
+    return _intervention_dict(row)
+
+
+def _intervention_dict(row):
+    d = dict(row)
+    for f in ("source_retrieved_at", "created_at"):
+        if d.get(f) is not None:
+            d[f] = d[f].isoformat()
+    return d
+
+
+async def list_interventions(topic_root_id):
+    """Реестр одной проблемы, старые сверху (порядок накопления читается как
+    хронология попыток)."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT i.*, a.name AS author, a.color AS author_color
+            FROM interventions i
+            LEFT JOIN authors a ON a.id = i.author_id
+            WHERE i.topic_root_id = $1 ORDER BY i.id
+            """, topic_root_id)
+    return [_intervention_dict(r) for r in rows]
+
+
+async def get_intervention(intervention_id):
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM interventions WHERE id = $1", intervention_id)
+    return _intervention_dict(row) if row else None
