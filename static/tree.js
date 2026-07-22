@@ -501,13 +501,12 @@ async function selectNode(id) {
     d.appendChild(pc);
     loadPositions(root, pbody);
 
-    // the PoI lens: who argues here and with what understanding of the topic
-    const ac = el("div", "card");
-    ac.appendChild(el("div", "section-title", "участники · PoI в теме"));
-    const abody = el("div"); abody.textContent = "загрузка…";
-    ac.appendChild(abody);
-    d.appendChild(ac);
-    loadTopicPoi(root, abody);
+    // Линза «участники · PoI в теме» убрана (решение 2026-07-22): система не
+    // считает и не показывает постоянное «стояние» участника. PoI считает только
+    // ИИ-судья при голосовании; транзакционную репутацию люди строят сами по
+    // публичной истории голосований (профиль аккаунта). Накопительный слой под
+    // капотом (author_topic_poi, сила поддержки позиций) — отдельная уборка,
+    // сцеплен с редизайном позиций/реакций.
   }
 }
 
@@ -701,31 +700,8 @@ async function loadReactions(id, root, target) {
   } catch (e) { target.textContent = "ошибка: " + e.message; }
 }
 
-async function loadTopicPoi(root, target) {
-  try {
-    const rows = await api(`/api/topic_poi/${root}`);
-    // the endpoint returns EVERY author, defaulted to 10 — keep only those who
-    // left a trace in this topic (a prior or a recomputed PoI). Known trade-off:
-    // a participant whose computed PoI is exactly 10 with no prior is hidden.
-    const active = rows.filter((r) => r.prior != null || r.poi !== 10);
-    active.sort((a, b) => (b.poi ?? 0) - (a.poi ?? 0));
-    target.innerHTML = "";
-    if (!active.length) {
-      target.appendChild(el("div", "muted", "пока все на стартовом PoI 10"));
-      return;
-    }
-    for (const r of active) {
-      const line = el("div", "row");
-      const nm = el("span", "txt", r.name);
-      if (r.color) nm.style.color = r.color;
-      line.appendChild(nm);
-      const poi = el("span", "poi");
-      poi.innerHTML = "PoI <b>" + Math.round(r.poi) + "</b>";
-      line.appendChild(poi);
-      target.appendChild(line);
-    }
-  } catch (e) { target.textContent = "ошибка: " + e.message; }
-}
+// loadTopicPoi (линза «PoI в теме») удалена 2026-07-22: система не показывает
+// постоянное «стояние» участника; репутацию люди строят по истории голосований.
 
 async function react(id, root, stance) {
   if (!requireAuth()) return;
@@ -1659,10 +1635,8 @@ function listenEvents() {
       if (data.type === "position_updated" && selectedId != null) {
         selectNode(selectedId); // re-render positions with the composed headline
       }
-      if (data.type === "topic_poi_updated" && selectedId != null
-          && ROOT.get(selectedId) === data.topic_root_id) {
-        selectNode(selectedId); // participants card shows fresh per-topic PoI
-      }
+      // topic_poi_updated больше не перерисовывает панель: линза «PoI в теме»
+      // убрана (2026-07-22), система не показывает постоянное «стояние»
       clearTimeout(listenEvents._t);
       listenEvents._t = setTimeout(() => refreshVisible(), 500);
     };
