@@ -34,6 +34,9 @@ const KIDS = new Map();     // nodeId -> {total, children:[...]}  (fetched pages
 const ROOT = new Map();     // nodeId -> topic root id (learned while walking down)
 const expanded = new Set();
 let selectedId = null;
+// ответ на фрагмент: форма ответа регистрирует здесь свой хэндл, а всплывающее
+// меню выделения через него ставит тип ребра, якорь и чип «в ответ на …».
+let replyHandle = null;
 
 // ---- hints: contextual tips, toggled from the header, remembered per browser
 let HINTS = localStorage.getItem("noo_hints") !== "off";   // on by default
@@ -272,7 +275,8 @@ async function refreshVisible() {
 // ---- tree render
 function relLabel(type) {
   return { support: "за", refute: "против", qualify: "уточн.", question: "вопрос",
-           proposal: "предл.", exploration: "разбор", atom: "атом", root: "тема" }[type] || type;
+           proposal: "предл.", exploration: "разбор", atom: "атом", root: "тема",
+           undercut: "подрыв", attribution: "атрибуция" }[type] || type;
 }
 const KIND_CHIP = { question: "вопрос", proposal: "предложение", exploration: "разбор" };
 // one-sentence label for the tree row (shown in full, wraps up to 3 lines via CSS);
@@ -399,13 +403,15 @@ async function selectNode(id) {
   // node card — a topic root has a short title (heading) distinct from its
   // body text; a reply has no title, so the heading is its own text
   const card = el("div", "card");
+  let textEl;      // основной текст узла — цель выделения для ответа на фрагмент
   if (isRoot && node.title) {
     card.appendChild(el("h2", null, node.title));
-    const body = el("div", null, node.text);
-    body.style.marginBottom = "8px";
-    card.appendChild(body);
+    textEl = el("div", null, node.text);
+    textEl.style.marginBottom = "8px";
+    card.appendChild(textEl);
   } else {
-    card.appendChild(el("h2", null, node.text));
+    textEl = el("h2", null, node.text);
+    card.appendChild(textEl);
   }
   const meta = el("div", "muted");
   // an atom of an exploration is a point under investigation: it carries no
@@ -444,8 +450,20 @@ async function selectNode(id) {
   ract.append(agree, dis);
   rwrap.appendChild(ract);
   card.appendChild(rwrap);
+  // принадлежность нескольким проблемам (домашняя + принесённые) и маркеры
+  // оспоренных участков — до реакций визуально не мешают, кладём в конец карточки
+  if (node.belongings && node.belongings.length > 1)
+    card.appendChild(belongingBar(node.belongings));
+  if (node.fragment_replies && node.fragment_replies.length)
+    card.appendChild(fragmentMarkers(node.fragment_replies));
   d.appendChild(card);
+  // выделение текста узла → всплывающее меню типизированного ответа с якорем
+  attachFragmentSelection(textEl);
   loadReactions(id, root, rbody);
+
+  // страница проблемы: причины, масштаб, реестр решений, атрибуции
+  if (isRoot && node.kind === "problem")
+    d.appendChild(await problemCard(id));
 
   // atomization: the author of an exploration can cut it into atoms
   if (node.kind === "exploration" && ME && node.author_id === ME.id)
@@ -843,6 +861,204 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit, s
   hint.appendChild(actions);
 }
 
+// ---- ответ на фрагмент: выделение текста → типизированное действие с якорем
+const FRAG_ACTIONS = [
+  ["refute", "Опровергнуть"], ["undercut", "Подорвать"], ["qualify", "Уточнить"],
+  ["support", "Поддержать"], ["question", "Спросить"],
+];
+let fragPopEl = null;
+function killFragPop() { if (fragPopEl) { fragPopEl.remove(); fragPopEl = null; } }
+addEventListener("scroll", killFragPop, true);
+addEventListener("mousedown", (e) => {
+  if (fragPopEl && !fragPopEl.contains(e.target)) killFragPop();
+});
+
+function attachFragmentSelection(textEl) {
+  textEl.classList.add("selectable");
+  textEl.addEventListener("mouseup", () => {
+    setTimeout(() => {                       // дать выделению устояться
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+      const range = sel.getRangeAt(0);
+      if (!textEl.contains(range.commonAncestorContainer)) return;
+      const quote = sel.toString();
+      if (!quote.trim()) return;
+      // смещение начала выделения в тексте узла (устойчиво к нескольким текст-узлам)
+      const pre = range.cloneRange();
+      pre.selectNodeContents(textEl);
+      pre.setEnd(range.startContainer, range.startOffset);
+      const start = pre.toString().length;
+      showFragPop(range, { start, end: start + quote.length, quote });
+    }, 0);
+  });
+}
+
+function showFragPop(range, anchor) {
+  killFragPop();
+  if (!replyHandle) return;
+  const pop = el("div", "fragpop");
+  for (const [type, label] of FRAG_ACTIONS) {
+    const b = el("button", "mini", label);
+    b.onclick = () => {
+      window.getSelection().removeAllRanges();
+      killFragPop();
+      replyHandle.setFragment(anchor, type);
+    };
+    pop.appendChild(b);
+  }
+  document.body.appendChild(pop);
+  const r = range.getBoundingClientRect();
+  pop.style.top = Math.max(6, r.top - pop.offsetHeight - 8) + "px";
+  let left = r.left + r.width / 2 - pop.offsetWidth / 2;
+  pop.style.left = Math.max(6, Math.min(left, innerWidth - pop.offsetWidth - 6)) + "px";
+  fragPopEl = pop;
+}
+
+// маркеры: какие участки этого узла уже оспорены и чем
+function fragmentMarkers(fr) {
+  const box = el("div", "fragmark");
+  box.appendChild(el("div", "section-title", "оспоренные участки · " + fr.length));
+  for (const a of fr) {
+    const line = el("div", "fm" + (a.stale ? " stale" : ""));
+    line.appendChild(el("span", "rel " + a.type, relLabel(a.type)));
+    line.append(" ");
+    line.appendChild(el("span", "q", "«" + shortLabel(a.anchor_quote, 80) + "»"));
+    if (a.author) line.append("  — " + a.author);
+    box.appendChild(line);
+  }
+  return box;
+}
+
+// принадлежность узла нескольким проблемам (домашняя + принесённые)
+function belongingBar(belongings) {
+  const bar = el("div", "belong");
+  for (const b of belongings) {
+    const t = b.topic_title || shortLabel(b.topic_text, 40) || ("#" + b.topic_root_id);
+    const chip = el("span", "b" + (b.is_home ? " home" : ""), (b.is_home ? "◆ " : "") + t);
+    if (!b.is_home) chip.onclick = () => selectNode(b.topic_root_id);
+    chip.title = b.is_home ? "домашняя проблема"
+      : "принесён сюда" + (b.placed_by ? " · " + b.placed_by : "");
+    bar.appendChild(chip);
+  }
+  return bar;
+}
+
+// ---- страница проблемы: причины, масштаб, реестр решений, атрибуции
+const OC_LABEL = { success: "успех", partial: "частично", mixed: "смешанно",
+                   failure: "провал", unclear: "неясно" };
+async function problemCard(nodeId) {
+  const card = el("div", "card");
+  card.appendChild(el("div", "section-title", "Проблема · состояние"));
+  const body = el("div", "muted", "загрузка…");
+  card.appendChild(body);
+  let p;
+  try { p = await api(`/api/problems/${nodeId}`); }
+  catch (e) { body.textContent = "не загрузилось: " + e.message; return card; }
+  body.className = ""; body.innerHTML = "";
+
+  if (p.causes) {
+    body.appendChild(el("div", "section-title", "Причины и составные части"));
+    body.appendChild(el("div", "causes", p.causes));
+  }
+  if (p.scale_note || p.scale_url) {
+    const s = el("div", "prob-block");
+    s.appendChild(el("div", "section-title", "Масштаб · данные извне"));
+    if (p.scale_note) s.appendChild(el("div", "causes", p.scale_note));
+    if (p.scale_url) {
+      const src = el("div", "scale-src");
+      if (p.scale_excerpt) src.appendChild(el("span", "q", "«" + p.scale_excerpt + "» "));
+      const a = el("a", null, "источник ↗");
+      a.href = p.scale_url; a.target = "_blank"; a.rel = "noopener";
+      src.appendChild(a);
+      s.appendChild(src);
+    }
+    body.appendChild(s);
+  }
+
+  const reg = el("div", "prob-block");
+  reg.appendChild(el("div", "section-title",
+    "Накопитель решений · " + (p.interventions_total || 0)));
+  if (p.outcomes && Object.keys(p.outcomes).length) {
+    const sum = el("div", "outsum");
+    for (const [k, n] of Object.entries(p.outcomes))
+      sum.appendChild(el("span", "oc " + k, (OC_LABEL[k] || k) + " · " + n));
+    reg.appendChild(sum);
+  }
+  const ivs = p.interventions || [];
+  if (!ivs.length) reg.appendChild(el("div", "muted", "пока нет записей"));
+  for (const iv of ivs) reg.appendChild(await interventionCard(iv));
+  body.appendChild(reg);
+  return card;
+}
+
+async function interventionCard(iv) {
+  const box = el("div", "iv");
+  const head = el("div", "iv-head");
+  head.appendChild(el("span", "iv-what", iv.what));
+  head.appendChild(el("span", "oc " + iv.outcome_kind,
+    OC_LABEL[iv.outcome_kind] || iv.outcome_kind));
+  box.appendChild(head);
+  const meta = [];
+  if (iv.geo) meta.push("📍 " + iv.geo);
+  if (iv.when_text) meta.push("🕐 " + iv.when_text);
+  if (iv.actor) meta.push("👤 " + iv.actor);
+  if (meta.length) box.appendChild(el("div", "iv-meta", meta.join("    ")));
+  if (iv.outcome) box.appendChild(el("div", "iv-out", iv.outcome));
+  if (iv.conditions) box.appendChild(el("div", "iv-cond", "условия: " + iv.conditions));
+  if (iv.source_url) {
+    const src = el("div", "scale-src");
+    if (iv.source_excerpt) src.appendChild(el("span", "q", "«" + iv.source_excerpt + "» "));
+    const a = el("a", null, "источник ↗");
+    a.href = iv.source_url; a.target = "_blank"; a.rel = "noopener";
+    src.appendChild(a);
+    box.appendChild(src);
+  }
+  // атрибуции об этом факте — оспоримые причинные утверждения, живут в графе
+  let det;
+  try { det = await api(`/api/interventions/${iv.id}`); } catch (_) { det = null; }
+  for (const at of (det && det.attributions) || []) {
+    const a = el("div", "attr");
+    a.appendChild(el("div", null, at.text));
+    a.appendChild(el("div", "disp", "атрибуция · " + (at.author || "—") +
+      "   · оспорено: " + (at.reply_count || 0)));
+    a.style.cursor = "pointer";
+    a.onclick = () => selectNode(at.id);    // перейти к спору по атрибуции
+    box.appendChild(a);
+  }
+  const act = el("div", "actions");
+  const add = el("button", "mini", "+ атрибуция");
+  add.onclick = () => attributionForm(iv.id, box);
+  act.appendChild(add);
+  box.appendChild(act);
+  return box;
+}
+
+function attributionForm(interventionId, mount) {
+  if (!requireAuth()) return;
+  const f = el("div", "prob-block");
+  const ta = el("textarea");
+  ta.placeholder = "Сработало благодаря… / переносимо на… (причинное утверждение)";
+  f.appendChild(ta);
+  const act = el("div", "actions");
+  const send = el("button", "primary mini", "заявить");
+  send.onclick = async () => {
+    const text = ta.value.trim();
+    if (!text) return;
+    try {
+      await api(`/api/interventions/${interventionId}/attribution`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      toast("атрибуция добавлена — по ней теперь можно спорить");
+      if (selectedId != null) selectNode(selectedId);
+    } catch (e) { toast("ошибка: " + e.message); }
+  };
+  act.appendChild(send);
+  f.appendChild(act);
+  mount.appendChild(f);
+  ta.focus();
+}
+
 function replyForm(parentId) {
   const card = el("div", "card");
   card.appendChild(el("div", "section-title", "Ответить"));
@@ -851,24 +1067,53 @@ function replyForm(parentId) {
     "ИИ-навигатор мягко подскажет — но решаешь ты.");
   const ta = el("textarea");
   ta.placeholder = "Твой аргумент…";
+  // чип якоря: показывает, на какой участок отвечаем (ответ на фрагмент)
+  const chip = el("div", "anchor-chip");
+  chip.style.display = "none";
+  let anchor = null;              // {start, end, quote} либо null (ответ на весь узел)
+  const clearAnchor = () => { anchor = null; chip.style.display = "none"; };
+  card.appendChild(chip);
   card.appendChild(ta);
   const act = el("div", "actions");
   const typeSel = el("select");
+  // подорвать (undercut) целится в участок — доступно только с якорем (см. ниже)
   for (const [v, l] of [["support", "за"], ["refute", "против"], ["qualify", "уточнение"],
-                        ["question", "вопрос"], ["proposal", "предложение"], ["exploration", "разбор"]])
+                        ["undercut", "подорвать участок"], ["question", "вопрос"],
+                        ["proposal", "предложение"], ["exploration", "разбор"]])
     typeSel.appendChild(new Option(l, v));
   const send = el("button", "primary", "отправить");
   const hint = el("div");                       // the navigator's suggestion box
   hint.style.display = "none";
 
+  // форма показывает якорь и, для «подорвать», требует его
+  const showAnchor = (a, type) => {
+    anchor = a;
+    chip.innerHTML = "";
+    chip.append("в ответ на: «" + shortLabel(a.quote, 90) + "»");
+    const x = el("span", "x", "✕"); x.title = "убрать привязку к участку";
+    x.onclick = () => { clearAnchor(); if (typeSel.value === "undercut") typeSel.value = "refute"; };
+    chip.appendChild(x);
+    chip.style.display = "";
+    if (type) typeSel.value = type;
+    ta.focus();
+    card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  };
+  // хэндл для всплывающего меню выделения
+  replyHandle = { parentId, setFragment: showAnchor };
+
   const doSend = async (text) => {
+    if (typeSel.value === "undercut" && !anchor) {
+      toast("«подорвать» целится в участок — выдели фрагмент текста"); return;
+    }
     try {
       await api("/api/argument", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({
           text, connect_to: parentId, edge_type: typeSel.value,
+          anchor: anchor || undefined,
         }),
       });
+      clearAnchor();
       toast("добавлено — PoI оценивается в фоне…");
       expanded.add(parentId);
       await fetchChildren(parentId);   // refresh just this branch

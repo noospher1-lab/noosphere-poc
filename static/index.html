@@ -163,6 +163,62 @@
     padding: 9px 16px; border-radius: 8px; opacity: 0; transition: opacity .3s;
     pointer-events: none; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
   .toast.show { opacity: 1; }
+
+  /* ---- проблема: реестр решений, атрибуции, масштаб ---- */
+  .prob-block { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .causes { line-height: 1.6; }
+  .scale-src { margin-top: 8px; font-size: 12.5px; color: var(--dim);
+    border-left: 2px solid var(--line2); padding: 4px 0 4px 10px; }
+  .scale-src .q { color: var(--ivory); }
+  .iv { border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px;
+    margin-bottom: 9px; background: var(--panel2); }
+  .iv-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .iv-what { font-weight: 600; flex: 1 1 auto; min-width: 0; }
+  .iv-meta { color: var(--dim2); font-size: 12px; margin-top: 3px; }
+  .iv-out { margin-top: 5px; line-height: 1.5; }
+  .iv-cond { margin-top: 4px; color: var(--dim); font-size: 12.5px; }
+  .oc { flex: none; font-size: 10.5px; padding: 1px 8px; border-radius: 5px;
+    font-weight: 600; letter-spacing: .02em; }
+  .oc.success  { color: var(--green);  border: 1px solid var(--green); }
+  .oc.partial  { color: var(--orange); border: 1px solid var(--orange); }
+  .oc.mixed    { color: var(--bronze); border: 1px solid var(--bronze); }
+  .oc.failure  { color: var(--red);    border: 1px solid var(--red); }
+  .oc.unclear  { color: var(--dim);    border: 1px solid var(--line2); }
+  .attr { border-left: 2px solid var(--violet); padding: 6px 0 6px 10px; margin: 8px 0; }
+  .attr .disp { color: var(--dim2); font-size: 12px; margin-top: 2px; }
+  .outsum { display: flex; gap: 6px; flex-wrap: wrap; margin: 2px 0 12px; }
+
+  /* принадлежность узла нескольким проблемам */
+  .belong { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .belong .b { font-size: 11.5px; padding: 1px 9px; border-radius: 99px;
+    border: 1px solid var(--line2); color: var(--dim); cursor: pointer; }
+  .belong .b.home { color: var(--bronze); border-color: var(--bronze); cursor: default; }
+  .belong .b:hover:not(.home) { border-color: var(--blue); color: var(--blue); }
+
+  /* ответ на фрагмент: всплывающее меню действий + чип «в ответ на …» */
+  .rel.undercut { color: var(--violet); border: 1px solid var(--violet); }
+  .oc.undercut  { color: var(--violet); border: 1px solid var(--violet); }
+  .selectable { cursor: text; }
+  .fragpop { position: fixed; z-index: 20; display: flex; gap: 3px; padding: 4px;
+    background: var(--panel); border: 1px solid var(--line2); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  .fragpop button { padding: 3px 8px; font-size: 12px; }
+  .fragmark { margin-top: 10px; }
+  .fragmark .fm { font-size: 12px; color: var(--dim); padding: 2px 0; }
+  .fragmark .fm .q { color: var(--ivory); border-bottom: 1px dashed var(--line2); }
+  .fragmark .fm.stale .q { color: var(--dim2); text-decoration: line-through; }
+  .anchor-chip { display: inline-flex; align-items: center; gap: 6px; margin: 8px 0 2px;
+    font-size: 12px; color: var(--violet); border: 1px solid var(--violet);
+    border-radius: 7px; padding: 3px 9px; }
+  .anchor-chip .x { cursor: pointer; color: var(--dim); }
+  .anchor-chip .x:hover { color: var(--red); }
+  /* подсказка дублей при создании */
+  .dupes { margin-top: 8px; }
+  .dupes .d { display: block; padding: 5px 9px; margin-top: 5px; border-radius: 7px;
+    border: 1px solid var(--line2); background: var(--panel2); cursor: pointer; }
+  .dupes .d:hover { border-color: var(--blue); }
+  .dupes .d .t { color: var(--ivory); font-weight: 500; }
+  .dupes .d .m { color: var(--dim2); font-size: 12px; }
 </style>
 </head>
 <body>
