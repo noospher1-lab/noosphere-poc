@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/noosphere-logo.gif" alt="Noosphere" width="180" height="180">
+</p>
+
 # Noosphere — Proof of Concept
 
 A minimal, runnable proof of concept for **Noosphere**, an infrastructure for
