@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/noosphere-logo.gif" alt="Noosphere" width="180" height="180">
+  <img src="brand/noosphere-logo.gif" alt="Noosphere" width="180" height="180">
 </p>
 
 # Noosphere — Proof of Concept
@@ -85,6 +85,11 @@ python -m pytest tests/ -q
 The vote-weight formula is covered by isolated tests that run without an LLM or
 a database, so its correctness is independently verifiable.
 
-## License
+## License & Trademark
 
-MIT — see [LICENSE](LICENSE).
+Код распространяется под лицензией **AGPL-3.0-only** — см. [LICENSE](LICENSE).
+
+**Название и логотип Noosphere — товарные знаки и под AGPL не подпадают.**
+Открытость кода не даёт права использовать имя и логотип Noosphere.
+Файлы бренда лежат в отдельной папке [`brand/`](brand/) и не покрываются AGPL;
+их использование регулируется политикой [TRADEMARK.md](TRADEMARK.md).
