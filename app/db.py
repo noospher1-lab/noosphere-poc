@@ -67,6 +67,13 @@ def _pool_or_raise() -> asyncpg.Pool:
     return _pool
 
 
+async def ping():
+    """Дёшево проверить, что БД отвечает — для healthcheck платформы."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        await conn.fetchval("SELECT 1")
+
+
 # Tables in dependency order: Postgres, unlike SQLite, requires a referenced
 # table to already exist. Fresh schema — no in-place migrations needed here.
 _SCHEMA = [

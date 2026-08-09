@@ -50,6 +50,14 @@ async def lifespan(app):
 
 app = FastAPI(title="Noosphere PoC", version="0.2.0", lifespan=lifespan)
 
+
+@app.get("/healthz", include_in_schema=False)
+async def healthz():
+    """Проба для хостинга: платформа гейтит выкатку по ней, поэтому она обязана
+    трогать БД — процесс, поднявшийся без Postgres, живым не считается."""
+    await db.ping()
+    return {"ok": True}
+
 # Dev tools (reset, personas, manual PoI priors, raw edges) are opt-in via
 # DEV_TOOLS=1 in .env — they must never be reachable through a public tunnel.
 DEV_TOOLS = os.environ.get("DEV_TOOLS") == "1"
