@@ -153,6 +153,14 @@ _SCHEMA = [
     "cache_read_tokens INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS "
     "cache_write_tokens INTEGER NOT NULL DEFAULT 0",
+    # Платил ли за этот вызов общий ключ инстанса (а не собственный ключ
+    # аккаунта). Пишется в момент траты, а не выводится джойном по authors:
+    # аккаунт может обзавестись своим ключом позже, и тогда джойн задним числом
+    # вычел бы его прошлые траты из общего счётчика — то есть ослабил бы кран
+    # ровно в ту сторону, в которую предохранителю ошибаться нельзя.
+    # DEFAULT TRUE верен для истории: ключей на тестера не выдавали.
+    "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS "
+    "shared_key BOOLEAN NOT NULL DEFAULT TRUE",
     # Registration is invite-only: accounts are handed out on request, so the
     # code is consumed in the same transaction that creates the account (two
     # people racing on one code must not both get in).
@@ -999,6 +1007,21 @@ async def budget_left(author_id):
     return float(row["left_usd"]) if row else 0.0
 
 
+async def shared_key_spend():
+    """Сколько всего потрачено с общего ключа инстанса, $.
+
+    Считается по всем аккаунтам сразу: по-аккаунтный грант ограничивает одного
+    тестера, а этот счётчик — сумму, которая уходит с одной карты. Гоняется
+    перед каждым LLM-вызовом, но таблица на порядок мельче тысяч строк, и SUM
+    по ней дешевле, чем риск проснуться с пустым ключом.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        return float(await conn.fetchval(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM usage_events "
+            "WHERE shared_key"))
+
+
 async def add_user(username, password_hash, name, color=None, invite=None,
                    email=None, balance_usd=0):
     """Register: an account is an author with credentials.
@@ -1073,7 +1096,12 @@ async def record_usage(author_id, rows, endpoint=None):
         await conn.executemany(
             "INSERT INTO usage_events (author_id, model, input_tokens, "
             "output_tokens, cache_read_tokens, cache_write_tokens, "
-            "cost_usd, endpoint) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+            "cost_usd, endpoint, shared_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,"
+            # Чей ключ платил — берём здесь, а не из contextvar: middleware,
+            # которая вызывает record_usage, крутится в своей задаче и
+            # current_api_key, выставленный в spend_llm внутри хендлера, до неё
+            # не долетает.
+            " (SELECT api_key IS NULL FROM authors WHERE id = $1))",
             [(author_id, r["model"], r["input_tokens"], r["output_tokens"],
               r.get("cache_read_tokens", 0), r.get("cache_write_tokens", 0),
               r["cost_usd"], endpoint) for r in rows])

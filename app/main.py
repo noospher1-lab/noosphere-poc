@@ -254,6 +254,12 @@ _llm_calls: dict[int, deque] = defaultdict(deque)
 # no restart needed.
 DEFAULT_BALANCE_USD = float(os.environ.get("DEFAULT_BALANCE_USD", "3"))
 
+# Общий потолок трат по ключу инстанса, $. Грант выше ограничивает ОДНОГО
+# тестера; сотня грантов по $3 — это $300 к одной карте, и без этого крана
+# ничто не мешает им сложиться. Ставится в зарплату по размеру пополнения.
+# Пусто/0 — крана нет: локальный стенд, где деньги не тратятся.
+LLM_CAP_USD = float(os.environ.get("NOOSPHERE_LLM_CAP_USD") or 0)
+
 
 def _llm_budget_check(author_id: int):
     q = _llm_calls[author_id]
@@ -306,6 +312,17 @@ async def spend_llm(author):
         # the cap is therefore soft by exactly one call (cents), and the
         # per-minute rate limit above bounds how fast that edge can be hit.
         # DEV_TOOLS is the local bench, where the grant is not the point.
+        #
+        # Общий кран проверяется ПЕРВЫМ и, в отличие от гранта, без поблажки на
+        # DEV_TOOLS: грант — правило игры для тестера, а это предохранитель на
+        # зарплате, и обходить его локальным флагом нечему. Отдельный код 503,
+        # а не 402: аккаунт ни при чём, кончились деньги инстанса.
+        if LLM_CAP_USD > 0 and await db.shared_key_spend() >= LLM_CAP_USD:
+            log.error("общий ИИ-бюджет инстанса исчерпан: потолок $%.2f",
+                      LLM_CAP_USD)
+            raise HTTPException(
+                503, "общий ИИ-бюджет инстанса исчерпан — ИИ-функции временно "
+                     "отключены, напиши Alex")
         if not DEV_TOOLS and await db.budget_left(author["id"]) <= 0:
             raise HTTPException(
                 402, "ИИ-бюджет аккаунта исчерпан — напиши, пополним")
@@ -1970,6 +1987,19 @@ async def dev_mint_invites(body: InviteIn):
 @app.get("/api/dev/invites", dependencies=[Depends(admin_only)])
 async def dev_list_invites():
     return await db.list_invites()
+
+
+@app.get("/api/dev/llm-budget", dependencies=[Depends(admin_only)])
+async def dev_llm_budget():
+    """Сколько общего бюджета съедено. Под admin_only, а не под DEV_TOOLS:
+    на проде DEV_TOOLS=0, а смотреть на расход надо именно там."""
+    spent = await db.shared_key_spend()
+    return {
+        "cap_usd": LLM_CAP_USD,
+        "enabled": LLM_CAP_USD > 0,
+        "spent_usd": round(spent, 4),
+        "left_usd": round(LLM_CAP_USD - spent, 4) if LLM_CAP_USD > 0 else None,
+    }
 
 
 class BalanceIn(BaseModel):
