@@ -1689,6 +1689,16 @@ async function openTopic(id, topic) {
 }
 $("#loginBtn").onclick = () => openAuth();
 $("#logoutBtn").onclick = () => doLogout();
+
+// Приход с лендинга по кнопке «Войти»: ?login открывает форму сразу. Без этого
+// человек, уже нажавший «Войти» на noosphere.live, попадал на дерево и должен
+// был нажать «Войти» второй раз — шаг, которого он не просил.
+if (new URLSearchParams(location.search).has("login")) {
+  openAuth();
+  // Параметр убирается из адреса, чтобы «назад» и обновление страницы не
+  // открывали форму снова у того, кто её закрыл или уже вошёл.
+  history.replaceState(null, "", location.pathname);
+}
 $("#doLogin").onclick = () => doAuth("/api/auth/login");
 $("#doRegister").onclick = () => doAuth("/api/auth/register");
 $("#authCancel").onclick = () => closeAuth();
