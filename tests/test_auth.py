@@ -231,3 +231,25 @@ def test_registration_is_finished_by_confirming_the_address(monkeypatch):
                    json={"username": "fresh", "password": "secret12345"})
         assert r.status_code == 200, r.text
         assert c.get("/api/auth/me").json()["username"] == "fresh"
+
+
+@pytest.mark.skipif(not TEST_DB, reason="TEST_DATABASE_URL not set")
+def test_display_name_changes_but_login_does_not():
+    """Имя правится в кабинете, логин — нет: на логин ссылаются адреса
+    профилей и упоминания, и менять его значит ломать чужие ссылки."""
+    async def go():
+        from app import db
+        db.DATABASE_URL = TEST_DB
+        await db.close_pool()
+        await db.init_pool()
+        await db.init_db()
+        await db.wipe(force=True)
+
+        uid = await db.add_user("renamer", auth.hash_password("secret12"),
+                                "Первое имя", "#fff", invite_required=False)
+        assert await db.set_author_name(uid, "Второе имя") == "Второе имя"
+        a = await db.get_author(uid)
+        assert a["name"] == "Второе имя"
+        assert a["username"] == "renamer"
+        await db.close_pool()
+    asyncio.run(go())

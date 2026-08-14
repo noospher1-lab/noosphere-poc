@@ -178,6 +178,14 @@
            а почта — то немногое, что связывает аккаунт с человеком вне
            платформы. Полный адрес знает тот, кто им владеет. -->
       <div class="acc-row">
+        <span class="acc-label">Имя</span>
+        <span id="accName">—</span>
+      </div>
+      <div class="acc-row">
+        <span class="acc-label">Логин</span>
+        <span id="accLogin" class="muted">—</span>
+      </div>
+      <div class="acc-row">
         <span class="acc-label">Почта</span>
         <span id="accEmail">—</span>
         <span id="accVerified" class="acc-tag"></span>
@@ -185,9 +193,20 @@
       <div id="accPending" class="note hidden"></div>
 
       <div class="acc-actions">
+        <button id="btnName" class="mini">Сменить имя</button>
         <button id="btnEmail" class="mini">Сменить почту</button>
         <button id="btnPass" class="mini">Сменить пароль</button>
       </div>
+
+      <form id="nameForm" class="acc-form hidden" autocomplete="off">
+        <input type="text" id="newName" placeholder="Отображаемое имя" maxlength="64">
+        <div class="acc-actions">
+          <button type="submit" class="mini primary">Сохранить имя</button>
+          <button type="button" class="mini" data-cancel="nameForm">Отмена</button>
+        </div>
+        <p class="note">Имя видно рядом с каждым доводом. Логин не меняется —
+          на него ссылаются адреса профилей.</p>
+      </form>
 
       <form id="emailForm" class="acc-form hidden" autocomplete="off">
         <input type="email" id="newEmail" placeholder="Новый адрес почты" autocomplete="email">
@@ -204,6 +223,7 @@
       <form id="passForm" class="acc-form hidden" autocomplete="off">
         <input type="password" id="curPass" placeholder="Текущий пароль" autocomplete="current-password">
         <input type="password" id="newPass" placeholder="Новый пароль — минимум 8 символов" autocomplete="new-password">
+        <input type="password" id="newPass2" placeholder="Новый пароль ещё раз" autocomplete="new-password">
         <div class="acc-actions">
           <button type="submit" class="mini primary">Сменить пароль</button>
           <button type="button" class="mini" data-cancel="passForm">Отмена</button>
@@ -394,6 +414,9 @@ async function loadAccount() {
   try { acc = await (await fetch("/api/account")).json(); }
   catch (_) { return; }
   if (!acc || acc.detail) return;
+  $("#accName").textContent = acc.name || "—";
+  $("#accLogin").textContent = "@" + acc.username;
+  $("#newName").value = acc.name || "";
   $("#accEmail").textContent = acc.email_masked || "не указана";
   const tag = $("#accVerified");
   if (!acc.email_masked) { tag.textContent = ""; tag.className = "acc-tag"; }
@@ -426,7 +449,7 @@ async function accPost(url, body) {
 }
 
 function toggleForm(id) {
-  for (const f of ["emailForm", "passForm"]) {
+  for (const f of ["nameForm", "emailForm", "passForm"]) {
     const el = $("#" + f);
     if (f === id) el.classList.toggle("hidden");
     else el.classList.add("hidden");
@@ -434,10 +457,24 @@ function toggleForm(id) {
   accMsg("");
 }
 
+$("#btnName").onclick = () => toggleForm("nameForm");
 $("#btnEmail").onclick = () => toggleForm("emailForm");
 $("#btnPass").onclick = () => toggleForm("passForm");
 for (const b of document.querySelectorAll("[data-cancel]"))
   b.onclick = () => { $("#" + b.dataset.cancel).classList.add("hidden"); accMsg(""); };
+
+$("#nameForm").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const d = await accPost("/api/account/name", { name: $("#newName").value });
+    accMsg(d.detail);
+    $("#nameForm").classList.add("hidden");
+    // имя видно в шапке профиля — обновляем сразу, иначе кажется, что не сохранилось
+    const h1 = $("#name");
+    if (h1) h1.textContent = d.name;
+    loadAccount();
+  } catch (err) { accMsg(err.message, true); }
+};
 
 $("#emailForm").onsubmit = async (e) => {
   e.preventDefault();
@@ -454,6 +491,12 @@ $("#emailForm").onsubmit = async (e) => {
 
 $("#passForm").onsubmit = async (e) => {
   e.preventDefault();
+  // Второй ввод — не формальность: опечатка в новом пароле заперла бы человека
+  // снаружи, а прочие сессии к этому моменту уже закрыты.
+  if ($("#newPass").value !== $("#newPass2").value) {
+    accMsg("новый пароль введён по-разному", true);
+    return;
+  }
   try {
     const d = await accPost("/api/account/password", {
       current: $("#curPass").value, password: $("#newPass").value,

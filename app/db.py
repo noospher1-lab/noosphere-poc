@@ -1327,6 +1327,19 @@ async def change_password(author_id, new_hash, keep_token=None):
     return True
 
 
+async def set_author_name(author_id, name):
+    """Сменить отображаемое имя. Логин (username) не трогаем: он публичный
+    идентификатор, на него ссылаются адреса профилей и упоминания."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "UPDATE authors SET name = $2 WHERE id = $1 RETURNING name",
+                author_id, name)
+            await _log(conn, "author_renamed", {"name": name}, author_id)
+    return row["name"] if row else None
+
+
 async def email_taken_by_other(email, author_id):
     """Занят ли адрес ЧУЖИМ аккаунтом. Свой же адрес занятым не считается —
     иначе повторная отправка подтверждения на него выглядела бы как конфликт."""

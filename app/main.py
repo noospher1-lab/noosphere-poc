@@ -593,6 +593,10 @@ class PasswordChangeIn(BaseModel):
     password: str
 
 
+class NameChangeIn(BaseModel):
+    name: str
+
+
 class EmailChangeIn(BaseModel):
     email: str
     password: str                        # подтверждение личности, не формальность
@@ -623,10 +627,24 @@ async def account_state(author=Depends(current_author)):
     pending = await db.pending_email_change(author["id"])
     return {
         "username": author["username"],
+        "name": author.get("name"),
         "email_masked": _mask_email(author.get("email")),
         "email_verified": bool(author.get("email_verified")),
         "pending_email_masked": _mask_email(pending),
     }
+
+
+@app.post("/api/account/name")
+async def change_name_endpoint(body: NameChangeIn, author=Depends(current_author)):
+    """Сменить отображаемое имя. Пароль тут не спрашиваем: имя видно всем и
+    ничего не открывает, а лишний барьер только мешает поправить опечатку."""
+    name = " ".join((body.name or "").split())
+    if not name:
+        raise HTTPException(400, "имя не может быть пустым")
+    if len(name) > 64:
+        raise HTTPException(400, "имя длиннее 64 символов")
+    return {"ok": True, "name": await db.set_author_name(author["id"], name),
+            "detail": "имя изменено"}
 
 
 @app.post("/api/account/password")
