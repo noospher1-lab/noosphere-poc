@@ -3,6 +3,9 @@ __pycache__/
 *.bak
 noosphere.db
 .env
+# копии .env содержат живые ключи; без этой строки любой
+# `git add -A` утаскивает секрет в историю
+.env.*
 .pytest_cache/
 uvicorn.log
 dialogue_*_turns.json

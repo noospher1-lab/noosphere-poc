@@ -155,6 +155,20 @@ function renderAuthUI() {
   }
 }
 
+// ---- фактическая высота шапки → --hdr.
+// Карта позиционируется от неё (position:fixed). Высота непостоянна: на узком
+// экране шапка переносится на две-три строки, и на поворот телефона число
+// меняется — поэтому наблюдатель, а не разовый замер.
+function trackHeaderHeight() {
+  const h = document.querySelector("header");
+  if (!h) return;
+  const apply = () => document.documentElement.style.setProperty(
+    "--hdr", Math.round(h.getBoundingClientRect().height) + "px");
+  apply();
+  if (window.ResizeObserver) new ResizeObserver(apply).observe(h);
+  addEventListener("orientationchange", () => setTimeout(apply, 150));
+}
+
 // ---- присутствие: сколько всего зарегистрировано и сколько здесь сейчас.
 // Открытая ручка, работает и для наблюдателя. Молча пропускаем ошибку: счётчик
 // — украшение шапки, и упавший запрос не должен ронять загрузку дерева.
@@ -188,9 +202,53 @@ async function loadMe() {
 function openAuth(msg) {
   $("#authErr").textContent = msg || "";
   $("#authModal").style.display = "flex";
+  showForgot(false);
   $("#authUser").focus();
 }
 function closeAuth() { $("#authModal").style.display = "none"; }
+
+// ---- восстановление доступа
+// Серверная часть (/api/auth/forgot + reset.html) была с самого начала, а входа
+// в неё из интерфейса не было: забывший пароль упирался в тупик.
+function showForgot(on) {
+  const login = ["authUser", "authPass", "authName", "authEmail", "authInvite"];
+  for (const id of login) {
+    const el = $("#" + id);
+    if (el) el.style.display = on ? "none" : "";
+  }
+  $("#authModal .actions").style.display = on ? "none" : "";
+  $("#authTitle").textContent = on ? "Восстановление доступа" : "Вход или регистрация";
+  $("#forgotLine").style.display = on ? "none" : "";
+  $("#forgotBox").style.display = on ? "" : "none";
+  $("#authErr").textContent = "";
+  if (on) {
+    // перенести уже введённую почту, чтобы не набирать заново
+    const typed = ($("#authEmail").value || "").trim();
+    if (typed) $("#forgotEmail").value = typed;
+    $("#forgotEmail").focus();
+  }
+}
+
+async function requestReset() {
+  const email = ($("#forgotEmail").value || "").trim();
+  if (!email) { $("#authErr").textContent = "укажи почту"; return; }
+  const btn = $("#doForgot");
+  btn.disabled = true; btn.textContent = "отправляю…";
+  try {
+    const r = await api("/api/auth/forgot", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    // Ответ намеренно одинаков и для существующего адреса, и для чужого —
+    // иначе форма превращается в проверку «есть ли тут аккаунт у такого-то».
+    $("#authErr").textContent = (r && r.detail)
+      || "если аккаунт с такой почтой есть, ссылка отправлена";
+  } catch (e) {
+    $("#authErr").textContent = errText(e);
+  } finally {
+    btn.disabled = false; btn.textContent = "Прислать ссылку";
+  }
+}
 
 // every write goes through this: logged in → proceed, otherwise → modal
 function requireAuth() {
@@ -2042,6 +2100,10 @@ if (new URLSearchParams(location.search).has("login")) {
 $("#doLogin").onclick = () => doAuth("/api/auth/login");
 $("#doRegister").onclick = () => doAuth("/api/auth/register");
 $("#authCancel").onclick = () => closeAuth();
+$("#forgotLink").onclick = (e) => { e.preventDefault(); showForgot(true); };
+$("#forgotBack").onclick = () => showForgot(false);
+$("#doForgot").onclick = () => requestReset();
+$("#forgotEmail").onkeydown = (e) => { if (e.key === "Enter") requestReset(); };
 $("#authPass").addEventListener("keydown", (e) => {
   if (e.key === "Enter") doAuth("/api/auth/login");
 });
@@ -2052,6 +2114,7 @@ $("#authPass").addEventListener("keydown", (e) => {
     await loadMe();
     await loadTopics();
     listenEvents();
+    trackHeaderHeight();
     loadPresence();                       // не ждём: шапка догрузится сама
     setInterval(loadPresence, 60000);     // «онлайн» с точностью до минуты
     // Гостю показываем карту: рабочего дерева у него нет, а карта честно

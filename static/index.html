@@ -34,13 +34,21 @@
   a { color: var(--blue); text-decoration: none; }
   a:hover { text-decoration: underline; }
 
+  /* Шапка ПЕРЕНОСИТСЯ, а не сжимается: на телефоне десяток кнопок в одну
+     строку не влезает никогда, и без переноса они уезжали за край экрана
+     вместе со всей страницей (горизонтальная прокрутка на 959px при 390
+     доступных). Лучше две-три строки, чем половина интерфейса за кадром. */
   header {
-    display: flex; align-items: center; gap: 14px;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px;
     padding: 11px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
+    flex: none;
   }
+  .home { display: flex; align-items: center; gap: 10px; flex: none; }
+  .home:hover { text-decoration: none; }
+  .home:hover .header-word { opacity: .82; }
   #logoCanvas { width: 30px; height: 30px; display: block; flex: none; }
   .header-word { font-family: var(--mono); font-weight: 500; letter-spacing: .24em;
-    font-size: 14px; text-transform: uppercase; }
+    font-size: 14px; text-transform: uppercase; white-space: nowrap; }
   .header-word .noo { color: var(--blue); }
   .header-word .sphere { color: var(--bronze); }
   header .tagline { color: var(--dim2); font-size: 13px; }
@@ -63,7 +71,11 @@
   button.mini { padding: 3px 9px; font-size: 12px; }
   :focus-visible { outline: 2px solid var(--bronze); outline-offset: 1px; }
 
-  #wrap { display: flex; height: calc(100% - 49px); }
+  /* Высота считается раскладкой, а не вычитанием константы: шапка теперь
+     переносится и её высота непостоянна, а `calc(100% - 49px)` при двух
+     строках шапки уводил низ страницы под экран. */
+  body { display: flex; flex-direction: column; }
+  #wrap { display: flex; flex: 1; min-height: 0; }
   #tree { width: 42%; min-width: 320px; overflow: auto; padding: 12px 8px;
     border-right: 1px solid var(--line); }
   #detail { flex: 1; overflow: auto; padding: 22px 26px; }
@@ -279,12 +291,54 @@
   .dupes .d:hover { border-color: var(--blue); }
   .dupes .d .t { color: var(--ivory); font-weight: 500; }
   .dupes .d .m { color: var(--dim2); font-size: 12px; }
+
+  /* ---------------------------------------------------------- телефон
+     До сих пор мобильной вёрстки не было вовсе: страница требовала 959px
+     ширины и на телефоне уезжала вбок — шапка обрезалась на середине, дерево
+     и текст жили за краем экрана.
+
+     Две колонки на узком экране не работают: 42% от 390px это 164px, куда не
+     влезает ни одна строка дерева. Поэтому дерево и разбор встают друг под
+     друга, дереву отводится верхняя треть, а читаемому тексту — всё
+     остальное. */
+  @media (max-width: 860px) {
+    html, body { font-size: 14px; }
+    header { padding: 9px 12px; gap: 7px 10px; }
+    header .tagline { display: none; }   /* «дерево обсуждений» и так видно */
+    header .spacer { display: none; }    /* распорка только мешает переносу */
+    .header-word { font-size: 13px; letter-spacing: .18em; }
+    #logoCanvas { width: 26px; height: 26px; }
+    header a { font-size: 12.5px; }
+    button.mini { padding: 3px 8px; font-size: 11.5px; }
+
+    #wrap { flex-direction: column; }
+    #tree { width: 100%; min-width: 0; flex: 0 0 auto; max-height: 38vh;
+      border-right: none; border-bottom: 1px solid var(--line); }
+    #detail { padding: 16px 14px; }
+
+    /* Модальные окна во весь экран — по центру они на телефоне обрезались. */
+    .modal-card { width: 94vw; max-width: none; max-height: 88vh; overflow: auto; }
+  }
+
+  /* Совсем узкие экраны: убираем то, без чего можно жить, чтобы шапка
+     укладывалась в две строки, а не в четыре. */
+  @media (max-width: 480px) {
+    header { gap: 6px 8px; }
+    #hintsBtn, #poiBadge { display: none; }
+    #presence { font-size: 11.5px; }
+    #tree { max-height: 34vh; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <canvas id="logoCanvas" width="88" height="88" aria-hidden="true"></canvas>
-  <span class="header-word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
+  <!-- Лого и название — ссылка домой. Ожидание из любого сайта: щёлкнул по
+       имени в углу — вернулся в начало. Раньше здесь был тупик: с открытой
+       темы (?topic=…) выйти к общему виду было нечем. -->
+  <a class="home" href="/" title="На главную">
+    <canvas id="logoCanvas" width="88" height="88" aria-hidden="true"></canvas>
+    <span class="header-word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
+  </a>
   <span class="tagline" id="tagline">дерево обсуждений</span>
   <span class="seg" id="viewSeg">
     <b class="seg-i on" data-view="tree">дерево</b>
@@ -313,7 +367,7 @@
 
 <div id="authModal" class="modal" style="display:none">
   <div class="card modal-card">
-    <div class="section-title">Вход или регистрация</div>
+    <div class="section-title" id="authTitle">Вход или регистрация</div>
     <input id="authUser" placeholder="Логин — латиница, 3–32 символа" autocomplete="username">
     <input id="authPass" type="password" placeholder="Пароль — минимум 6 символов" autocomplete="current-password">
     <input id="authName" placeholder="Имя для отображения — при регистрации">
@@ -323,6 +377,22 @@
       <button id="doLogin" class="primary">Войти</button>
       <button id="doRegister">Создать аккаунт</button>
       <button id="authCancel">Отмена</button>
+    </div>
+    <!-- Восстановление доступа. Серверная часть была с самого начала, а входа
+         в неё из интерфейса не было: забывший пароль оказывался в тупике и
+         писал Alex руками. -->
+    <div id="forgotLine" style="margin-top:10px">
+      <a href="#" id="forgotLink" class="muted" style="font-size:12.5px">Забыли пароль?</a>
+    </div>
+    <div id="forgotBox" style="display:none;margin-top:10px">
+      <div class="muted" style="font-size:12.5px;margin-bottom:6px">
+        Укажи почту, с которой регистрировался — пришлём ссылку для смены пароля.
+      </div>
+      <input id="forgotEmail" type="email" placeholder="Почта" autocomplete="email">
+      <div class="actions" style="margin-top:8px">
+        <button id="doForgot" class="primary">Прислать ссылку</button>
+        <button id="forgotBack">Назад ко входу</button>
+      </div>
     </div>
     <div id="authErr" class="muted" style="margin-top:8px"></div>
   </div>
