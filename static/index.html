@@ -133,6 +133,11 @@
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
     padding: 16px 18px; margin-bottom: 15px; }
   .card > div:not(.section-title) { line-height: 1.6; }
+  /* Абзацы автора — это его разметка мысли, и они должны выживать. Текст
+     кладётся в DOM как textContent (никакого HTML от участников), поэтому
+     переносы держатся стилем, а не разметкой. */
+  .hasmargins, .hasmargins h2, .cmsg > div:last-child, .addendum > div:first-child
+    { white-space: pre-line; }
   .crit { display: grid; grid-template-columns: 150px 1fr 34px; gap: 7px 12px;
     align-items: center; margin-top: 10px; }
   .bar { height: 7px; background: var(--panel2); border-radius: 4px; overflow: hidden; }
