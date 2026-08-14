@@ -15,7 +15,8 @@
   html,body { margin:0; height:100%; background:var(--bg); color:var(--ivory);
     font-family:var(--mono); font-size:13px; }
   a { color:var(--blue); text-decoration:none; }
-  header { display:flex; align-items:center; gap:14px; padding:10px 16px;
+  /* переносится, а не обрезается: телефон */
+  header { display:flex; align-items:center; flex-wrap:wrap; gap:8px 14px; padding:10px 16px;
     border-bottom:1px solid var(--line); background:var(--panel); }
   header .brand { font-weight:600; letter-spacing:.08em; color:var(--bronze); }
   header .spacer { flex:1; }
@@ -62,7 +63,7 @@
 </head>
 <body>
 <header>
-  <span class="brand">NOOSPHERE</span>
+  <a class="brand home" href="/" title="На главную">NOOSPHERE</a>
   <span class="muted">диалоги · dev</span>
   <span class="spacer"></span>
   <a href="/stats.html">статистика ▸</a>

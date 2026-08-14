@@ -111,8 +111,11 @@
   text-decoration:none; white-space:nowrap; }
 .seg-out:hover { text-decoration:underline; }
 
-/* ---- карта как вид внутри приложения ---- */
-#mapView { position:fixed; top:56px; left:0; right:0; bottom:0;
+/* ---- карта как вид внутри приложения ----
+   Отступ сверху — фактическая высота шапки (--hdr, её ставит tree.js), а не
+   константа 56px: на телефоне шапка переносится на две-три строки, и карта
+   при жёстком значении заезжала под неё. */
+#mapView { position:fixed; top:var(--hdr,56px); left:0; right:0; bottom:0;
   display:flex; flex-direction:column; background:var(--bg,#0e1016); z-index:5; }
 .mv-bar { flex:0 0 auto; display:flex; gap:10px; align-items:center;
   padding:10px 16px; border-bottom:1px solid var(--line,#272c39); flex-wrap:wrap; }

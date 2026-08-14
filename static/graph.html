@@ -37,15 +37,28 @@
   a { color: var(--blue); text-decoration: none; }
   a:hover { text-decoration: underline; }
   /* Канвас начинается под шапкой, а не с самого верха окна. */
-  #app { position: fixed; top: var(--header-h); left: 0; right: 0; bottom: 0; }
+  /* Отступ сверху — фактическая высота шапки: на телефоне она переносится
+     на две-три строки, и жёсткая константа резала верх сцены. */
+  #app { position: fixed; top: var(--hdr, var(--header-h)); left: 0;
+    right: 0; bottom: 0;
+    /* Подписи узлов расставляются по проекции сцены и на узком экране уезжают
+       далеко за край, растягивая документ (на телефоне было 2399px при 390).
+       Сцена — не текст, её край режется, а не прокручивается. */
+    overflow: hidden; }
 
   /* ---- шапка: тот же блок, что в дереве обсуждений ---- */
   header {
-    position: fixed; top: 0; left: 0; right: 0; height: var(--header-h); z-index: 20;
-    display: flex; align-items: center; gap: 14px;
+    position: fixed; top: 0; left: 0; right: 0; min-height: var(--header-h);
+    z-index: 20;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px;
     padding: 11px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
   }
   #logoCanvas { width: 30px; height: 30px; display: block; flex: none; }
+  /* Лого и название — ссылка домой: щёлкнул по имени в углу, вернулся в
+     начало. Ожидание из любого сайта, а до сих пор здесь был тупик. */
+  .home { display:flex; align-items:center; gap:10px; flex:none; }
+  .home:hover { text-decoration:none; }
+  .home:hover .header-word, .home:hover.brand { opacity:.82; }
   .header-word { font-family: var(--mono); font-weight: 500; letter-spacing: .24em;
     font-size: 14px; text-transform: uppercase; }
   .header-word .noo { color: var(--blue); }
@@ -304,8 +317,10 @@
   <div id="app"></div>
 
   <header>
-    <canvas id="logoCanvas" width="88" height="88" aria-hidden="true"></canvas>
-    <span class="header-word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
+    <a class="home" href="/" title="На главную">
+      <canvas id="logoCanvas" width="88" height="88" aria-hidden="true"></canvas>
+      <span class="header-word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
+    </a>
     <span class="tagline">граф аргументов</span>
     <span class="spacer"></span>
     <a href="/" title="Дерево обсуждений — основной режим чтения">← Дерево</a>
@@ -399,5 +414,19 @@
 
   <script type="module" src="./app.js"></script>
 <script src="/logo.js"></script>
+<script>
+// Фактическая высота шапки → --hdr, от неё считается верх сцены. Высота
+// непостоянна: на узком экране шапка переносится, а поворот телефона меняет
+// число строк — поэтому наблюдатель, а не разовый замер.
+(function () {
+  const h = document.querySelector("header");
+  if (!h) return;
+  const apply = () => document.documentElement.style.setProperty(
+    "--hdr", Math.round(h.getBoundingClientRect().height) + "px");
+  apply();
+  if (window.ResizeObserver) new ResizeObserver(apply).observe(h);
+  addEventListener("orientationchange", () => setTimeout(apply, 150));
+})();
+</script>
 </body>
 </html>
