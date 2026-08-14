@@ -288,6 +288,12 @@ _llm_calls: dict[int, deque] = defaultdict(deque)
 # no restart needed.
 DEFAULT_BALANCE_USD = float(os.environ.get("DEFAULT_BALANCE_USD", "3"))
 
+# Пришедшему ПО ИНВАЙТУ грант больше: код выдаётся адресно, такой человек уже
+# позван и почти наверняка станет писать, а не заглянет и уйдёт. Открытая
+# регистрация остаётся на DEFAULT_BALANCE_USD — там кто угодно, и щедрость
+# оплачивается с карты Alex (Alex, 2026-08-14).
+INVITE_BALANCE_USD = float(os.environ.get("INVITE_BALANCE_USD", "5"))
+
 # Whether a code of invitation is still the door. Default 1, and prod runs the
 # default: registration stays invite-only for now (Alex, 2026-08-12). Opening it
 # is a matter of setting INVITE_REQUIRED=0 in Railway — the piece that keeps an
@@ -452,6 +458,7 @@ async def register(body: RegisterIn, response: Response, request: Request):
         username, auth.hash_password(body.password),
         (body.name or username).strip() or username, color,
         invite=body.invite, email=email, balance_usd=DEFAULT_BALANCE_USD,
+        invite_balance_usd=INVITE_BALANCE_USD,
         invite_required=INVITE_REQUIRED, terms_version=TERMS_VERSION)
     if author_id == "invite":
         raise HTTPException(403, "нужен действующий код приглашения")
@@ -569,6 +576,102 @@ async def verify_email(body: VerifyIn, request: Request):
     if author_id is None:
         raise HTTPException(400, "ссылка недействительна или уже использована")
     return {"ok": True}
+
+
+# ----------------------------------------------------- управление аккаунтом
+# Кабинет обязан уметь то, ради чего у аккаунта вообще есть почта: сменить
+# пароль и сменить адрес. Без этого человек, потерявший доступ к ящику, теряет
+# и аккаунт, а сменить утёкший пароль может только через «забыли пароль».
+class PasswordChangeIn(BaseModel):
+    current: str
+    password: str
+
+
+class EmailChangeIn(BaseModel):
+    email: str
+    password: str                        # подтверждение личности, не формальность
+
+
+def _mask_email(email: str | None) -> str | None:
+    """Показать почту, не показав её целиком: «mar***va@example.com».
+
+    Кабинет открывают при людях и на скриншотах, а адрес — то немногое, что
+    связывает аккаунт с человеком вне платформы.
+    """
+    if not email or "@" not in email:
+        return None
+    name, _, domain = email.partition("@")
+    if len(name) <= 2:
+        shown = name[:1] + "*"
+    elif len(name) <= 5:
+        shown = name[:1] + "*" * (len(name) - 2) + name[-1:]
+    else:
+        shown = name[:3] + "*" * 3 + name[-2:]
+    return f"{shown}@{domain}"
+
+
+@app.get("/api/account")
+async def account_state(author=Depends(current_author)):
+    """Состояние аккаунта для кабинета: адрес частично закрыт, статус
+    подтверждения и есть ли ожидающая смена адреса."""
+    pending = await db.pending_email_change(author["id"])
+    return {
+        "username": author["username"],
+        "email_masked": _mask_email(author.get("email")),
+        "email_verified": bool(author.get("email_verified")),
+        "pending_email_masked": _mask_email(pending),
+    }
+
+
+@app.post("/api/account/password")
+async def change_password_endpoint(body: PasswordChangeIn, request: Request,
+                                   author=Depends(current_author)):
+    _login_throttle(request, "password-change")
+    stored = await db.get_author_by_username(author["username"])
+    if not stored or not auth.verify_password(body.current, stored["password_hash"]):
+        raise HTTPException(403, "текущий пароль не подходит")
+    if len(body.password) < 8:
+        raise HTTPException(400, "пароль: минимум 8 символов")
+    if body.password == body.current:
+        raise HTTPException(400, "новый пароль совпадает с текущим")
+    # текущая сессия остаётся живой, остальные закрываются
+    await db.change_password(author["id"], auth.hash_password(body.password),
+                             keep_token=request.cookies.get(SESSION_COOKIE))
+    return {"ok": True, "detail": "пароль изменён, другие сессии закрыты"}
+
+
+@app.post("/api/account/email")
+async def change_email_endpoint(body: EmailChangeIn, request: Request,
+                                author=Depends(current_author)):
+    """Запросить смену адреса. Смена состоится ТОЛЬКО после перехода по ссылке
+    из письма на новый адрес — иначе опечатка отрезала бы человека от аккаунта."""
+    _login_throttle(request, "email-change")
+    stored = await db.get_author_by_username(author["username"])
+    if not stored or not auth.verify_password(body.password, stored["password_hash"]):
+        raise HTTPException(403, "пароль не подходит")
+    email = (body.email or "").strip().lower()
+    if not EMAIL_RE.fullmatch(email):
+        raise HTTPException(400, "это не похоже на адрес почты")
+    if email == (author.get("email") or "").lower():
+        raise HTTPException(400, "это и есть текущий адрес")
+    if await db.email_taken_by_other(email, author["id"]):
+        # Честно, а не «ссылка отправлена»: человек в своём кабинете и так
+        # видит свой адрес, а молчание тут обернулось бы ожиданием письма,
+        # которое никогда не придёт.
+        raise HTTPException(409, "этот адрес уже занят другим аккаунтом")
+
+    token = secrets.token_urlsafe(32)
+    await db.create_email_verification(author["id"], email,
+                                       _hash_reset_token(token))
+    link = f"{PUBLIC_URL}/verify.html?token={token}"
+    if not await asyncio.to_thread(mail.send_email_change, email, link):
+        log.warning("EMAIL CHANGE for author %s <%s>: %s", author["id"], email, link)
+    # предупреждение на СТАРЫЙ адрес — единственный способ узнать об угоне вовремя
+    old = author.get("email")
+    if old:
+        await asyncio.to_thread(mail.send_email_change_notice, old, email)
+    return {"ok": True,
+            "detail": "письмо ушло на новый адрес — смена произойдёт после перехода по ссылке"}
 
 
 class BalanceRequestIn(BaseModel):

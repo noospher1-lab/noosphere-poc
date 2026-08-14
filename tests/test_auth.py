@@ -101,3 +101,73 @@ def test_terms_consent_is_recorded():
         assert row["terms_accepted_at"] is None
         await db.close_pool()
     asyncio.run(go())
+
+
+@pytest.mark.skipif(not TEST_DB, reason="TEST_DATABASE_URL not set")
+def test_invite_grants_more_than_open_door():
+    """Пришедший по коду получает больший грант: его позвали адресно, и он
+    почти наверняка станет писать. Открытая регистрация остаётся на базовом.
+    """
+    async def go():
+        from app import db
+        db.DATABASE_URL = TEST_DB
+        await db.close_pool()
+        await db.init_pool()
+        await db.init_db()
+        await db.wipe(force=True)
+
+        await db.add_invite("CODE-FOR-ONE")
+        invited = await db.add_user("invited", auth.hash_password("secret12"),
+                                    "По коду", "#fff", invite="CODE-FOR-ONE",
+                                    balance_usd=3, invite_balance_usd=5)
+        walkin = await db.add_user("walkin", auth.hash_password("secret12"),
+                                   "С улицы", "#fff", invite_required=False,
+                                   balance_usd=3, invite_balance_usd=5)
+        pool = db._pool_or_raise()
+        async with pool.acquire() as conn:
+            got = {r["username"]: float(r["balance_usd"]) for r in await conn.fetch(
+                "SELECT username, balance_usd FROM authors WHERE id = ANY($1::int[])",
+                [invited, walkin])}
+        assert got["invited"] == 5.0, got
+        assert got["walkin"] == 3.0, got
+        await db.close_pool()
+    asyncio.run(go())
+
+
+@pytest.mark.skipif(not TEST_DB, reason="TEST_DATABASE_URL not set")
+def test_email_change_replaces_address_and_kills_stale_links():
+    """Смена адреса состоится только по ссылке из письма на новый адрес.
+
+    И гасит прежние висящие ссылки: иначе неиспользованная ссылка с регистрации
+    откатила бы смену назад, а кабинет показывал бы старый адрес как «ждём
+    подтверждения».
+    """
+    async def go():
+        from app import db
+        db.DATABASE_URL = TEST_DB
+        await db.close_pool()
+        await db.init_pool()
+        await db.init_db()
+        await db.wipe(force=True)
+
+        uid = await db.add_user("mover", auth.hash_password("secret12"), "Переезд",
+                                "#fff", email="old@example.com",
+                                invite_required=False)
+        await db.create_email_verification(uid, "old@example.com", "hash-old")
+        await db.create_email_verification(uid, "new@example.com", "hash-new")
+        assert await db.pending_email_change(uid) == "new@example.com"
+
+        assert await db.redeem_email_verification("hash-new") == uid
+        pool = db._pool_or_raise()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT email, email_verified FROM authors WHERE id = $1", uid)
+        assert row["email"] == "new@example.com" and row["email_verified"]
+        # старая ссылка погашена и уже не откатит адрес назад
+        assert await db.pending_email_change(uid) is None
+        assert await db.redeem_email_verification("hash-old") == uid
+        async with pool.acquire() as conn:
+            assert await conn.fetchval(
+                "SELECT email FROM authors WHERE id = $1", uid) == "new@example.com"
+        await db.close_pool()
+    asyncio.run(go())

@@ -1307,6 +1307,52 @@ async def create_email_verification(author_id, email, token_hash, ttl_hours=48):
         return True
 
 
+async def change_password(author_id, new_hash, keep_token=None):
+    """Сменить пароль вошедшего. Остальные сессии закрываются.
+
+    Смена пароля — это чаще всего «кажется, меня взломали». Оставить чужой
+    сессии доступ значило бы сделать её бессмысленной, поэтому живой остаётся
+    только та, из которой пароль меняли.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE authors SET password_hash = $1 WHERE id = $2",
+                new_hash, author_id)
+            await conn.execute(
+                "DELETE FROM sessions WHERE author_id = $1 "
+                "AND ($2::text IS NULL OR token <> $2)", author_id, keep_token)
+            await _log(conn, "password_changed", {}, author_id)
+    return True
+
+
+async def email_taken_by_other(email, author_id):
+    """Занят ли адрес ЧУЖИМ аккаунтом. Свой же адрес занятым не считается —
+    иначе повторная отправка подтверждения на него выглядела бы как конфликт."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        return bool(await conn.fetchval(
+            "SELECT 1 FROM authors WHERE lower(email) = lower($1) AND id <> $2",
+            email, author_id))
+
+
+async def pending_email_change(author_id):
+    """Адрес, на который человек уже запросил смену и ещё не подтвердил.
+    Нужен кабинету, чтобы сказать «ждём подтверждения на …», а не молчать."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            """
+            SELECT v.email FROM email_verifications v
+            JOIN authors a ON a.id = v.author_id
+            WHERE v.author_id = $1 AND v.used_at IS NULL
+              AND v.expires_at > now()
+              AND lower(v.email) <> lower(coalesce(a.email, ''))
+            ORDER BY v.created_at DESC LIMIT 1
+            """, author_id)
+
+
 async def redeem_email_verification(token_hash):
     """Spend the token and mark the address confirmed. Returns the author id,
     or None if the token is unknown, expired or already used.
@@ -1335,10 +1381,28 @@ async def redeem_email_verification(token_hash):
             await conn.execute(
                 "UPDATE email_verifications SET used_at = now() "
                 "WHERE token_hash = $1", token_hash)
-            ok = await conn.fetchval(
-                "UPDATE authors SET email_verified = TRUE "
-                "WHERE id = $1 AND lower(email) = lower($2) RETURNING id",
-                row["author_id"], row["email"])
+            # Адрес из токена СТАНОВИТСЯ адресом аккаунта. Так одна и та же
+            # ссылка закрывает два случая: подтверждение своего адреса при
+            # регистрации и смену почты — там в токене лежит новый адрес, и
+            # именно переход по письму на него делает смену состоявшейся.
+            # Занятость чужим аккаунтом проверена при выдаче токена, но между
+            # выдачей и кликом адрес мог занять кто-то ещё — тогда UPDATE
+            # упрётся в уникальный индекс, и смена честно не состоится.
+            try:
+                ok = await conn.fetchval(
+                    "UPDATE authors SET email = $2, email_verified = TRUE "
+                    "WHERE id = $1 RETURNING id",
+                    row["author_id"], row["email"])
+            except asyncpg.UniqueViolationError:
+                return None
+            # Остальные висящие токены этого аккаунта относятся к прежнему
+            # состоянию: неиспользованная ссылка с регистрации после смены
+            # адреса выглядела бы в кабинете как «ждём подтверждения» старого
+            # адреса, а перейдя по ней, человек откатил бы смену назад.
+            await conn.execute(
+                "UPDATE email_verifications SET used_at = now() "
+                "WHERE author_id = $1 AND used_at IS NULL "
+                "AND token_hash <> $2", row["author_id"], token_hash)
             return ok
 
 
@@ -1469,7 +1533,7 @@ async def shared_key_spend():
 
 async def add_user(username, password_hash, name, color=None, invite=None,
                    email=None, balance_usd=0, invite_required=True,
-                   terms_version=None):
+                   terms_version=None, invite_balance_usd=None):
     """Register: an account is an author with credentials.
 
     Returns the new author id, or a string error tag: "taken" (username in
@@ -1498,6 +1562,10 @@ async def add_user(username, password_hash, name, color=None, invite=None,
                 if row is None or row["used_at"] is not None:
                     return "invite"
 
+            # Пришёл по коду — грант инвайтовый. Проверка кода прошла выше,
+            # row не None ровно тогда, когда код настоящий и не потрачен.
+            if row is not None and invite_balance_usd is not None:
+                balance_usd = invite_balance_usd
             try:
                 author_id = await conn.fetchval(
                     """

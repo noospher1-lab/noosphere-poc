@@ -40,6 +40,31 @@
   .muted { color:var(--dim); }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
     padding:16px 18px; margin:13px 0; }
+  .acc-row { display:flex; align-items:center; gap:10px; margin-top:12px; }
+  .acc-label { color:var(--dim2); font-size:12.5px; min-width:52px; }
+  .acc-tag { font-size:11.5px; padding:1px 8px; border-radius:99px;
+    border:1px solid var(--line2); color:var(--dim); }
+  .acc-tag.ok { color:var(--green); border-color:var(--green); }
+  .acc-tag.no { color:var(--orange); border-color:var(--orange); }
+  .acc-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  .acc-form { margin-top:12px; display:flex; flex-direction:column; gap:8px; }
+  /* в кабинете своих стилей для полей не было — без этого input приходит
+     с системным белым фоном и выпадает из тёмной страницы */
+  .acc-form input, .acc-form button {
+    font-family:inherit; font-size:13px; color:var(--ivory);
+    background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
+    padding:7px 10px; }
+  .acc-form input { width:100%; }
+  .acc-form input::placeholder { color:var(--dim2); }
+  .acc-actions button {
+    font-family:inherit; font-size:12px; color:var(--ivory); cursor:pointer;
+    background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
+    padding:4px 10px; }
+  .acc-actions button:hover { border-color:var(--bronze); }
+  .acc-actions button.primary {
+    background:#2a2110; border-color:var(--bronze); color:var(--bronze);
+    font-weight:600; }
+  .hidden { display:none; }
   .section-title { color:var(--dim2); letter-spacing:.06em; text-transform:uppercase;
     font-size:10.5px; font-weight:600; margin-bottom:11px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; }
@@ -148,6 +173,45 @@
         история участия привязаны к этому логину и переносятся вместе с ним,
         когда прототип станет рабочей системой.
       </p>
+
+      <!-- Адрес показан частично: кабинет открывают при людях и на скриншотах,
+           а почта — то немногое, что связывает аккаунт с человеком вне
+           платформы. Полный адрес знает тот, кто им владеет. -->
+      <div class="acc-row">
+        <span class="acc-label">Почта</span>
+        <span id="accEmail">—</span>
+        <span id="accVerified" class="acc-tag"></span>
+      </div>
+      <div id="accPending" class="note hidden"></div>
+
+      <div class="acc-actions">
+        <button id="btnEmail" class="mini">Сменить почту</button>
+        <button id="btnPass" class="mini">Сменить пароль</button>
+      </div>
+
+      <form id="emailForm" class="acc-form hidden" autocomplete="off">
+        <input type="email" id="newEmail" placeholder="Новый адрес почты" autocomplete="email">
+        <input type="password" id="emailPass" placeholder="Текущий пароль" autocomplete="current-password">
+        <div class="acc-actions">
+          <button type="submit" class="mini primary">Прислать письмо на новый адрес</button>
+          <button type="button" class="mini" data-cancel="emailForm">Отмена</button>
+        </div>
+        <p class="note">Пока не перейдёшь по ссылке из письма, аккаунт остаётся
+          на прежнем адресе. На старый адрес уйдёт предупреждение — так угон
+          заметен вовремя.</p>
+      </form>
+
+      <form id="passForm" class="acc-form hidden" autocomplete="off">
+        <input type="password" id="curPass" placeholder="Текущий пароль" autocomplete="current-password">
+        <input type="password" id="newPass" placeholder="Новый пароль — минимум 8 символов" autocomplete="new-password">
+        <div class="acc-actions">
+          <button type="submit" class="mini primary">Сменить пароль</button>
+          <button type="button" class="mini" data-cancel="passForm">Отмена</button>
+        </div>
+        <p class="note">Другие сессии закроются — останется только эта.</p>
+      </form>
+
+      <div id="accMsg" class="note"></div>
     </div>
   </div>
 </div>
@@ -321,8 +385,89 @@ async function load() {
   if (myActivity) renderActivity(myActivity.activity);
 }
 
+// ---- аккаунт: почта и пароль
+// Кабинет обязан уметь то, ради чего у аккаунта вообще есть почта. Раньше здесь
+// был только текст «аккаунт остаётся за тобой», а сменить адрес или пароль было
+// нельзя ни из интерфейса, ни как-либо ещё.
+async function loadAccount() {
+  let acc;
+  try { acc = await (await fetch("/api/account")).json(); }
+  catch (_) { return; }
+  if (!acc || acc.detail) return;
+  $("#accEmail").textContent = acc.email_masked || "не указана";
+  const tag = $("#accVerified");
+  if (!acc.email_masked) { tag.textContent = ""; tag.className = "acc-tag"; }
+  else if (acc.email_verified) { tag.textContent = "подтверждена"; tag.className = "acc-tag ok"; }
+  else { tag.textContent = "не подтверждена"; tag.className = "acc-tag no"; }
+  const pend = $("#accPending");
+  if (acc.pending_email_masked) {
+    pend.textContent = "Ждём подтверждения нового адреса: " + acc.pending_email_masked +
+      ". Пока ссылка не открыта, аккаунт остаётся на прежнем.";
+    pend.classList.remove("hidden");
+  } else {
+    pend.classList.add("hidden");
+  }
+}
+
+function accMsg(text, bad) {
+  const m = $("#accMsg");
+  m.textContent = text || "";
+  m.style.color = bad ? "var(--red)" : "var(--dim)";
+}
+
+async function accPost(url, body) {
+  const r = await fetch(url, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || ("ошибка " + r.status));
+  return d;
+}
+
+function toggleForm(id) {
+  for (const f of ["emailForm", "passForm"]) {
+    const el = $("#" + f);
+    if (f === id) el.classList.toggle("hidden");
+    else el.classList.add("hidden");
+  }
+  accMsg("");
+}
+
+$("#btnEmail").onclick = () => toggleForm("emailForm");
+$("#btnPass").onclick = () => toggleForm("passForm");
+for (const b of document.querySelectorAll("[data-cancel]"))
+  b.onclick = () => { $("#" + b.dataset.cancel).classList.add("hidden"); accMsg(""); };
+
+$("#emailForm").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const d = await accPost("/api/account/email", {
+      email: $("#newEmail").value.trim(), password: $("#emailPass").value,
+    });
+    accMsg(d.detail);
+    $("#emailForm").reset();
+    $("#emailForm").classList.add("hidden");
+    loadAccount();
+  } catch (err) { accMsg(err.message, true); }
+};
+
+$("#passForm").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const d = await accPost("/api/account/password", {
+      current: $("#curPass").value, password: $("#newPass").value,
+    });
+    accMsg(d.detail);
+    $("#passForm").reset();
+    $("#passForm").classList.add("hidden");
+  } catch (err) { accMsg(err.message, true); }
+};
+
 const _pid = new URLSearchParams(location.search).get("id");
-if (_pid) loadPublic(_pid); else load();
+// чужой профиль — публичная страница: управление аккаунтом там ни к чему
+if (_pid) { loadPublic(_pid); $("#accountCard").classList.add("hidden"); }
+else { load(); loadAccount(); }
 </script>
 </body>
 </html>
