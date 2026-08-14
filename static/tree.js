@@ -343,7 +343,12 @@ function nodeRow(node, type) {
   }
   if (hasKids) row.appendChild(el("span", "poi", "(" + node.reply_count + ")"));
   const poi = el("span", "poi");
-  poi.innerHTML = node.poi_score != null ? "PoI <b>" + node.poi_score + "</b>" : "…";
+  // служебный текст платформы не оценивается вовсе — «…» здесь читалось бы как
+  // «оценка вот-вот придёт», а она не придёт никогда
+  poi.innerHTML = node.poi_score != null ? "PoI <b>" + node.poi_score + "</b>"
+                : node.author_is_service ? "" : "…";
+  if (node.author_is_service && node.poi_score == null)
+    poi.title = "Служебная публикация платформы — в ранжировании не участвует";
   row.appendChild(poi);
   // имя автора → его публичный профиль (история голосований). Новая вкладка,
   // чтобы не терять обсуждение; клик не выбирает узел.
@@ -603,7 +608,9 @@ async function selectNode(id) {
   meta.append(
     "автор: ", authorEl,
     "  ·  PoI: " + (node.poi_score != null ? node.poi_score
-                    : node.atom_group ? "— (атом разбора, живёт реакциями)" : "оценивается…"),
+                    : node.atom_group ? "— (атом разбора, живёт реакциями)"
+                    : node.author_is_service ? "— (служебная публикация платформы)"
+                    : "оценивается…"),
     "  ·  тип: " + (KIND_RU[node.kind] || node.kind || "тезис"),
     ...(node.atom_group ? ["  ·  из разбора · " + node.atom_group] : []),
     "  ·  ответов: " + (node.reply_count ?? 0),

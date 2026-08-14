@@ -531,6 +531,15 @@ _SCHEMA = [
     # Без этого флага засев при первом входе возвращался бы после каждой
     # уборки, и «убрать» переставало бы работать как убрать.
     "ALTER TABLE authors ADD COLUMN IF NOT EXISTS workspace_seeded BOOLEAN NOT NULL DEFAULT FALSE",
+    # СЛУЖЕБНЫЙ АККАУНТ (NOOSPHERE AI BOT и подобные): голос самой платформы, а
+    # не участник. Он публикует служебные тексты — вопросы о правилах, объявления —
+    # и при этом НЕ пользуется ИИ вообще: ни компаньоном, ни оценкой своих текстов.
+    #
+    # Почему без оценки: PoI существует, чтобы поднимать проработанные доводы
+    # ЛЮДЕЙ. Текст, написанный машиной и оценённый машиной, стоял бы в том же
+    # рейтинге выше человеческих просто потому, что писавший знает рубрику
+    # изнутри. Служебные узлы остаются с пустым PoI и в соревновании не участвуют.
+    "ALTER TABLE authors ADD COLUMN IF NOT EXISTS is_service BOOLEAN NOT NULL DEFAULT FALSE",
     # Рубрикация темы. Отдельной таблицей, а не колонками в nodes: рубрика
     # есть только у КОРНЯ обсуждения, и держать её на всех узлах значило бы
     # хранить пустоту в 99% строк.
@@ -1133,6 +1142,7 @@ async def get_node_full(node_id):
         row = await conn.fetchrow(
             """
             SELECT n.*, a.name AS author, a.color AS author_color,
+                   a.is_service AS author_is_service,
                    p.headline AS position_headline,
                    p.composed AS position_composed,
                    p.stance   AS position_stance,
@@ -1167,6 +1177,7 @@ async def get_children(node_id, limit=20, offset=0):
                    n.retracted_at, n.retract_note,
                    e.anchor_start, e.anchor_end, e.anchor_quote, n.author_id,
                    a.name AS author, a.color AS author_color,
+                   a.is_service AS author_is_service,
                    (SELECT count(*) FROM edges e2 WHERE e2.target_id = n.id) AS reply_count
             FROM edges e
             JOIN nodes n ON n.id = e.source_id
@@ -1996,7 +2007,7 @@ async def session_author(token):
         row = await conn.fetchrow(
             f"""
             SELECT {', '.join('a.' + c.strip() for c in _AUTHOR_COLS.split(','))},
-                   a.email, a.email_verified
+                   a.email, a.email_verified, a.is_service
             FROM sessions s
             JOIN authors a ON a.id = s.author_id
             WHERE s.token = $1 AND s.expires_at >= now()
@@ -2614,6 +2625,7 @@ async def workspace_topics(author_id):
             SELECT n.id, n.text, n.title, n.poi_score, n.kind, n.author_id,
                    n.retracted_at, n.retract_note,
                    a.name AS author, a.color AS author_color,
+                   a.is_service AS author_is_service,
                    w.added_at,
                    (SELECT count(*) FROM edges e2
                     JOIN nodes cn ON cn.id = e2.source_id
@@ -2758,6 +2770,7 @@ async def list_topics():
             SELECT n.id, n.text, n.title, n.poi_score, n.kind, n.author_id,
                    n.retracted_at, n.retract_note,
                    a.name AS author, a.color AS author_color,
+                   a.is_service AS author_is_service,
                    (SELECT count(*) FROM edges e2
                     JOIN nodes cn ON cn.id = e2.source_id
                     WHERE e2.target_id = n.id AND cn.deleted_at IS NULL) AS reply_count

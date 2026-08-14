@@ -336,10 +336,18 @@ async def spend_llm(author):
     """Charge one LLM call to this account: rate limit, then grant, then bind
     the key the call will be billed to.
 
+    Служебный аккаунт (NOOSPHERE AI BOT) сюда не попадает вовсе: он голос самой
+    платформы и ИИ не пользуется — ни компаньоном, ни оценкой своих текстов.
+    Отказ отдельным кодом 403, а не 402: дело не в кончившихся деньгах, которые
+    можно пополнить, а в том, что этому аккаунту ИИ не положен по устройству.
+
     Split out of the llm_budget dependency for the one endpoint that decides
     mid-handler whether it is really going to call the model — a draft review
     served from cache must cost neither a rate-limit slot nor a cent.
     """
+    if author.get("is_service"):
+        raise HTTPException(
+            403, "служебный аккаунт платформы не пользуется ИИ")
     _llm_budget_check(author["id"])
     key = await db.author_api_key(author["id"])
     if not key:
@@ -1110,10 +1118,15 @@ async def get_children(node_id: int, limit: int = 20, offset: int = 0):
     return await db.get_children(node_id, limit, offset)
 
 
-@app.post("/api/argument", dependencies=[Depends(verified_author), Depends(llm_budget)])
+@app.post("/api/argument", dependencies=[Depends(verified_author)])
 async def add_argument(arg: ArgumentIn, author=Depends(verified_author)):
     if not arg.text.strip():
         raise HTTPException(400, "argument text is empty")
+    # Обычному участнику публикация стоит вызова модели (оценка текста), поэтому
+    # бюджет проверяется до записи. Служебный аккаунт публикует БЕЗ оценки —
+    # значит и платить ему нечем и не за что, гейт для него не применяется.
+    if not author.get("is_service"):
+        await spend_llm(author)
 
     # 0. resolve the discussion this argument joins (None = it opens a new topic)
     root_id = None
@@ -1207,16 +1220,20 @@ async def add_argument(arg: ArgumentIn, author=Depends(verified_author)):
     # (questions get the QUESTION rubric and never join position pools;
     #  a problem root is a framing with STATE, not a claim judged for weight —
     #  it stays unscored, its "state" is the registry summary, not a PoI)
-    if kind != "problem":
-        _spawn(_score_later(node_id, arg.text, kind, parent_text))
-    if kind == "argument":
-        _spawn(_assign_position_later(node_id, arg.text))
+    # Служебный текст не оценивается и не сводится в позиции: PoI поднимает
+    # проработанные доводы ЛЮДЕЙ, а машинный текст, оценённый машиной, стоял бы
+    # в том же рейтинге выше — писавший знает рубрику изнутри.
+    if not author.get("is_service"):
+        if kind != "problem":
+            _spawn(_score_later(node_id, arg.text, kind, parent_text))
+        if kind == "argument":
+            _spawn(_assign_position_later(node_id, arg.text))
 
     node = await db.get_node(node_id)
     node["weight"] = 0.0                       # unscored contributes zero weight
     node["author"] = author["name"]
     node["author_color"] = author["color"]
-    node["scoring"] = "pending"
+    node["scoring"] = "off" if author.get("is_service") else "pending"
 
     # 4. broadcast so live front-ends can materialize the node + fire a pulse
     hub.publish({

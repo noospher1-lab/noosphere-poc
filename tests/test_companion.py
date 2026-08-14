@@ -65,6 +65,40 @@ def client(monkeypatch):
         yield c
 
 
+@pytest.fixture
+def service_client(monkeypatch):
+    """То же приложение, но вошедший автор помечен служебным."""
+    from fastapi.testclient import TestClient
+    from app import db, main
+
+    async def prepare():
+        db.DATABASE_URL = TEST_DB
+        await db.close_pool()
+        await db.init_pool()
+        await db.init_db()
+        await db.wipe(force=True)
+        uid = await db.add_user("platform_bot", auth.hash_password("secret1"),
+                                "NOOSPHERE AI BOT", "#66b0ea",
+                                email="bot@example.com", invite_required=False)
+        pool = db._pool_or_raise()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE authors SET email_verified = TRUE, balance_usd = 0, "
+                "is_service = TRUE WHERE id = $1", uid)
+        await db.close_pool()
+        return uid
+
+    uid = asyncio.run(prepare())
+    main._REVIEW_CACHE.clear()
+    db.DATABASE_URL = TEST_DB
+    with TestClient(main.app) as c:
+        assert c.post("/api/auth/login",
+                      json={"username": "platform_bot",
+                            "password": "secret1"}).status_code == 200
+        c.author_id = uid
+        yield c
+
+
 def _stub_review(monkeypatch, payload):
     from app import pools as pools_mod
     monkeypatch.setattr(pools_mod, "review_draft",
@@ -186,3 +220,45 @@ def test_dead_companion_says_so_but_review_stays_silent(client, monkeypatch):
     r = client.post("/api/draft/companion", json={"text": "любой довод"})
     assert r.status_code == 502
     assert "компаньон" in r.json()["detail"]
+
+
+# ------------------------------------------------- служебный аккаунт
+@needs_db
+def test_service_account_gets_no_ai_and_no_poi(service_client, monkeypatch):
+    """NOOSPHERE AI BOT — голос платформы, а не участник.
+
+    Он публикует служебные тексты, но ИИ ему не положен: ни компаньон, ни
+    оценка собственных текстов. Иначе машина, знающая рубрику изнутри, стояла
+    бы в одном рейтинге с людьми и выше них.
+    """
+    from app import main, pools as pools_mod
+
+    scored = []
+    monkeypatch.setattr(main, "_score_later",
+                        lambda *a, **kw: scored.append(a))
+    monkeypatch.setattr(main, "_spawn", lambda coro: None)
+    monkeypatch.setattr(pools_mod, "companion_reply",
+                        lambda *a, **kw: {"reply": "ок", "suggestion": None})
+
+    # ИИ закрыт отдельным кодом: дело не в деньгах, которые можно доложить
+    r = service_client.post("/api/draft/companion", json={"text": "черновик"})
+    assert r.status_code == 403, r.text
+    assert "служебный" in r.json()["detail"]
+
+    r = service_client.post("/api/draft/review",
+                            json={"text": "черновик", "kind": "argument"})
+    assert r.status_code == 403, r.text
+
+    # но публиковать он может — и текст остаётся без оценки
+    r = service_client.post("/api/argument", json={
+        "text": "Служебное объявление платформы", "kind": "question",
+        "title": "Объявление", "domain": "tech", "sub": "Платформы и модерация"})
+    assert r.status_code == 200, r.text
+    assert r.json()["scoring"] == "off"
+    assert r.json()["poi_score"] is None
+    assert scored == [], "служебный текст не должен уходить на оценку"
+
+    # и виден остальным как служебный — UI по этому признаку не пишет
+    # «оценивается…» о тексте, который не будет оценён никогда
+    node = service_client.get("/api/nodes/%s" % r.json()["id"]).json()
+    assert node["author_is_service"] is True
