@@ -16,6 +16,7 @@ All access goes through a shared asyncpg pool created at startup.
 import os
 import json
 import hashlib
+from datetime import datetime, timedelta, timezone
 
 import asyncpg
 
@@ -37,6 +38,19 @@ DATABASE_URL = os.environ.get(
 # фрагмент делает различие REBUTS/UNDERCUTS различимым на практике.
 EDGE_TYPES = ("support", "refute", "qualify", "question",
               "proposal", "exploration", "atom", "undercut")
+
+# Окно, в которое автор ещё распоряжается своим высказыванием: правит текст или
+# снимает его целиком (vault: decisions/edit-delete-window). Час — потолок, а не
+# гарантия: первый же ответ закрывает окно досрочно, потому что дальше текст
+# держит чужое рассуждение. По истечении окна высказывание фиксируется, и
+# остаётся только примечание сбоку (node_addenda) — приписка, не правка.
+EDIT_WINDOW = timedelta(hours=1)
+
+
+class Locked(Exception):
+    """Высказывание больше не принадлежит автору: окно вышло, или уже ответили,
+    или правит не автор. Несёт человекочитаемую причину — она идёт в ответ API
+    как есть, потому что «нельзя» без «почему» здесь бесполезно."""
 
 _pool: asyncpg.Pool | None = None
 
@@ -123,6 +137,51 @@ _SCHEMA = [
         used_at    TIMESTAMPTZ
     )
     """,
+    # Whether the address was proven to belong to the person. Registration is
+    # open to anyone from 2026-08, so an unproven address is now the normal
+    # case rather than the exception: reading needs nothing, publishing needs
+    # this true.
+    #
+    # DEFAULT TRUE and then SET DEFAULT FALSE is not a typo — it is the whole
+    # migration. The ADD backfills every existing row with TRUE (those accounts
+    # came through hand-issued invites and would otherwise silently lose the
+    # right to post, Alex's own account first), and the second statement makes
+    # FALSE the default from here on. Both are idempotent, which matters
+    # because init_db() runs on every boot.
+    "ALTER TABLE authors ADD COLUMN IF NOT EXISTS email_verified BOOLEAN "
+    "NOT NULL DEFAULT TRUE",
+    "ALTER TABLE authors ALTER COLUMN email_verified SET DEFAULT FALSE",
+    # Address-confirmation tokens. Same shape and same reasoning as
+    # password_resets: hash only, single use, expiring.
+    """
+    CREATE TABLE IF NOT EXISTS email_verifications (
+        token_hash TEXT PRIMARY KEY,
+        author_id  INTEGER NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
+        email      TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT now(),
+        expires_at TIMESTAMPTZ NOT NULL,
+        used_at    TIMESTAMPTZ
+    )
+    """,
+    # "Ask for a starting balance". A new account is granted nothing, because
+    # every published argument costs an LLM call on Alex's card; the button
+    # this table backs is what stands between an open registration and a wall.
+    """
+    CREATE TABLE IF NOT EXISTS balance_requests (
+        id          SERIAL PRIMARY KEY,
+        author_id   INTEGER NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
+        note        TEXT,
+        created_at  TIMESTAMPTZ DEFAULT now(),
+        resolved_at TIMESTAMPTZ,
+        granted_usd NUMERIC(10,4)
+    )
+    """,
+    # One open request per account, enforced here rather than in a handler:
+    # the button is a mail to Alex, and a loop over it would be a way to flood
+    # his inbox. A partial index lets the same person ask again once the
+    # previous request was answered.
+    "CREATE UNIQUE INDEX IF NOT EXISTS balance_requests_open_key "
+    "ON balance_requests (author_id) WHERE resolved_at IS NULL",
     # What the participant has been given to spend, in USD. Separate from
     # api_key on purpose: the key says WHOSE budget pays, the balance says how
     # much is left — the cabinet needs the second to show anything useful, and
@@ -584,6 +643,40 @@ _SCHEMA = [
     # о стёртом факте теряет смысл, поэтому уходит вместе с записью.
     "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS intervention_id INTEGER "
     "REFERENCES interventions(id) ON DELETE CASCADE",
+    # ПРАВИЛО ЧАСА (vault: decisions/edit-delete-window). Опубликованный текст
+    # НЕ правится никогда: работа над формулировкой идёт до отправки, с ИИ-
+    # компаньоном. Автор может лишь СНЯТЬ своё высказывание — час после
+    # публикации и только пока никто не ответил.
+    # Час — это окно ДО фиксации: дальше высказывание уходит в цепочку (Merkle-
+    # корень пачки в Solana) и в снапшот корпуса, где неизменяемо уже физически.
+    #
+    # deleted_at: удаление МЯГКОЕ — строка остаётся, для всех выдач её нет.
+    # Жёсткий DELETE рвал бы event log и лишал возможности откатить случайное
+    # нажатие; ссылочная целостность тоже дешевле так.
+    "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
+    "ALTER TABLE interventions ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
+    # ОТЗЫВ: «больше не настаиваю». Не удаление — узел остаётся на месте вместе
+    # с ответами, только помечен. Доступен автору всегда, потому что это не
+    # изменение сказанного, а сообщение о нынешнем отношении к сказанному.
+    "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS retracted_at  TIMESTAMPTZ",
+    "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS retract_note  TEXT",
+    "ALTER TABLE interventions ADD COLUMN IF NOT EXISTS retracted_at TIMESTAMPTZ",
+    "ALTER TABLE interventions ADD COLUMN IF NOT EXISTS retract_note TEXT",
+    # ПРИМЕЧАНИЕ АВТОРА — что остаётся, когда час истёк. Исходный текст
+    # неприкосновенен (на него уже отвечали, его хеш уходит в цепочку), но
+    # автор может дописать датированную приписку «уточняю» / «здесь ошибся».
+    # Отдельная таблица, а не поле: приписок может быть несколько, каждая со
+    # своим временем, и ни одна не переписывает сказанное.
+    """
+    CREATE TABLE IF NOT EXISTS node_addenda (
+        id         SERIAL PRIMARY KEY,
+        node_id    INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        author_id  INTEGER NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
+        text       TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS node_addenda_node_idx ON node_addenda (node_id)",
 ]
 
 
@@ -827,8 +920,210 @@ async def update_node_score(node_id, poi_score, poi_breakdown):
 async def get_node(node_id):
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM nodes WHERE id = $1", node_id)
+        row = await conn.fetchrow(
+            "SELECT * FROM nodes WHERE id = $1 AND deleted_at IS NULL", node_id)
     return dict(row) if row else None
+
+
+# ------------------------------------------------- правило часа (edit-delete-window)
+async def _node_replied(conn, node_id, is_root, author_id):
+    """Есть ли на узле чужой след, из-за которого текст уже не принадлежит автору.
+
+    Три разных сигнала, и каждого достаточно:
+      • ЛЮБОЙ ответ, включая собственный ответ автора — продолжив ветку, автор
+        сам сделал этот текст опорой для следующего;
+      • ЧУЖАЯ реакция — это уже работа другого человека по оценке;
+      • ЧУЖОЕ belonging-ребро — кто-то принёс узел под свою проблему, и текст
+        стал частью чужого рассуждения.
+    Домашнее ребро и собственные реакции автора не в счёт: это его же след.
+    """
+    if await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM edges WHERE target_id = $1)", node_id):
+        return "на него уже ответили"
+    if await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM reactions "
+            "WHERE node_id = $1 AND author_id IS DISTINCT FROM $2)",
+            node_id, author_id):
+        return "на него уже отреагировали"
+    if await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM node_topics "
+            "WHERE node_id = $1 AND author_id IS DISTINCT FROM $2)",
+            node_id, author_id):
+        return "его уже положили под другую проблему"
+    if is_root and await conn.fetchval(
+            """
+            SELECT EXISTS (SELECT 1 FROM nodes
+                           WHERE topic_root_id = $1 AND id <> $1
+                             AND deleted_at IS NULL)
+                OR EXISTS (SELECT 1 FROM node_topics
+                           WHERE topic_root_id = $1 AND node_id <> $1)
+            """, node_id):
+        return "в теме уже есть доводы"
+    return None
+
+
+async def _removable_node(conn, node_id, author_id):
+    """Взять узел под замок и проверить, вправе ли автор его ещё снять.
+
+    Вызывать ТОЛЬКО внутри транзакции: FOR UPDATE держит строку до конца, иначе
+    ответ, пришедший ровно в момент удаления, проскочил бы мимо проверки.
+    """
+    row = await conn.fetchrow(
+        "SELECT * FROM nodes WHERE id = $1 FOR UPDATE", node_id)
+    if row is None or row["deleted_at"] is not None:
+        raise Locked("узла не существует")
+    if row["author_id"] is None or row["author_id"] != author_id:
+        raise Locked("снять высказывание может только его автор")
+    age = datetime.now(timezone.utc) - row["created_at"]
+    if age > EDIT_WINDOW:
+        raise Locked("прошёл час — высказывание зафиксировано; "
+                     "его можно отозвать или дополнить примечанием")
+    reason = await _node_replied(conn, node_id, row["id"] == row["topic_root_id"],
+                                 author_id)
+    if reason:
+        raise Locked(f"{reason} — текст уже держит чужое рассуждение")
+    return dict(row)
+
+
+def removable_until(created_at):
+    """Момент, до которого высказывание ещё можно снять — UI показывает остаток."""
+    return created_at + EDIT_WINDOW if created_at else None
+
+
+async def node_removability(node_id, author_id):
+    """Может ли этот человек ещё снять узел, и если нет — почему.
+    Читающая версия проверки: для UI, без блокировки строки. Отзыв и примечание
+    ею не управляются — они автору доступны всегда."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        try:
+            row = await conn.fetchrow(
+                "SELECT * FROM nodes WHERE id = $1 AND deleted_at IS NULL", node_id)
+            if row is None:
+                raise Locked("узла не существует")
+            if author_id is None or row["author_id"] != author_id:
+                raise Locked("снять высказывание может только его автор")
+            if datetime.now(timezone.utc) - row["created_at"] > EDIT_WINDOW:
+                raise Locked("прошёл час — высказывание зафиксировано; "
+                             "его можно отозвать или дополнить примечанием")
+            reason = await _node_replied(
+                conn, node_id, row["id"] == row["topic_root_id"], author_id)
+            if reason:
+                raise Locked(f"{reason} — текст уже держит чужое рассуждение")
+        except Locked as e:
+            return {"can_remove": False, "reason": str(e),
+                    "removable_until": removable_until(
+                        row["created_at"] if row else None)}
+    return {"can_remove": True, "reason": None,
+            "removable_until": removable_until(row["created_at"])}
+
+
+# Правки текста после публикации НЕТ и не будет (решение 2026-08-14): вся работа
+# над формулировкой происходит ДО отправки, в диалоге с ИИ-компаньоном. Опубликованное
+# слово неизменно — на нём строят ответы, его хеш уходит в цепочку. Автору остаются
+# три действия: снять (внутри часа, пока не ответили), отозвать (всегда) и приписать
+# примечание (всегда).
+
+
+async def retract_node(node_id, author_id, note=None):
+    """«Больше не настаиваю» — отзыв высказывания его автором.
+
+    Отличие от снятия: узел ОСТАЁТСЯ виден вместе со всеми ответами на него, но
+    помечен как отозванный. Иначе передумавший автор уносил бы с собой чужие
+    возражения, а признание собственной неправоты — самое ценное, что бывает в
+    споре, и прятать его незачем.
+
+    Доступен всегда: срок и наличие ответов тут ни при чём — это не изменение
+    сказанного, а сообщение о своём нынешнем отношении к сказанному.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT author_id, deleted_at, retracted_at FROM nodes "
+                "WHERE id = $1 FOR UPDATE", node_id)
+            if row is None or row["deleted_at"] is not None:
+                raise Locked("узла не существует")
+            if row["author_id"] != author_id:
+                raise Locked("отозвать высказывание может только его автор")
+            if row["retracted_at"] is not None:
+                raise Locked("высказывание уже отозвано")
+            await conn.execute(
+                "UPDATE nodes SET retracted_at = now(), retract_note = $2 "
+                "WHERE id = $1", node_id, (note or "").strip() or None)
+            await _log(conn, "node_retracted",
+                       {"node_id": node_id, "note": note}, author_id)
+            updated = await conn.fetchrow(
+                "SELECT * FROM nodes WHERE id = $1", node_id)
+    return dict(updated)
+
+
+async def soft_delete_node(node_id, author_id):
+    """Снять своё высказывание внутри окна. Строка остаётся — для выдач её нет."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await _removable_node(conn, node_id, author_id)
+            await conn.execute(
+                "UPDATE nodes SET deleted_at = now() WHERE id = $1", node_id)
+            # тема уходит из чужих рабочих деревьев: подборка не должна
+            # показывать то, чего в графе больше нет
+            if row["id"] == row["topic_root_id"]:
+                await conn.execute(
+                    "DELETE FROM workspace WHERE topic_root_id = $1", node_id)
+            await _log(conn, "node_deleted",
+                       {"node_id": node_id, "text": row["text"],
+                        "kind": row["kind"],
+                        "was_root": row["id"] == row["topic_root_id"]},
+                       author_id)
+    return True
+
+
+async def add_addendum(node_id, author_id, text):
+    """Датированная приписка к своему зафиксированному высказыванию.
+
+    Работает ПОСЛЕ окна и только для автора: исходный текст неприкосновенен (на
+    него отвечали, его хеш уходит в цепочку), но сказать «здесь я ошибся» автор
+    вправе всегда. Приписка ничего не переписывает и не трогает оценку.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT author_id, deleted_at FROM nodes WHERE id = $1", node_id)
+            if row is None or row["deleted_at"] is not None:
+                raise Locked("узла не существует")
+            if row["author_id"] != author_id:
+                raise Locked("примечание к своему высказыванию добавляет только автор")
+            added = await conn.fetchrow(
+                "INSERT INTO node_addenda (node_id, author_id, text) "
+                "VALUES ($1, $2, $3) RETURNING *", node_id, author_id, text)
+            await _log(conn, "node_addendum_added",
+                       {"node_id": node_id, "addendum_id": added["id"],
+                        "text": text}, author_id)
+    return _row_with_iso(added, "created_at")
+
+
+async def node_addenda(node_id):
+    """Примечания автора к узлу, старые сверху — читаются как хронология уточнений."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT ad.id, ad.text, ad.created_at, a.name AS author, a.color AS author_color
+            FROM node_addenda ad
+            LEFT JOIN authors a ON a.id = ad.author_id
+            WHERE ad.node_id = $1 ORDER BY ad.id
+            """, node_id)
+    return [_row_with_iso(r, "created_at") for r in rows]
+
+
+def _row_with_iso(row, *fields):
+    d = dict(row)
+    for f in fields:
+        if d.get(f) is not None:
+            d[f] = d[f].isoformat()
+    return d
 
 
 async def get_node_full(node_id):
@@ -845,7 +1140,7 @@ async def get_node_full(node_id):
             FROM nodes n
             LEFT JOIN authors a ON a.id = n.author_id
             LEFT JOIN positions p ON p.id = n.position_id
-            WHERE n.id = $1
+            WHERE n.id = $1 AND n.deleted_at IS NULL
             """, node_id)
     if row is None:
         return None
@@ -864,17 +1159,19 @@ async def get_children(node_id, limit=20, offset=0):
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         total = await conn.fetchval(
-            "SELECT count(*) FROM edges WHERE target_id = $1", node_id)
+            "SELECT count(*) FROM edges e JOIN nodes n ON n.id = e.source_id "
+            "WHERE e.target_id = $1 AND n.deleted_at IS NULL", node_id)
         rows = await conn.fetch(
             """
             SELECT n.id, n.text, n.poi_score, n.kind, n.atom_group, e.type AS rel,
+                   n.retracted_at, n.retract_note,
                    e.anchor_start, e.anchor_end, e.anchor_quote, n.author_id,
                    a.name AS author, a.color AS author_color,
                    (SELECT count(*) FROM edges e2 WHERE e2.target_id = n.id) AS reply_count
             FROM edges e
             JOIN nodes n ON n.id = e.source_id
             LEFT JOIN authors a ON a.id = n.author_id
-            WHERE e.target_id = $1
+            WHERE e.target_id = $1 AND n.deleted_at IS NULL
             ORDER BY n.poi_score DESC NULLS LAST, n.id
             LIMIT $2 OFFSET $3
             """, node_id, limit, offset)
@@ -964,13 +1261,127 @@ async def redeem_password_reset(token_hash, new_password_hash):
             return True
 
 
-async def set_email(author_id, email):
-    """Attach or change an account's email. False if another account has it."""
+async def create_email_verification(author_id, email, token_hash, ttl_hours=48):
+    """Issue a confirmation token for this account's address."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO email_verifications "
+            "(token_hash, author_id, email, expires_at) "
+            "VALUES ($1, $2, $3, now() + ($4 || ' hours')::interval)",
+            token_hash, author_id, email, str(ttl_hours))
+        return True
+
+
+async def redeem_email_verification(token_hash):
+    """Spend the token and mark the address confirmed. Returns the author id,
+    or None if the token is unknown, expired or already used.
+
+    The address is re-checked against the account rather than trusted from the
+    token row: between issuing and clicking, the person may have changed their
+    address, and confirming the old one would mark the new one proven.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT author_id, email FROM email_verifications "
+                "WHERE token_hash = $1 AND used_at IS NULL "
+                "AND expires_at > now() FOR UPDATE", token_hash)
+            if row is None:
+                # A second click on the same link is the common case, not an
+                # attack: people double-click, and a used token whose account
+                # is already confirmed should read as success. Anything else —
+                # unknown or expired token, or an account still unconfirmed —
+                # stays a failure.
+                return await conn.fetchval(
+                    "SELECT a.id FROM email_verifications v "
+                    "JOIN authors a ON a.id = v.author_id "
+                    "WHERE v.token_hash = $1 AND a.email_verified", token_hash)
+            await conn.execute(
+                "UPDATE email_verifications SET used_at = now() "
+                "WHERE token_hash = $1", token_hash)
+            ok = await conn.fetchval(
+                "UPDATE authors SET email_verified = TRUE "
+                "WHERE id = $1 AND lower(email) = lower($2) RETURNING id",
+                row["author_id"], row["email"])
+            return ok
+
+
+async def create_balance_request(author_id, note=None):
+    """Ask for a starting balance. False if this account already has an open
+    request — the partial unique index is what enforces it, so two clicks
+    racing cannot produce two letters."""
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         try:
             return await conn.fetchval(
-                "UPDATE authors SET email = $1 WHERE id = $2 RETURNING id",
+                "INSERT INTO balance_requests (author_id, note) "
+                "VALUES ($1, $2) RETURNING id", author_id, note)
+        except asyncpg.UniqueViolationError:
+            return False
+
+
+async def open_balance_request(author_id):
+    """The account's unanswered request, if any. Used to show the button as
+    'already asked' rather than letting someone click into an error."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, created_at, note FROM balance_requests "
+            "WHERE author_id = $1 AND resolved_at IS NULL", author_id)
+    return dict(row) if row else None
+
+
+async def list_balance_requests(include_resolved=False):
+    """The queue Alex works through. Carries enough of the person with it to
+    decide without opening another page: how long they have been here, whether
+    the address is confirmed, and how much they have actually written."""
+    pool = _pool_or_raise()
+    where = "" if include_resolved else "WHERE r.resolved_at IS NULL"
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(f"""
+            SELECT r.id, r.author_id, r.note, r.created_at, r.resolved_at,
+                   r.granted_usd,
+                   a.username, a.name, a.email, a.email_verified,
+                   a.balance_usd, a.created_at AS registered_at,
+                   a.dialogue_poi,
+                   (SELECT count(*) FROM nodes n WHERE n.author_id = a.id
+                    AND n.deleted_at IS NULL) AS nodes_count
+            FROM balance_requests r
+            JOIN authors a ON a.id = r.author_id
+            {where}
+            ORDER BY r.created_at
+        """)
+    return [dict(r) for r in rows]
+
+
+async def resolve_balance_request(author_id, granted_usd):
+    """Close whatever request this account has open. Separate from set_balance
+    on purpose: granting money and answering a request are two facts, and a
+    top-up made for another reason should not silently close a request."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "UPDATE balance_requests SET resolved_at = now(), granted_usd = $2 "
+            "WHERE author_id = $1 AND resolved_at IS NULL RETURNING id",
+            author_id, granted_usd) is not None
+
+
+async def set_email(author_id, email):
+    """Attach or change an account's email. False if another account has it.
+
+    Changing the address drops email_verified: the new one is unproven, and
+    carrying the old flag over would let anyone move a confirmed account onto
+    an address they merely typed.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        try:
+            return await conn.fetchval(
+                "UPDATE authors SET email = $1, "
+                "email_verified = (lower(email) = lower($1)) "
+                "WHERE id = $2 RETURNING id",
                 email, author_id) is not None
         except asyncpg.UniqueViolationError:
             return False
@@ -1023,7 +1434,7 @@ async def shared_key_spend():
 
 
 async def add_user(username, password_hash, name, color=None, invite=None,
-                   email=None, balance_usd=0):
+                   email=None, balance_usd=0, invite_required=True):
     """Register: an account is an author with credentials.
 
     Returns the new author id, or a string error tag: "taken" (username in
@@ -1031,17 +1442,26 @@ async def add_user(username, password_hash, name, color=None, invite=None,
     unknown or already spent). The invite is claimed inside the same
     transaction as the INSERT, so two people racing on one code cannot both
     get an account.
+
+    With invite_required false the code is ignored entirely, not merely made
+    optional: once anyone can register, a code grants nothing, and validating
+    one would only turn a stale link into a confusing refusal. What keeps an
+    open door from costing money is the zero balance — a new account can read
+    and write, but spends nothing on the LLM until Alex tops it up by hand.
     """
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # SELECT ... FOR UPDATE: the row is locked until this transaction
-            # ends, so the second racer blocks here and then sees used_at set.
-            row = await conn.fetchrow(
-                "SELECT code, used_at FROM invites WHERE code = $1 FOR UPDATE",
-                (invite or "").strip())
-            if row is None or row["used_at"] is not None:
-                return "invite"
+            row = None
+            if invite_required:
+                # SELECT ... FOR UPDATE: the row is locked until this
+                # transaction ends, so the second racer blocks here and then
+                # sees used_at set.
+                row = await conn.fetchrow(
+                    "SELECT code, used_at FROM invites WHERE code = $1 "
+                    "FOR UPDATE", (invite or "").strip())
+                if row is None or row["used_at"] is not None:
+                    return "invite"
 
             try:
                 author_id = await conn.fetchval(
@@ -1058,12 +1478,14 @@ async def add_user(username, password_hash, name, color=None, invite=None,
             if author_id is None:
                 return "taken"
 
-            await conn.execute(
-                "UPDATE invites SET used_by = $1, used_at = now() WHERE code = $2",
-                author_id, row["code"])
+            if row is not None:
+                await conn.execute(
+                    "UPDATE invites SET used_by = $1, used_at = now() "
+                    "WHERE code = $2", author_id, row["code"])
             await _log(conn, "author_added",
                        {"name": name, "username": username,
-                        "invite": row["code"]},
+                        "invite": row["code"] if row is not None else None,
+                        "open": row is None},
                        author_id)
     return author_id
 
@@ -1120,14 +1542,16 @@ async def topic_material(topic_root_id):
             "WHERE topic_root_id = $1 ORDER BY id", topic_root_id)
         questions = await conn.fetch(
             "SELECT id, text FROM nodes WHERE topic_root_id = $1 "
-            "AND kind = 'question' AND atom_group IS NULL ORDER BY id",
+            "AND kind = 'question' AND atom_group IS NULL AND deleted_at IS NULL "
+            "ORDER BY id",
             topic_root_id)
         atoms = await conn.fetch(
             "SELECT id, text, atom_group FROM nodes WHERE topic_root_id = $1 "
-            "AND atom_group IS NOT NULL ORDER BY atom_group, id", topic_root_id)
+            "AND atom_group IS NOT NULL AND deleted_at IS NULL "
+            "ORDER BY atom_group, id", topic_root_id)
         dissents = await conn.fetch(
             "SELECT id, text FROM nodes WHERE topic_root_id = $1 "
-            "AND dissented ORDER BY id", topic_root_id)
+            "AND dissented AND deleted_at IS NULL ORDER BY id", topic_root_id)
     return {
         "positions": [dict(r) for r in positions],
         "questions": [dict(r) for r in questions],
@@ -1416,7 +1840,7 @@ async def activity_summary(author_id):
               AVG(poi_score) FILTER (WHERE poi_score IS NOT NULL) AS avg_poi,
               MIN(created_at)                              AS first_at,
               MAX(created_at)                              AS last_at
-            FROM nodes WHERE author_id = $1
+            FROM nodes WHERE author_id = $1 AND deleted_at IS NULL
             """, author_id)
     d = dict(row) if row else {}
     if d.get("avg_poi") is not None:
@@ -1476,8 +1900,9 @@ async def author_activity(author_id):
                    r.title AS topic_title, r.text AS topic_text, r.kind AS topic_kind,
                    (SELECT e.type FROM edges e WHERE e.source_id = n.id LIMIT 1) AS rel
             FROM nodes n
-            JOIN nodes r ON r.id = n.topic_root_id
+            JOIN nodes r ON r.id = n.topic_root_id AND r.deleted_at IS NULL
             WHERE n.author_id = $1 AND n.atom_group IS NULL
+              AND n.deleted_at IS NULL
             ORDER BY n.created_at DESC
             """, author_id)
     groups, order = {}, []
@@ -1521,10 +1946,29 @@ async def set_api_key(author_id, api_key):
 
 
 async def get_author_by_username(username):
+    """SELECT * — includes password_hash, email, balance and api_key. Only for
+    the login path, which checks the password and then filters. Never hand the
+    result of this to a public endpoint: use public_author_by_username."""
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT * FROM authors WHERE username = $1", username)
+    return dict(row) if row else None
+
+
+async def public_author_by_username(username):
+    """The public face of an account, addressed by its permanent name.
+
+    Deliberately built on _AUTHOR_COLS rather than filtering SELECT *: a column
+    added to authors later (another address, a payout account, anything) then
+    has to be named explicitly to become public, instead of leaking the moment
+    it exists. Lower() so /u/Ivan and /u/ivan are the same person.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"SELECT {_AUTHOR_COLS} FROM authors WHERE lower(username) = lower($1)",
+            username)
     return dict(row) if row else None
 
 
@@ -1538,13 +1982,21 @@ async def create_session(token, author_id, days=30):
 
 
 async def session_author(token):
-    """The author behind a live session token, or None (expired ones purged)."""
+    """The author behind a live session token, or None (expired ones purged).
+
+    Returns more than the public _AUTHOR_COLS shape: this is the person's own
+    account, and the request handlers need email_verified to decide whether
+    publishing is allowed. These extra columns must not be echoed into a public
+    response — that is why they are added here and not to _AUTHOR_COLS, which
+    goes out over the open GET /api/authors.
+    """
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM sessions WHERE expires_at < now()")
         row = await conn.fetchrow(
             f"""
-            SELECT {', '.join('a.' + c.strip() for c in _AUTHOR_COLS.split(','))}
+            SELECT {', '.join('a.' + c.strip() for c in _AUTHOR_COLS.split(','))},
+                   a.email, a.email_verified
             FROM sessions s
             JOIN authors a ON a.id = s.author_id
             WHERE s.token = $1 AND s.expires_at >= now()
@@ -1657,6 +2109,7 @@ async def author_topic_roots(author_id):
             SELECT DISTINCT topic_root_id FROM (
                 SELECT topic_root_id FROM nodes
                 WHERE author_id = $1 AND topic_root_id IS NOT NULL
+                  AND deleted_at IS NULL
                 UNION
                 SELECT topic_root_id FROM author_topic_poi WHERE author_id = $1
             ) t
@@ -1722,7 +2175,8 @@ async def recompute_topic_poi(author_id, topic_root_id):
             """, author_id, topic_root_id)
         contribs = await conn.fetch(
             "SELECT poi_score, kind FROM nodes "
-            "WHERE author_id = $1 AND topic_root_id = $2 AND poi_score IS NOT NULL",
+            "WHERE author_id = $1 AND topic_root_id = $2 AND poi_score IS NOT NULL "
+            "AND deleted_at IS NULL",
             author_id, topic_root_id)
         # reactions on the author's nodes in this topic, self-reactions excluded,
         # each weighted by the reactor's FROZEN weight at cast time (reactor_weight)
@@ -1732,7 +2186,7 @@ async def recompute_topic_poi(author_id, topic_root_id):
             """
             SELECT COALESCE(r.reactor_weight, 10) AS reactor_poi, r.stance
             FROM reactions r
-            JOIN nodes n ON n.id = r.node_id
+            JOIN nodes n ON n.id = r.node_id AND n.deleted_at IS NULL
             WHERE n.author_id = $1 AND n.topic_root_id = $2 AND r.author_id <> $1
             """, author_id, topic_root_id)
         value = poiformula.topic_poi(
@@ -1771,7 +2225,8 @@ async def get_topic_poi(topic_root_id):
                    ON tp.author_id = a.id AND tp.topic_root_id = $1
             WHERE tp.author_id IS NOT NULL
                OR EXISTS (SELECT 1 FROM nodes n
-                          WHERE n.author_id = a.id AND n.topic_root_id = $1)
+                          WHERE n.author_id = a.id AND n.topic_root_id = $1
+                            AND n.deleted_at IS NULL)
             ORDER BY a.id
             """, topic_root_id)
     return [dict(r) for r in rows]
@@ -1899,7 +2354,8 @@ async def position_nodes(position_id, kind="argument"):
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT * FROM nodes WHERE position_id = $1 AND kind = $2 ORDER BY id",
+            "SELECT * FROM nodes WHERE position_id = $1 AND kind = $2 "
+            "AND deleted_at IS NULL ORDER BY id",
             position_id, kind)
     out = []
     for r in rows:
@@ -1915,7 +2371,7 @@ async def position_planets(position_id):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT * FROM nodes WHERE position_id = $1 AND kind IN ('question','detail') "
-            "ORDER BY id", position_id)
+            "AND deleted_at IS NULL ORDER BY id", position_id)
     return [dict(r) for r in rows]
 
 
@@ -1931,7 +2387,7 @@ async def topic_argument_nodes(topic_root_id):
         rows = await conn.fetch(
             "SELECT * FROM nodes WHERE topic_root_id = $1 "
             "AND (kind = 'argument' OR kind IS NULL) AND atom_group IS NULL "
-            "ORDER BY id", topic_root_id)
+            "AND deleted_at IS NULL ORDER BY id", topic_root_id)
     return [dict(r) for r in rows]
 
 
@@ -1966,13 +2422,13 @@ async def topic_subtree(topic_root_id, limit=80):
             WITH RECURSIVE down AS (
                 SELECT n.id, n.text, n.kind,
                        NULL::int AS parent_id, NULL::text AS rel, 0 AS depth
-                FROM nodes n WHERE n.id = $1
+                FROM nodes n WHERE n.id = $1 AND n.deleted_at IS NULL
                 UNION ALL
                 SELECT n.id, n.text, n.kind,
                        e.target_id, e.type, down.depth + 1
                 FROM down
                 JOIN edges e ON e.target_id = down.id
-                JOIN nodes n ON n.id = e.source_id
+                JOIN nodes n ON n.id = e.source_id AND n.deleted_at IS NULL
                 WHERE down.depth < 50
             )
             SELECT id, text, kind, parent_id, rel, depth
@@ -2097,9 +2553,13 @@ async def get_graph():
             SELECT n.*, a.name AS author, a.color AS author_color
             FROM nodes n
             LEFT JOIN authors a ON a.id = n.author_id
+            WHERE n.deleted_at IS NULL
             ORDER BY n.id
             """)
-        edge_rows = await conn.fetch("SELECT * FROM edges")
+        edge_rows = await conn.fetch(
+            "SELECT e.* FROM edges e "
+            "JOIN nodes s ON s.id = e.source_id AND s.deleted_at IS NULL "
+            "JOIN nodes t ON t.id = e.target_id AND t.deleted_at IS NULL")
     nodes = [dict(r) for r in node_rows]
     for n in nodes:
         if n.get("poi_breakdown"):
@@ -2152,19 +2612,21 @@ async def workspace_topics(author_id):
         rows = await conn.fetch(
             """
             SELECT n.id, n.text, n.title, n.poi_score, n.kind, n.author_id,
+                   n.retracted_at, n.retract_note,
                    a.name AS author, a.color AS author_color,
                    w.added_at,
                    (SELECT count(*) FROM edges e2
                     JOIN nodes cn ON cn.id = e2.source_id
-                    WHERE e2.target_id = n.id) AS reply_count,
+                    WHERE e2.target_id = n.id AND cn.deleted_at IS NULL) AS reply_count,
                    (SELECT max(c.created_at) FROM nodes c
-                    WHERE c.topic_root_id = n.id) AS last_at
+                    WHERE c.topic_root_id = n.id AND c.deleted_at IS NULL) AS last_at
             FROM workspace w
             JOIN nodes n ON n.id = w.topic_root_id
             LEFT JOIN authors a ON a.id = n.author_id
-            WHERE w.author_id = $1
+            WHERE w.author_id = $1 AND n.deleted_at IS NULL
             ORDER BY COALESCE((SELECT max(c.created_at) FROM nodes c
-                               WHERE c.topic_root_id = n.id), w.added_at) DESC
+                               WHERE c.topic_root_id = n.id AND c.deleted_at IS NULL),
+                              w.added_at) DESC
             """, author_id)
     return [dict(r) for r in rows]
 
@@ -2187,9 +2649,10 @@ async def seed_workspace_once(author_id, limit=5):
                 """
                 SELECT n.id
                 FROM nodes n
-                WHERE n.id = n.topic_root_id
+                WHERE n.id = n.topic_root_id AND n.deleted_at IS NULL
                 ORDER BY (SELECT count(*) FROM nodes c
-                          WHERE c.topic_root_id = n.id) DESC, n.id DESC
+                          WHERE c.topic_root_id = n.id
+                            AND c.deleted_at IS NULL) DESC, n.id DESC
                 LIMIT $1
                 """, limit)
             ids = [r["id"] for r in rows]
@@ -2259,18 +2722,18 @@ async def map_topics():
                              FROM topic_tags t WHERE t.topic_root_id = n.id),
                             '{}') AS tags,
                    (SELECT count(*) FROM nodes c
-                    WHERE c.topic_root_id = n.id) AS nodes,
+                    WHERE c.topic_root_id = n.id AND c.deleted_at IS NULL) AS nodes,
                    (SELECT count(DISTINCT c.author_id) FROM nodes c
-                    WHERE c.topic_root_id = n.id AND c.author_id IS NOT NULL)
-                       AS people,
+                    WHERE c.topic_root_id = n.id AND c.author_id IS NOT NULL
+                      AND c.deleted_at IS NULL) AS people,
                    (SELECT avg(c.poi_score) FROM nodes c
-                    WHERE c.topic_root_id = n.id AND c.poi_score IS NOT NULL)
-                       AS avg_poi,
+                    WHERE c.topic_root_id = n.id AND c.poi_score IS NOT NULL
+                      AND c.deleted_at IS NULL) AS avg_poi,
                    a.name AS author, a.color AS author_color
             FROM nodes n
             LEFT JOIN topic_facets f ON f.topic_root_id = n.id
             LEFT JOIN authors a ON a.id = n.author_id
-            WHERE n.id = n.topic_root_id
+            WHERE n.id = n.topic_root_id AND n.deleted_at IS NULL
             ORDER BY n.id
             """)
     out = []
@@ -2293,14 +2756,16 @@ async def list_topics():
         rows = await conn.fetch(
             """
             SELECT n.id, n.text, n.title, n.poi_score, n.kind, n.author_id,
+                   n.retracted_at, n.retract_note,
                    a.name AS author, a.color AS author_color,
                    (SELECT count(*) FROM edges e2
                     JOIN nodes cn ON cn.id = e2.source_id
-                    WHERE e2.target_id = n.id) AS reply_count
+                    WHERE e2.target_id = n.id AND cn.deleted_at IS NULL) AS reply_count
             FROM nodes n
             LEFT JOIN authors a ON a.id = n.author_id
             WHERE n.kind IN
                   ('argument', 'question', 'proposal', 'exploration', 'problem')
+              AND n.deleted_at IS NULL
               AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_id = n.id)
             ORDER BY n.id
             """)
@@ -2377,9 +2842,12 @@ async def suggest_problems(query, limit=5, exclude_id=None):
                        GREATEST(similarity(coalesce(n.title,''), $1),
                                 similarity(left(n.text, 240), $1)) AS sim,
                        (SELECT count(*) FROM node_topics nt
-                        WHERE nt.topic_root_id = n.id) AS nodes
+                        JOIN nodes cn ON cn.id = nt.node_id
+                        WHERE nt.topic_root_id = n.id
+                          AND cn.deleted_at IS NULL) AS nodes
                 FROM nodes n
                 WHERE n.kind = 'problem' AND n.id = n.topic_root_id
+                  AND n.deleted_at IS NULL
                   AND ($2::int IS NULL OR n.id <> $2)
                 ORDER BY sim DESC
                 LIMIT $3
@@ -2398,9 +2866,12 @@ async def suggest_problems(query, limit=5, exclude_id=None):
             """
             SELECT n.id, n.title, n.text,
                    (SELECT count(*) FROM node_topics nt
-                    WHERE nt.topic_root_id = n.id) AS nodes
+                    JOIN nodes cn ON cn.id = nt.node_id
+                    WHERE nt.topic_root_id = n.id
+                      AND cn.deleted_at IS NULL) AS nodes
             FROM nodes n
             WHERE n.kind = 'problem' AND n.id = n.topic_root_id
+              AND n.deleted_at IS NULL
               AND ($1::int IS NULL OR n.id <> $1)
             """, exclude_id)
         scored = []
@@ -2458,7 +2929,7 @@ async def list_interventions(topic_root_id):
             SELECT i.*, a.name AS author, a.color AS author_color
             FROM interventions i
             LEFT JOIN authors a ON a.id = i.author_id
-            WHERE i.topic_root_id = $1 ORDER BY i.id
+            WHERE i.topic_root_id = $1 AND i.deleted_at IS NULL ORDER BY i.id
             """, topic_root_id)
     return [_intervention_dict(r) for r in rows]
 
@@ -2467,8 +2938,74 @@ async def get_intervention(intervention_id):
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT * FROM interventions WHERE id = $1", intervention_id)
+            "SELECT * FROM interventions WHERE id = $1 AND deleted_at IS NULL",
+            intervention_id)
     return _intervention_dict(row) if row else None
+
+
+# Правило часа для реестра — то же, что для узлов, и правки здесь тоже нет.
+# Ответ на запись = атрибуция: как только по ней заявили причинную претензию
+# («сработало благодаря X»), факт держит чужое рассуждение и снять его нельзя.
+async def _removable_intervention(conn, intervention_id, author_id):
+    row = await conn.fetchrow(
+        "SELECT * FROM interventions WHERE id = $1 FOR UPDATE", intervention_id)
+    if row is None or row["deleted_at"] is not None:
+        raise Locked("записи реестра не существует")
+    if row["author_id"] is None or row["author_id"] != author_id:
+        raise Locked("снять запись может только её автор")
+    if datetime.now(timezone.utc) - row["created_at"] > EDIT_WINDOW:
+        raise Locked("прошёл час — запись зафиксирована, её можно отозвать")
+    if await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM nodes "
+            "WHERE intervention_id = $1 AND deleted_at IS NULL)", intervention_id):
+        raise Locked("по записи уже заявлена атрибуция — "
+                     "факт держит чужое рассуждение")
+    return row
+
+
+async def retract_intervention(intervention_id, author_id, note=None):
+    """«Больше не ручаюсь за эту запись» — отзыв факта его автором.
+
+    Запись остаётся в реестре вместе с атрибуциями о ней: провал, о котором
+    сообщили и потом усомнились, сам по себе полезен читателю — но пометка
+    обязана быть видна рядом с фактом, а не вместо него.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT author_id, deleted_at, retracted_at FROM interventions "
+                "WHERE id = $1 FOR UPDATE", intervention_id)
+            if row is None or row["deleted_at"] is not None:
+                raise Locked("записи реестра не существует")
+            if row["author_id"] != author_id:
+                raise Locked("отозвать запись может только её автор")
+            if row["retracted_at"] is not None:
+                raise Locked("запись уже отозвана")
+            updated = await conn.fetchrow(
+                "UPDATE interventions SET retracted_at = now(), retract_note = $2 "
+                "WHERE id = $1 RETURNING *",
+                intervention_id, (note or "").strip() or None)
+            await _log(conn, "intervention_retracted",
+                       {"intervention_id": intervention_id, "note": note},
+                       author_id)
+    return _intervention_dict(updated)
+
+
+async def soft_delete_intervention(intervention_id, author_id):
+    """Снять свою запись реестра внутри окна. Строка остаётся, выдачи её не видят."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await _removable_intervention(conn, intervention_id, author_id)
+            await conn.execute(
+                "UPDATE interventions SET deleted_at = now() WHERE id = $1",
+                intervention_id)
+            await _log(conn, "intervention_deleted",
+                       {"intervention_id": intervention_id,
+                        "topic_root_id": row["topic_root_id"],
+                        "what": row["what"]}, author_id)
+    return True
 
 
 async def intervention_attributions(intervention_id):
@@ -2479,11 +3016,12 @@ async def intervention_attributions(intervention_id):
         rows = await conn.fetch(
             """
             SELECT n.id, n.text, n.poi_score, n.kind, n.created_at,
+                   n.retracted_at, n.retract_note,
                    a.name AS author, a.color AS author_color,
                    (SELECT count(*) FROM edges e WHERE e.target_id = n.id) AS reply_count
             FROM nodes n
             LEFT JOIN authors a ON a.id = n.author_id
-            WHERE n.intervention_id = $1
+            WHERE n.intervention_id = $1 AND n.deleted_at IS NULL
             ORDER BY n.poi_score DESC NULLS LAST, n.id
             """, intervention_id)
     out = []
@@ -2551,7 +3089,7 @@ async def node_topics_of(node_id):
                    a.name AS placed_by
             FROM node_topics nt
             JOIN nodes n ON n.id = nt.node_id
-            JOIN nodes r ON r.id = nt.topic_root_id
+            JOIN nodes r ON r.id = nt.topic_root_id AND r.deleted_at IS NULL
             LEFT JOIN authors a ON a.id = nt.author_id
             WHERE nt.node_id = $1
             ORDER BY is_home DESC, nt.created_at
@@ -2581,7 +3119,7 @@ async def node_anchors(node_id):
                    e.anchor_start, e.anchor_end, e.anchor_quote, e.anchor_hash,
                    a.name AS author, a.color AS author_color
             FROM edges e
-            JOIN nodes sn ON sn.id = e.source_id
+            JOIN nodes sn ON sn.id = e.source_id AND sn.deleted_at IS NULL
             LEFT JOIN authors a ON a.id = sn.author_id
             WHERE e.target_id = $1 AND e.anchor_start IS NOT NULL
             ORDER BY e.anchor_start, e.id
@@ -2604,12 +3142,13 @@ async def topic_nodes(topic_root_id):
         rows = await conn.fetch(
             """
             SELECT n.id, n.text, n.title, n.kind, n.poi_score,
+                   n.retracted_at, n.retract_note,
                    (n.topic_root_id = $1) AS is_home,
                    a.name AS author, a.color AS author_color
             FROM node_topics nt
             JOIN nodes n ON n.id = nt.node_id
             LEFT JOIN authors a ON a.id = n.author_id
-            WHERE nt.topic_root_id = $1
+            WHERE nt.topic_root_id = $1 AND n.deleted_at IS NULL
             ORDER BY n.poi_score DESC NULLS LAST, n.id
             """, topic_root_id)
     return [dict(r) for r in rows]

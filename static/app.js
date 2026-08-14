@@ -18,6 +18,12 @@ const TYPE_COLOR = {
 // Map the Python backend's lowercase edge types onto the viz' relations.
 const REL_FROM_TYPE = { support: 'SUPPORTS', refute: 'REBUTS', qualify: 'QUALIFIES', question: 'QUESTION' };
 const CRITERIA = ['clarity', 'depth', 'counterargument', 'evidence', 'awareness_of_limits'];
+// Русские подписи критериев — те же, что в дереве (tree.js CRIT_RU). Дублируются,
+// а не импортируются: app.js — ES-модуль, tree.js — обычный скрипт другой страницы.
+const CRIT_RU = {
+  clarity: 'ясность', depth: 'глубина', counterargument: 'работа с возражением',
+  evidence: 'обоснованность', awareness_of_limits: 'видит свои границы',
+};
 
 // ---- time axis -----------------------------------------------------------
 // The dialogue has an order (turn). We lay it along X: left = early, right =
@@ -741,7 +747,7 @@ function openHud(n) {
     const comment = b.comment ? `<div style="margin-bottom:8px;color:#8a8576;font-style:italic">${escapeHtml(b.comment)}</div>` : '';
     const rows = scored.map((k) =>
       `<div style="display:flex;justify-content:space-between;margin-bottom:2px">
-         <span style="color:#8a8576">${k}</span>
+         <span style="color:#8a8576">${CRIT_RU[k] || k}</span>
          <span style="color:#ece6d8;font-variant-numeric:tabular-nums">${b[k]}</span>
        </div>`).join('');
     c.innerHTML = text + comment + rows;

@@ -101,8 +101,9 @@ function guidePanel() {
       "не оценка качества: сильный довод остаётся сильным, даже когда с ним " +
       "не согласны."],
     ["4", "Отвечай или начни тему",
-      "Выбери тип ответа (за/против/уточнение/вопрос) и напиши. Перед публикацией " +
-      "ИИ-навигатор мягко подскажет тип и есть ли уже похожее — но решаешь ты."],
+      "Выбери тип ответа (за/против/уточнение/вопрос) и напиши. Перед отправкой " +
+      "ИИ-компаньон разберёт черновик и с ним можно поспорить — а опубликованный " +
+      "текст уже неизменен, поэтому думать стоит здесь. Решаешь всё равно ты."],
     ["5", "Позиции — общая карта по теме",
       "ИИ группирует близкие аргументы в позиции. Их можно поддержать, оспорить, " +
       "развить или сделать вывод. Если тебя свели не туда — можно выйти в свою " +
@@ -235,7 +236,8 @@ async function workspaceToggle(id, want) {
     else WS_IDS.delete(id);
     await loadTopics();
     if (typeof MapView !== "undefined") MapView.syncWorkspace(WS_IDS);
-    toast(want ? "тема в рабочем дереве" : "убрал из дерева");
+    toast(want ? "тема в рабочем дереве"
+               : "убрал из своего дерева — в графе тема осталась");
   } catch (e) { toast("не вышло: " + e.message); }
 }
 
@@ -280,6 +282,33 @@ function relLabel(type) {
            undercut: "подрыв", attribution: "атрибуция" }[type] || type;
 }
 const KIND_CHIP = { question: "вопрос", proposal: "предложение", exploration: "разбор" };
+// Интерфейс русский, а ключи рубрик приходят с сервера латиницей (poi.py) —
+// без словаря в панели узла висели бы «problem_fit» и «type: proposal».
+const KIND_RU = {
+  argument: "тезис", problem: "проблема", question: "вопрос",
+  proposal: "предложение", exploration: "разбор", atom: "атом разбора",
+  intervention: "интервенция", attribution: "атрибуция", detail: "уточнение",
+};
+const CRIT_RU = {
+  clarity: "ясность",
+  depth: "глубина",
+  counterargument: "работа с возражением",
+  evidence: "обоснованность",
+  awareness_of_limits: "видит свои границы",
+  relevance: "по делу",
+  incisiveness: "бьёт в слабое место",
+  generativity: "двигает разговор",
+  informativeness: "добавляет новое",
+  accuracy: "точность",
+  concreteness: "конкретность",
+  problem_fit: "отвечает проблеме",
+  feasibility: "выполнимость",
+  consequences: "продуманы последствия",
+  evenhandedness: "честность к обеим сторонам",
+  question_quality: "качество вопросов",
+  fact_vs_guess: "факты отделены от догадок",
+  coverage: "охват темы",
+};
 // one-sentence label for the tree row (shown in full, wraps up to 3 lines via CSS);
 // full text lives in the detail panel. Only a safety cap for sentences without
 // punctuation (or absurdly long ones) — normal sentences are never cut.
@@ -305,6 +334,13 @@ function nodeRow(node, type) {
   const txt = el("span", "txt", label);
   txt.title = node.text;
   row.appendChild(txt);
+  // отозванный довод виден в дереве как отозванный — иначе на него отвечают,
+  // не зная, что автор от него уже отказался
+  if (node.retracted_at) {
+    const tag = el("span", "rtag", "отозвано");
+    tag.title = node.retract_note || "Автор больше не настаивает на этом доводе";
+    row.appendChild(tag);
+  }
   if (hasKids) row.appendChild(el("span", "poi", "(" + node.reply_count + ")"));
   const poi = el("span", "poi");
   poi.innerHTML = node.poi_score != null ? "PoI <b>" + node.poi_score + "</b>" : "…";
@@ -333,8 +369,11 @@ function nodeRow(node, type) {
       keep.onclick = (e) => { e.stopPropagation(); workspaceToggle(node.id, true); };
       row.appendChild(keep);
     } else {
-      const drop = el("span", "ws", "−");
-      drop.title = "Убрать из рабочего дерева";
+      // Подпись явная: голый «−» рядом с темой читается как «удалить тему»,
+      // хотя убирает её только из ЛИЧНОЙ подборки и ни на кого не влияет.
+      const drop = el("span", "ws", "убрать у себя");
+      drop.title = "Убрать тему из своего рабочего дерева. " +
+        "В графе она остаётся — её видят все и найдёшь на карте";
       drop.onclick = (e) => { e.stopPropagation(); workspaceToggle(node.id, false); };
       row.appendChild(drop);
     }
@@ -397,6 +436,126 @@ async function toggleExpand(id) {
   renderTree();
 }
 
+// ---- своё высказывание: снять / отозвать / приписать примечание
+//
+// Правки текста нет и не будет (vault: decisions/edit-delete-window). Работа над
+// формулировкой идёт ДО отправки, с ИИ-компаньоном; опубликованное слово держит
+// чужие ответы и уходит в цепочку. Автору остаются три разных действия:
+//   СНЯТЬ — «я передумал это публиковать»: час, и только пока не ответили.
+//   ОТОЗВАТЬ — «больше не настаиваю»: всегда, текст и ответы остаются на месте.
+//   ПРИМЕЧАНИЕ — «уточняю / здесь ошибся»: всегда, ничего не переписывает.
+function timeLeft(untilIso) {
+  const mins = Math.ceil((new Date(untilIso) - new Date()) / 60000);
+  if (mins <= 0) return null;
+  return mins === 1 ? "меньше минуты" : `${mins} мин`;
+}
+
+function retractionBanner(node) {
+  const b = el("div", "retracted");
+  b.append(el("b", null, "Автор отозвал этот довод."));
+  if (node.retract_note) b.append(" " + node.retract_note);
+  b.append(el("div", "muted",
+    "Текст и ответы на него остались: передумавший автор не уносит с собой " +
+    "чужие возражения."));
+  return b;
+}
+
+function addendaBlock(addenda) {
+  const wrap = el("div", "addenda");
+  wrap.appendChild(el("div", "section-title", "Примечания автора"));
+  for (const a of addenda) {
+    const row = el("div", "addendum");
+    row.appendChild(el("div", null, a.text));
+    row.appendChild(el("div", "muted",
+      new Date(a.created_at).toLocaleString("ru-RU")));
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+function ownAuthorCard(node, redraw) {
+  const c = el("div", "card");
+  c.appendChild(el("div", "section-title", "Это твой довод"));
+  const rm = node.removability || {};
+  const left = rm.removable_until ? timeLeft(rm.removable_until) : null;
+
+  const note = el("div", "muted");
+  if (rm.can_remove && left)
+    note.textContent = `Снять целиком можно ещё ${left} — пока никто не ответил. ` +
+      `Дальше текст остаётся в графе навсегда.`;
+  else
+    note.textContent = rm.reason
+      ? `Снять уже нельзя: ${rm.reason}.`
+      : "Текст зафиксирован.";
+  c.appendChild(note);
+  appendHint(c, "Переписать опубликованное нельзя ни в какой момент — на нём " +
+    "строят ответы. Поэтому ИИ-компаньон разбирает черновик <b>до</b> отправки. " +
+    "Если передумал позже — <b>отзови</b> довод или добавь <b>примечание</b>.");
+
+  const acts = el("div", "actions");
+  if (rm.can_remove) {
+    const del = el("button", "mini", "снять целиком");
+    del.title = "Довод исчезнет из графа. Пока на него никто не ответил";
+    del.onclick = async () => {
+      if (!confirm("Снять довод целиком? Отменить это будет нельзя.")) return;
+      try {
+        await api(`/api/nodes/${node.id}`, { method: "DELETE" });
+        toast("довод снят");
+        const back = ROOT.get(node.id);
+        expanded.delete(node.id);
+        KIDS.delete(node.id);
+        await refreshVisible();
+        // снятый узел больше некому показывать — уходим к корню его темы
+        if (back && back !== node.id) selectNode(back); else location.reload();
+      } catch (e) { toast(errText(e)); }
+    };
+    acts.appendChild(del);
+  }
+  if (!node.retracted_at) {
+    const retr = el("button", "mini", "отозвать");
+    retr.title = "«Больше не настаиваю» — текст и ответы остаются, но помечены";
+    retr.onclick = async () => {
+      const why = prompt("Почему отзываешь? (необязательно, одной строкой)");
+      if (why === null) return;
+      try {
+        await api(`/api/nodes/${node.id}/retract`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ note: why || null }),
+        });
+        toast("довод отозван");
+        // дерево рисуется из кеша страниц — без обновления метка «отозвано»
+        // появилась бы только после перезагрузки
+        await refreshVisible();
+        redraw();
+      } catch (e) { toast(errText(e)); }
+    };
+    acts.appendChild(retr);
+  }
+  const add = el("button", "mini", "добавить примечание");
+  add.title = "Датированная приписка сбоку: уточнение или признание ошибки";
+  add.onclick = async () => {
+    const text = prompt("Примечание к своему доводу:");
+    if (!text || !text.trim()) return;
+    try {
+      await api(`/api/nodes/${node.id}/addendum`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      toast("примечание добавлено");
+      redraw();
+    } catch (e) { toast(errText(e)); }
+  };
+  acts.appendChild(add);
+  c.appendChild(acts);
+  return c;
+}
+
+function errText(e) {
+  let msg = e.message;
+  try { msg = JSON.parse(msg).detail || msg; } catch (_) { /* raw */ }
+  return msg;
+}
+
 // ---- detail panel
 async function selectNode(id) {
   selectedId = id;
@@ -426,6 +585,9 @@ async function selectNode(id) {
   const tw = el("div", "hasmargins");
   tw.appendChild(textEl);
   card.appendChild(tw);
+  // отзыв виден сразу под текстом: читать довод, не зная, что автор от него
+  // отказался, — значит спорить с призраком
+  if (node.retracted_at) card.appendChild(retractionBanner(node));
   const meta = el("div", "muted");
   // имя автора ведёт на его публичный профиль — историю голосований, из которой
   // люди сами строят транзакционную репутацию
@@ -442,7 +604,7 @@ async function selectNode(id) {
     "автор: ", authorEl,
     "  ·  PoI: " + (node.poi_score != null ? node.poi_score
                     : node.atom_group ? "— (атом разбора, живёт реакциями)" : "оценивается…"),
-    "  ·  тип: " + (node.kind || "argument"),
+    "  ·  тип: " + (KIND_RU[node.kind] || node.kind || "тезис"),
     ...(node.atom_group ? ["  ·  из разбора · " + node.atom_group] : []),
     "  ·  ответов: " + (node.reply_count ?? 0),
     "  ·  #" + node.id
@@ -473,11 +635,17 @@ async function selectNode(id) {
   ract.append(agree, dis);
   rwrap.appendChild(ract);
   card.appendChild(rwrap);
+  // примечания автора — единственное, что прирастает к зафиксированному тексту
+  if (node.addenda && node.addenda.length)
+    card.appendChild(addendaBlock(node.addenda));
   // принадлежность нескольким проблемам (домашняя + принесённые) и маркеры
   // оспоренных участков — до реакций визуально не мешают, кладём в конец карточки
   if (node.belongings && node.belongings.length > 1)
     card.appendChild(belongingBar(node.belongings));
   d.appendChild(card);
+  // распоряжаться своим доводом может только его автор
+  if (ME && node.author_id === ME.id)
+    d.appendChild(ownAuthorCard(node, () => selectNode(id)));
   // выделение текста узла → всплывающее меню типизированного ответа с якорем
   attachFragmentSelection(textEl);
   // маркеры оспоренных участков «на полях» — после вставки в DOM (нужен layout)
@@ -527,7 +695,7 @@ function critBreakdown(bd) {
   const box = el("div", "crit");
   for (const [k, v] of Object.entries(bd)) {
     if (["topic", "comment", "kind", "seed"].includes(k)) continue;
-    box.appendChild(el("span", "muted", k));
+    box.appendChild(el("span", "muted", CRIT_RU[k] || k));
     const bar = el("div", "bar");
     const span = el("span"); span.style.width = Math.max(0, Math.min(100, v)) + "%";
     bar.appendChild(span);
@@ -743,13 +911,105 @@ async function reviewDraft(payload) {
     // said out loud instead of looking like the AI just went quiet.
     const msg = String(e && e.message || "");
     if (msg.includes("бюджет") || msg.includes("исчерпан"))
-      toast("ИИ-бюджет исчерпан — навигатор отключён, публиковать можно");
+      toast("ИИ-бюджет исчерпан — компаньон отключён, публиковать можно");
     return null;
   }
 }
 
 function reviewHasNotes(rev) {
-  return !!rev && (!rev.type_ok || !!rev.quality_note || rev.verdict !== "new");
+  return !!rev && (!rev.type_ok || !!rev.quality_note || rev.verdict !== "new"
+                   || (rev.placement && rev.placement !== "here") || !!rev.think);
+}
+
+// ---- ИИ-компаньон: разговор о ЧЕРНОВИКЕ, пока он ещё черновик.
+//
+// Разбор выше — один ход: ИИ сказал, автор послушался или нет. Здесь автор может
+// возразить, и разговор продолжается. Это стало обязательным, когда мы убрали
+// правку опубликованного текста (vault: decisions/edit-delete-window): думать
+// вместе можно только ДО отправки.
+//
+// История живёт здесь, в замыкании формы, и умирает вместе с публикацией —
+// на сервере черновиков не остаётся.
+async function companionTurn(payload) {
+  return await api("/api/draft/companion", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+function companionThread(hint, { getText, setText, connectTo, opening }) {
+  const history = [];
+  const box = el("div", "companion-box");
+  const log = el("div", "companion-log");
+  box.appendChild(log);
+
+  function say(role, text) {
+    const line = el("div", "cmsg " + role);
+    line.appendChild(el("div", "who", role === "author" ? "ты" : "компаньон"));
+    line.appendChild(el("div", null, text));
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+  if (opening) { history.push({ role: "companion", text: opening }); say("companion", opening); }
+
+  const ta = el("textarea");
+  ta.rows = 2;
+  ta.placeholder = "ответить компаньону — или спросить его самому";
+  box.appendChild(ta);
+
+  const acts = el("div", "actions");
+  const send = el("button", "mini", "ответить");
+  const wider = el("button", "mini", "поискать шире по карте");
+  wider.title = "Компаньон посмотрит не только эту тему, но и остальные проблемы";
+  let scope = "near";
+
+  async function turn(msg) {
+    if (!msg) return;
+    say("author", msg);
+    history.push({ role: "author", text: msg });
+    ta.value = "";
+    send.disabled = true; send.textContent = "думает…";
+    try {
+      const out = await companionTurn({
+        text: getText(), connect_to: connectTo, history, scope,
+      });
+      say("companion", out.reply);
+      history.push({ role: "companion", text: out.reply });
+      if (out.suggestion) {
+        const s = el("div", "csuggest");
+        s.appendChild(el("div", "muted", "предлагает формулировку:"));
+        s.appendChild(el("div", null, out.suggestion));
+        const take = el("button", "mini", "взять её");
+        take.onclick = () => {
+          setText(out.suggestion);
+          s.appendChild(el("span", "muted", " — вставлено в черновик"));
+          take.remove();
+        };
+        s.appendChild(take);
+        log.appendChild(s);
+        log.scrollTop = log.scrollHeight;
+      }
+    } catch (e) {
+      say("companion", "не отвечаю сейчас: " + errText(e) +
+          " — можно публиковать и без меня");
+    } finally {
+      send.disabled = false; send.textContent = "ответить";
+    }
+  }
+
+  send.onclick = () => turn(ta.value.trim());
+  ta.onkeydown = (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send.click(); }
+  };
+  wider.onclick = () => {
+    scope = "map";
+    wider.remove();
+    turn("Посмотри шире: может, этому месту в графе есть лучшая альтернатива?");
+  };
+  acts.append(send, wider);
+  box.appendChild(acts);
+  hint.appendChild(box);
+  return box;
 }
 
 const TYPE_LABEL = { support: "за", refute: "против", qualify: "уточнение",
@@ -758,12 +1018,15 @@ const TYPE_LABEL = { support: "за", refute: "против", qualify: "уточ
 // Renders the navigator's suggestions into `hint`. The author stays in charge:
 // callbacks wire "switch type", "go to the node", "support the position",
 // "post as is" and "cancel"; editing the draft and resending re-reviews it.
-function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit, switchLabel }) {
+function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
+                                   switchLabel, getText, setText, connectTo }) {
   hint.innerHTML = "";
   hint.style.display = "";
   hint.className = "card";
   hint.style.borderColor = "var(--bronze)";
-  hint.appendChild(el("div", "section-title", "ИИ-навигатор — подсказка перед публикацией"));
+  hint.appendChild(el("div", "section-title", "ИИ-компаньон — разбор перед публикацией"));
+  appendHint(hint, "Опубликованный текст правится <b>только здесь</b>: после " +
+    "отправки он неизменен. Возражай компаньону, спрашивай его — он для этого.");
 
   const actions = el("div", "actions");
 
@@ -833,12 +1096,33 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit, s
     actions.appendChild(both);
   }
 
+  // МЕСТО. Не «ты не прав», а «кажется, это про другое» — и уйти туда можно
+  // одним нажатием, вместе с уже написанным черновиком.
+  if (rev.placement === "elsewhere" && rev.place_id) {
+    hint.appendChild(el("div", "section-title", "кажется, это к другой проблеме"));
+    hint.appendChild(el("b", null, rev.place_title || ("#" + rev.place_id)));
+    if (rev.place_note) hint.appendChild(el("div", "muted", rev.place_note));
+    const go = el("button", "mini", "открыть ту проблему");
+    go.onclick = () => {
+      hint.style.display = "none";
+      ROOT.set(rev.place_id, rev.place_id);
+      openTopic(rev.place_id).catch(() => selectNode(rev.place_id));
+    };
+    actions.appendChild(go);
+  } else if (rev.placement === "own_problem") {
+    hint.appendChild(el("div", "section-title", "это тянет на отдельную проблему"));
+    if (rev.place_note) hint.appendChild(el("div", "muted", rev.place_note));
+    const nt = el("button", "mini", "завести своей темой");
+    nt.onclick = () => { hint.style.display = "none"; newTopicForm(getText && getText()); };
+    actions.appendChild(nt);
+  }
+
   if (rev.quality_note) {
     const q = el("div");
     q.appendChild(el("b", null, "как усилить: "));
     q.appendChild(document.createTextNode(rev.quality_note));
     hint.appendChild(q);
-    hint.appendChild(el("div", "muted", "поправь текст и нажми «отправить» ещё раз — навигатор перечитает"));
+    hint.appendChild(el("div", "muted", "поправь текст и нажми «отправить» ещё раз — компаньон перечитает"));
   }
 
   const anyway = el("button", "mini", "отправить как есть");
@@ -847,6 +1131,15 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit, s
   cancel.onclick = () => { hint.style.display = "none"; };
   actions.append(anyway, cancel);
   hint.appendChild(actions);
+
+  // РАЗГОВОР. Открывается вопросом компаньона, если он его задал; иначе автор
+  // начинает сам. Ниже кнопок — чтобы «отправить как есть» оставалось на виду
+  // и разговор не выглядел обязательным этапом.
+  if (getText)
+    companionThread(hint, {
+      getText, setText, connectTo,
+      opening: rev.think || null,
+    });
 }
 
 // ---- ответ на фрагмент: выделение текста → типизированное действие с якорем
@@ -1139,7 +1432,7 @@ function attributionForm(interventionId, mount) {
   const send = el("button", "primary mini", "заявить");
   send.onclick = async () => {
     const text = ta.value.trim();
-    if (!text) return;
+    if (!text) { toast("напиши причинное утверждение"); ta.focus(); return; }
     try {
       await api(`/api/interventions/${interventionId}/attribution`, {
         method: "POST", headers: { "content-type": "application/json" },
@@ -1159,8 +1452,9 @@ function replyForm(parentId) {
   const card = el("div", "card");
   card.appendChild(el("div", "section-title", "Ответить"));
   appendHint(card, "Выбери, как твоя реплика относится к этому доводу " +
-    "(за / против / уточнение / вопрос), и напиши её. Перед публикацией " +
-    "ИИ-навигатор мягко подскажет — но решаешь ты.");
+    "(за / против / уточнение / вопрос), и напиши её. Перед отправкой " +
+    "ИИ-компаньон разберёт черновик — с ним можно спорить и переспрашивать. " +
+    "<b>После публикации текст изменить нельзя</b>: на нём строят ответы.");
   const ta = el("textarea");
   ta.placeholder = "Твой аргумент…";
   // чип якоря: показывает, на какой участок отвечаем (ответ на фрагмент)
@@ -1220,7 +1514,7 @@ function replyForm(parentId) {
 
   const runReview = async () => {
     const text = ta.value.trim();
-    if (!text) return;
+    if (!text) { toast("напиши ответ"); ta.focus(); return; }
     if (!requireAuth()) return;
     send.disabled = true; send.textContent = "ИИ читает черновик…";
     const root = ROOT.get(parentId) ?? parentId;
@@ -1231,6 +1525,11 @@ function replyForm(parentId) {
 
     renderReview(hint, rev, {
       root,
+      // компаньону нужен ЖИВОЙ текст: автор правит черновик прямо во время
+      // разговора, и следующий ход должен читать то, что в поле сейчас
+      getText: () => ta.value.trim(),
+      setText: (t) => { ta.value = t; },
+      connectTo: parentId,
       onSend: async () => { await doSend(ta.value.trim()); },
       // advice on the card already applies to the suggested type — publish
       onSwitch: async (type) => {
@@ -1269,7 +1568,9 @@ function replyForm(parentId) {
 }
 
 // ---- new topic: a root node, opened straight from the header
-function newTopicForm() {
+// prefill — черновик, принесённый из другой формы: компаньон сказал «это тянет
+// на отдельную проблему», и терять уже написанное на переходе нельзя.
+function newTopicForm(prefill) {
   selectedId = null;
   renderTree();
   const d = $("#detail");
@@ -1307,6 +1608,7 @@ function newTopicForm() {
   titleIn.addEventListener("input", () => { clearTimeout(dupT); dupT = setTimeout(checkDupes, 350); });
   const ta = el("textarea");
   ta.placeholder = "тезис, вопрос, предложение или разбор, открывающий обсуждение…";
+  if (prefill) ta.value = prefill;
   card.appendChild(ta);
   // Рубрика спрашивается ЗДЕСЬ, в единственной форме создания темы. Пока их
   // было две — на карте и тут, — эта не спрашивала ничего, и всё созданное
@@ -1436,7 +1738,9 @@ function newTopicForm() {
 
   const runReview = async () => {
     const text = ta.value.trim();
-    if (!text) return;
+    // Молчаливый return читался как «кнопка не работает»: название заполнено,
+    // жмёшь — ничего. Пустой текст объясняем так же, как пустое название.
+    if (!text) { toast("напиши текст темы — одним абзацем"); ta.focus(); return; }
     if (!titleIn.value.trim()) { toast("укажи название темы"); titleIn.focus(); return; }
     if (!requireAuth()) return;
     // проблема — не черновик, который навигатор классифицирует по типам
@@ -1451,6 +1755,9 @@ function newTopicForm() {
     const rootKind = KIND_CHIP[rev.suggested_type] ? rev.suggested_type : "argument";
     renderReview(hint, rev, {
       root: null,
+      getText: () => ta.value.trim(),
+      setText: (t) => { ta.value = t; },
+      connectTo: null,
       switchLabel: KIND_CHIP[rootKind] || "тезис",
       onSend: async () => { await doCreate(ta.value.trim()); },
       // advice on the card already applies to the suggested kind — publish
@@ -1540,7 +1847,8 @@ function positionCard(p, root, byId, links) {
 
   if (p.planets && p.planets.length) {
     const pl = el("div", "muted"); pl.style.marginTop = "6px";
-    pl.textContent = "спутники: " + p.planets.map((x) => `${x.kind}·PoI${x.poi ?? "—"}`).join(", ");
+    pl.textContent = "спутники: " + p.planets
+      .map((x) => `${KIND_RU[x.kind] || x.kind}·PoI${x.poi ?? "—"}`).join(", ");
     box.appendChild(pl);
   }
   return box;

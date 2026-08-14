@@ -32,8 +32,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
 
-from . import (auth, db, dialogue as dialogue_mod, material, poi, taxonomy,
-               voteweight,
+from . import (auth, db, dialogue as dialogue_mod, mail, material, poi,
+               taxonomy, voteweight,
                votedialogue, pools as pools_mod)
 
 
@@ -229,6 +229,35 @@ async def current_author(request: Request):
     raise HTTPException(401, "требуется вход")
 
 
+async def optional_author(request: Request):
+    """Автор, если вошёл, иначе None — без 401.
+
+    Чтение остаётся публичным (режим наблюдателя), но вошедшему стоит показать
+    то, что касается лично его: например, сколько осталось времени, чтобы снять
+    собственное высказывание.
+    """
+    token = request.cookies.get(SESSION_COOKIE)
+    return await db.session_author(token) if token else None
+
+
+async def verified_author(author=Depends(current_author)):
+    """Logged in AND proved the address is theirs.
+
+    The split exists because registration is open from 2026-08: anyone can make
+    an account, so an unconfirmed address is now the normal state, not an edge
+    case. Reading and one's own cabinet need only current_author; anything that
+    puts text in front of other people needs this.
+
+    403 rather than 401 on purpose — the session is fine, the account is not
+    yet entitled, and the client must show "confirm your address", not a login
+    form.
+    """
+    if not author.get("email_verified"):
+        raise HTTPException(
+            403, "подтвердите адрес почты — публиковать можно после этого")
+    return author
+
+
 # Set COOKIE_SECURE=1 once the PoC is served over HTTPS (a tunnel or a real
 # host). Off by default so plain http://localhost still logs in.
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE") == "1"
@@ -253,6 +282,18 @@ _llm_calls: dict[int, deque] = defaultdict(deque)
 # whole test. Raise for one person with PUT /api/dev/authors/{id}/balance —
 # no restart needed.
 DEFAULT_BALANCE_USD = float(os.environ.get("DEFAULT_BALANCE_USD", "3"))
+
+# Whether a code of invitation is still the door. Default 1, and prod runs the
+# default: registration stays invite-only for now (Alex, 2026-08-12). Opening it
+# is a matter of setting INVITE_REQUIRED=0 in Railway — the piece that keeps an
+# open door from costing money is already in place, DEFAULT_BALANCE_USD=0 on
+# prod: a new account could read and write and spend nothing on the LLM until it
+# is topped up by hand.
+INVITE_REQUIRED = os.environ.get("INVITE_REQUIRED", "1") == "1"
+
+# Where "someone asked for a balance" lands. Unset means the request is still
+# recorded and visible in the admin queue — it just does not ring anywhere.
+ADMIN_EMAIL = (os.environ.get("ADMIN_EMAIL") or "").strip()
 
 # Общий потолок трат по ключу инстанса, $. Грант выше ограничивает ОДНОГО
 # тестера; сотня грантов по $3 — это $300 к одной карте, и без этого крана
@@ -343,6 +384,10 @@ class RegisterIn(BaseModel):
     name: str | None = None
     invite: str | None = None
     email: str | None = None
+    # Consent is recorded, not assumed. Registration is open to strangers from
+    # 2026-08, and the content licence and data terms have to be accepted by
+    # someone who was shown them (vault: data-deletion-model).
+    accept_terms: bool = False
 
 
 # Deliberately loose: the point is to catch a typo like "ivan@" or a pasted
@@ -356,14 +401,32 @@ class LoginIn(BaseModel):
     password: str
 
 
+async def _send_verification(author_id: int, email: str) -> None:
+    """Issue a confirmation token and mail the link. Never raises: a failed
+    letter must not undo a successful registration — the person can ask for
+    another one from their cabinet."""
+    token = secrets.token_urlsafe(32)
+    await db.create_email_verification(author_id, email,
+                                       _hash_reset_token(token))
+    link = f"{PUBLIC_URL}/verify.html?token={token}"
+    if not await asyncio.to_thread(mail.send_verification, email, link):
+        # Same fallback as password reset before mail existed: the link goes to
+        # the log so Alex can hand it over rather than the account being stuck.
+        log.warning("EMAIL VERIFY for author %s <%s>: %s", author_id, email, link)
+
+
 @app.post("/api/auth/register")
 async def register(body: RegisterIn, response: Response, request: Request):
     _login_throttle(request, "register")
     username = body.username.strip().lower()
     if not re.fullmatch(r"[a-z0-9_]{3,32}", username):
         raise HTTPException(400, "логин: 3–32 символа, латиница/цифры/подчёркивание")
-    if len(body.password) < 6:
-        raise HTTPException(400, "пароль: минимум 6 символов")
+    # 8, matching the reset endpoint. It required 8 while registration allowed
+    # 6, so the weakest password on the site was always a freshly made one.
+    if len(body.password) < 8:
+        raise HTTPException(400, "пароль: минимум 8 символов")
+    if not body.accept_terms:
+        raise HTTPException(400, "нужно принять условия и политику данных")
     email = (body.email or "").strip().lower()
     # Required, not optional: without it a forgotten password is a lost
     # account, and asking 100 people for their address after the fact is the
@@ -375,18 +438,41 @@ async def register(body: RegisterIn, response: Response, request: Request):
     author_id = await db.add_user(
         username, auth.hash_password(body.password),
         (body.name or username).strip() or username, color,
-        invite=body.invite, email=email, balance_usd=DEFAULT_BALANCE_USD)
-    # Accounts are handed out on request, so registration is invite-only.
+        invite=body.invite, email=email, balance_usd=DEFAULT_BALANCE_USD,
+        invite_required=INVITE_REQUIRED)
     if author_id == "invite":
         raise HTTPException(403, "нужен действующий код приглашения")
+    # Usernames are public — they appear under every argument — so saying this
+    # one is taken reveals nothing that reading the site would not.
     if author_id == "taken":
         raise HTTPException(409, "логин занят")
+
+    # An address, unlike a username, is private. Answering "already taken"
+    # would let anyone test whether a given person has an account here, which
+    # on a site about political argument is not a small thing. So the answer
+    # looks the same as success and the difference goes into a letter only the
+    # address owner can read.
+    #
+    # Honest about the limit: success also sets a session cookie and this
+    # branch cannot, so a client inspecting the raw response can still tell.
+    # Enumeration through the form — the realistic attack — is closed; a
+    # scripted one is only slowed. Closing it fully means not signing anyone in
+    # until they confirm, which is a product decision, not a code one.
     if author_id == "email_taken":
-        raise HTTPException(409, "на эту почту уже есть аккаунт")
+        reset = secrets.token_urlsafe(32)
+        if await db.create_password_reset(email, _hash_reset_token(reset)):
+            link = f"{PUBLIC_URL}/reset.html?token={reset}"
+            await asyncio.to_thread(mail.send_already_registered, email, link)
+        return {"ok": True, "check_email": True}
+
+    await _send_verification(author_id, email)
     token = auth.new_token()
     await db.create_session(token, author_id, SESSION_DAYS)
     _set_session(response, token)
-    return await db.get_author(author_id)
+    author = await db.get_author(author_id)
+    # check_email is the same flag the taken-address branch returns, so the
+    # client can show one identical screen for both.
+    return {**author, "ok": True, "check_email": True, "email_verified": False}
 
 
 @app.post("/api/auth/login")
@@ -433,10 +519,14 @@ async def forgot_password(body: ForgotIn, request: Request):
         return same_answer
 
     link = f"{PUBLIC_URL}/reset.html?token={token}"
-    # No mail server yet, so the link goes to the server log and Alex passes it
-    # on by hand. When SMTP exists only this branch changes — the token, the
-    # expiry and the redemption flow stay as they are.
-    log.warning("PASSWORD RESET for author %s <%s>: %s", author_id, email, link)
+    # Blocking urllib inside a thread, like every other outbound call here, so
+    # the single worker keeps serving while the provider answers.
+    if not await asyncio.to_thread(mail.send_password_reset, email, link):
+        # The pre-mail behaviour, kept as the fallback: the link goes to the
+        # log and Alex hands it over. Losing the provider must not turn a
+        # forgotten password into a lost account.
+        log.warning("PASSWORD RESET for author %s <%s>: %s",
+                    author_id, email, link)
     return same_answer
 
 
@@ -448,6 +538,85 @@ async def reset_password(body: ResetIn, request: Request):
     if not await db.redeem_password_reset(_hash_reset_token(body.token.strip()),
                                           auth.hash_password(body.password)):
         raise HTTPException(400, "ссылка недействительна или уже использована")
+    return {"ok": True}
+
+
+class VerifyIn(BaseModel):
+    token: str
+
+
+@app.post("/api/auth/verify")
+async def verify_email(body: VerifyIn, request: Request):
+    """Spend a confirmation token. Idempotent from the person's point of view:
+    a second click on the same link says the address is already confirmed
+    rather than showing a failure."""
+    _login_throttle(request, "verify")
+    author_id = await db.redeem_email_verification(
+        _hash_reset_token(body.token.strip()))
+    if author_id is None:
+        raise HTTPException(400, "ссылка недействительна или уже использована")
+    return {"ok": True}
+
+
+class BalanceRequestIn(BaseModel):
+    note: str | None = None
+
+
+@app.post("/api/balance/request")
+async def request_balance(body: BalanceRequestIn, request: Request,
+                          author=Depends(verified_author)):
+    """Ask Alex for a starting balance.
+
+    Behind verified_author on purpose: this button sends him a letter, and an
+    unconfirmed address is exactly what a script would use to send a thousand.
+    A second click is not an error — it answers with the existing request, so
+    the UI can say "already asked" instead of showing a failure.
+    """
+    _login_throttle(request, "balance-request")
+    note = (body.note or "").strip()[:2000]
+    request_id = await db.create_balance_request(author["id"], note or None)
+    if request_id is False:
+        existing = await db.open_balance_request(author["id"])
+        return {"ok": True, "already": True, "request": existing}
+
+    if ADMIN_EMAIL:
+        queue = await db.list_balance_requests()
+        person = next((q for q in queue if q["author_id"] == author["id"]), None)
+        if person:
+            link = f"{PUBLIC_URL}/u/{author.get('username')}"
+            if not await asyncio.to_thread(mail.send_balance_request,
+                                           ADMIN_EMAIL, person, link):
+                log.warning("BALANCE REQUEST from %s <%s> (letter not sent)",
+                            author.get("username"), author.get("email"))
+    else:
+        # No admin address configured: the request still exists in the table
+        # and shows up in the queue, it just does not ring anywhere.
+        log.warning("BALANCE REQUEST from %s — ADMIN_EMAIL unset, no letter",
+                    author.get("username"))
+    return {"ok": True, "request_id": request_id}
+
+
+@app.get("/api/balance/request")
+async def my_balance_request(author=Depends(current_author)):
+    """What the button should say: ask, or waiting since when."""
+    return {"open": await db.open_balance_request(author["id"]),
+            "balance_usd": float(await db.budget_left(author["id"]) or 0),
+            "email_verified": bool(author.get("email_verified"))}
+
+
+@app.post("/api/auth/verify/resend")
+async def resend_verification(request: Request,
+                              author=Depends(current_author)):
+    """Ask for another confirmation letter. Throttled like the other auth
+    endpoints — otherwise it is a free way to mail anyone repeatedly, since the
+    address is chosen by whoever registered."""
+    _login_throttle(request, "verify-resend")
+    if author.get("email_verified"):
+        return {"ok": True, "already": True}
+    email = (author.get("email") or "").strip().lower()
+    if not EMAIL_RE.fullmatch(email):
+        raise HTTPException(400, "на аккаунте нет адреса почты")
+    await _send_verification(author["id"], email)
     return {"ok": True}
 
 
@@ -625,7 +794,7 @@ class FacetsIn(BaseModel):
 
 @app.put("/api/topics/{topic_root_id}/facets")
 async def put_topic_facets(topic_root_id: int, body: FacetsIn,
-                           author=Depends(current_author)):
+                           author=Depends(verified_author)):
     """Проставить или поменять рубрику темы.
 
     Правит любой участник, а не только автор: рубрика — это навигация, общая
@@ -707,7 +876,7 @@ async def read_problem(topic_root_id: int):
 
 @app.put("/api/problems/{topic_root_id}")
 async def put_problem(topic_root_id: int, body: ProblemIn,
-                      author=Depends(current_author)):
+                      author=Depends(verified_author)):
     """Проставить/поменять состояние проблемы. Правит любой участник, как и
     рубрику: постановка проблемы — общее навигационное благо, а правки видны в
     event log."""
@@ -722,7 +891,7 @@ async def put_problem(topic_root_id: int, body: ProblemIn,
 
 @app.post("/api/problems/{topic_root_id}/interventions")
 async def post_intervention(topic_root_id: int, body: InterventionIn,
-                            author=Depends(current_author)):
+                            author=Depends(verified_author)):
     """Внести запись в накопитель решений. Запись факта, свободно, без гейта:
     провал регистрируется наравне с успехом."""
     await _problem_root_or_404(topic_root_id)
@@ -758,9 +927,9 @@ async def read_intervention(intervention_id: int):
 
 
 @app.post("/api/interventions/{intervention_id}/attribution",
-          dependencies=[Depends(llm_budget)])
+          dependencies=[Depends(verified_author), Depends(llm_budget)])
 async def post_attribution(intervention_id: int, body: AttributionIn,
-                           author=Depends(current_author)):
+                           author=Depends(verified_author)):
     """Заявить атрибуцию/переносимость по записи реестра — причинную претензию.
 
     Это НЕ правка факта: создаётся узел-аргумент kind='attribution' в теме
@@ -796,7 +965,7 @@ async def post_attribution(intervention_id: int, body: AttributionIn,
 # the NODE it looks at and a RANKED PAGE of children — never the whole graph.
 # /api/graph stays only for the force-directed visualization mode.
 @app.get("/api/nodes/{node_id}")
-async def get_node(node_id: int):
+async def get_node(node_id: int, author=Depends(optional_author)):
     node = await db.get_node_full(node_id)
     if node is None:
         raise HTTPException(404, f"node {node_id} not found")
@@ -804,12 +973,96 @@ async def get_node(node_id: int):
     node["belongings"] = await db.node_topics_of(node_id)
     # replies anchored to SPANS of this node's text — the margin markers
     node["fragment_replies"] = await db.node_anchors(node_id)
+    # авторские примечания: единственное, что можно добавить к зафиксированному
+    node["addenda"] = await db.node_addenda(node_id)
+    # своё ли это высказывание и можно ли его ещё снять — UI рисует по этому
+    # кнопки и остаток времени; чужому читателю знать нечего
+    if author and node.get("author_id") == author["id"]:
+        node["removability"] = await db.node_removability(node_id, author["id"])
     return node
+
+
+# ------------------------------------------------- снятие, отзыв, примечание
+# Правки опубликованного текста НЕТ (vault: decisions/edit-delete-window):
+# формулировка доводится до отправки, в диалоге с ИИ-компаньоном. Автору
+# остаются три действия, и они про разное:
+#   • СНЯТЬ — «я передумал это публиковать». Час, и только пока не ответили.
+#   • ОТОЗВАТЬ — «больше не настаиваю». Всегда; текст и ответы остаются.
+#   • ПРИМЕЧАНИЕ — «уточняю / здесь ошибся». Всегда; ничего не переписывает.
+def _locked_403(e: db.Locked):
+    """Причина отказа идёт человеку как есть: «нельзя» без «почему» бесполезно."""
+    return HTTPException(403, str(e))
+
+
+class RetractIn(BaseModel):
+    note: str | None = None            # почему отзываю, одной строкой
+
+
+class AddendumIn(BaseModel):
+    text: str
+
+
+@app.delete("/api/nodes/{node_id}")
+async def remove_node(node_id: int, author=Depends(verified_author)):
+    try:
+        await db.soft_delete_node(node_id, author["id"])
+    except db.Locked as e:
+        raise _locked_403(e)
+    hub.publish({"type": "node_removed", "node_id": node_id})
+    return {"ok": True, "node_id": node_id}
+
+
+@app.post("/api/nodes/{node_id}/retract")
+async def retract_node(node_id: int, body: RetractIn,
+                       author=Depends(verified_author)):
+    try:
+        node = await db.retract_node(node_id, author["id"], body.note)
+    except db.Locked as e:
+        raise _locked_403(e)
+    hub.publish({"type": "node_retracted", "node_id": node_id,
+                 "note": node.get("retract_note")})
+    return {"ok": True, "node_id": node_id,
+            "retracted_at": node["retracted_at"].isoformat(),
+            "retract_note": node.get("retract_note")}
+
+
+@app.post("/api/nodes/{node_id}/addendum")
+async def add_node_addendum(node_id: int, body: AddendumIn,
+                            author=Depends(verified_author)):
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(400, "пустое примечание")
+    try:
+        added = await db.add_addendum(node_id, author["id"], text)
+    except db.Locked as e:
+        raise _locked_403(e)
+    hub.publish({"type": "node_addendum", "node_id": node_id})
+    return added
+
+
+@app.delete("/api/interventions/{intervention_id}")
+async def remove_intervention(intervention_id: int,
+                              author=Depends(verified_author)):
+    try:
+        await db.soft_delete_intervention(intervention_id, author["id"])
+    except db.Locked as e:
+        raise _locked_403(e)
+    return {"ok": True, "intervention_id": intervention_id}
+
+
+@app.post("/api/interventions/{intervention_id}/retract")
+async def retract_intervention(intervention_id: int, body: RetractIn,
+                               author=Depends(verified_author)):
+    try:
+        row = await db.retract_intervention(intervention_id, author["id"], body.note)
+    except db.Locked as e:
+        raise _locked_403(e)
+    return {"ok": True, **row}
 
 
 @app.post("/api/nodes/{node_id}/belong/{topic_root_id}")
 async def belong_node(node_id: int, topic_root_id: int,
-                      author=Depends(current_author)):
+                      author=Depends(verified_author)):
     """Положить существующий узел под ещё одну проблему — многодомность без копии.
 
     Ребро несёт автора (кто положил) и время. Класть можно чужой довод под свою
@@ -830,7 +1083,7 @@ async def belong_node(node_id: int, topic_root_id: int,
 
 @app.delete("/api/nodes/{node_id}/belong/{topic_root_id}")
 async def unbelong_node(node_id: int, topic_root_id: int,
-                        author=Depends(current_author)):
+                        author=Depends(verified_author)):
     """Снять дополнительную принадлежность. Домашнюю снять нельзя."""
     removed = await db.remove_belonging(node_id, topic_root_id)
     if not removed:
@@ -857,8 +1110,8 @@ async def get_children(node_id: int, limit: int = 20, offset: int = 0):
     return await db.get_children(node_id, limit, offset)
 
 
-@app.post("/api/argument", dependencies=[Depends(llm_budget)])
-async def add_argument(arg: ArgumentIn, author=Depends(current_author)):
+@app.post("/api/argument", dependencies=[Depends(verified_author), Depends(llm_budget)])
+async def add_argument(arg: ArgumentIn, author=Depends(verified_author)):
     if not arg.text.strip():
         raise HTTPException(400, "argument text is empty")
 
@@ -1035,6 +1288,37 @@ async def get_author_activity(author_id: int):
             "activity": await db.author_activity(author_id)}
 
 
+@app.get("/api/u/{username}")
+async def public_profile(username: str, request: Request):
+    """An account's public page, at a permanent address built from its name.
+
+    Two views of one account exist and this is the narrow one. The owner's
+    cabinet (/api/profile) adds money, address and spend; this shows only what
+    the person has done in front of everyone — texts, votes, PoI. Anything
+    private must be absent here rather than merely hidden by the client.
+
+    `is_me` lets the page offer "this is you, open your cabinet" without a
+    second request, and is the only thing that depends on who is asking.
+    """
+    a = await db.public_author_by_username(username.strip())
+    if a is None:
+        raise HTTPException(404, "нет такого участника")
+
+    is_me = False
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        viewer = await db.session_author(token)
+        is_me = bool(viewer and viewer["id"] == a["id"])
+
+    return {
+        "author": a,
+        "is_me": is_me,
+        "summary": await db.activity_summary(a["id"]),
+        "activity": await db.author_activity(a["id"]),
+        "votes": await db.author_votes(a["id"]),
+    }
+
+
 @app.post("/api/authors", dependencies=[Depends(dev_only)])
 async def create_author(author: AuthorIn):
     if not author.name.strip():
@@ -1130,7 +1414,7 @@ def _aggregate_reactions(rows):
 
 # ---------------------------------------------------------------- reactions
 @app.post("/api/reactions")
-async def post_reaction(r: ReactionIn, author=Depends(current_author)):
+async def post_reaction(r: ReactionIn, author=Depends(verified_author)):
     if r.stance not in ("agree", "disagree"):
         raise HTTPException(400, "stance must be 'agree' or 'disagree'")
     node = await db.get_node(r.node_id)
@@ -1280,9 +1564,9 @@ class BranchIn(BaseModel):
 
 
 @app.post("/api/positions/{position_id}/continue",
-          dependencies=[Depends(llm_budget)])
+          dependencies=[Depends(verified_author), Depends(llm_budget)])
 async def continue_position(position_id: int, body: PositionArgIn,
-                            author=Depends(current_author)):
+                            author=Depends(verified_author)):
     # "Развить": a detail planet orbiting the star (scored, like any contribution).
     pos = await db.get_position(position_id)
     if pos is None:
@@ -1298,8 +1582,8 @@ async def continue_position(position_id: int, body: PositionArgIn,
     return await _position_payload(pos)
 
 
-@app.post("/api/nodes/{node_id}/branch", dependencies=[Depends(llm_budget)])
-async def branch_node(node_id: int, body: BranchIn, author=Depends(current_author)):
+@app.post("/api/nodes/{node_id}/branch", dependencies=[Depends(verified_author), Depends(llm_budget)])
+async def branch_node(node_id: int, body: BranchIn, author=Depends(verified_author)):
     # A planet can branch further: a scored child planet (sub-question / detail).
     parent = await db.get_node(node_id)
     if parent is None:
@@ -1316,8 +1600,8 @@ async def branch_node(node_id: int, body: BranchIn, author=Depends(current_autho
 
 
 @app.post("/api/positions/{position_id}/conclude",
-          dependencies=[Depends(llm_budget)])
-async def conclude_position(position_id: int, author=Depends(current_author)):
+          dependencies=[Depends(verified_author), Depends(llm_budget)])
+async def conclude_position(position_id: int, author=Depends(verified_author)):
     """
     "Сделать вывод" — PREVIEW ONLY (п.9). The LLM PROPOSES a conclusion from the
     position and its orbit; nothing is written. Like atomization, the author then
@@ -1344,9 +1628,9 @@ class ConcludeConfirmIn(BaseModel):
 
 
 @app.post("/api/positions/{position_id}/conclude/confirm",
-          dependencies=[Depends(llm_budget)])
+          dependencies=[Depends(verified_author), Depends(llm_budget)])
 async def conclude_confirm(position_id: int, body: ConcludeConfirmIn,
-                           author=Depends(current_author)):
+                           author=Depends(verified_author)):
     """The author signs the (edited) conclusion. It becomes THEIR forward claim:
     a scored, attributed argument node backing a conclusion position linked to
     the source — attribution + scoring instead of anonymous LLM content."""
@@ -1384,9 +1668,9 @@ async def _compose_later(position_id: int, texts: list[str]):
 
 
 @app.post("/api/positions/{position_id}/oppose",
-          dependencies=[Depends(llm_budget)])
+          dependencies=[Depends(verified_author), Depends(llm_budget)])
 async def oppose_position(position_id: int, body: PositionArgIn,
-                          author=Depends(current_author)):
+                          author=Depends(verified_author)):
     pos = await db.get_position(position_id)
     if pos is None:
         raise HTTPException(404, f"position {position_id} not found")
@@ -1404,9 +1688,9 @@ async def oppose_position(position_id: int, body: PositionArgIn,
 
 
 @app.post("/api/positions/{position_id}/question",
-          dependencies=[Depends(llm_budget)])
+          dependencies=[Depends(verified_author), Depends(llm_budget)])
 async def question_position(position_id: int, body: PositionArgIn,
-                            author=Depends(current_author)):
+                            author=Depends(verified_author)):
     pos = await db.get_position(position_id)
     if pos is None:
         raise HTTPException(404, f"position {position_id} not found")
@@ -1422,8 +1706,8 @@ async def question_position(position_id: int, body: PositionArgIn,
     return await _position_payload(await db.get_position(position_id))
 
 
-@app.post("/api/nodes/{node_id}/dissent", dependencies=[Depends(llm_budget)])
-async def dissent_position(node_id: int, author=Depends(current_author)):
+@app.post("/api/nodes/{node_id}/dissent", dependencies=[Depends(verified_author), Depends(llm_budget)])
+async def dissent_position(node_id: int, author=Depends(verified_author)):
     """
     "Не согласен с трактовкой" (п.10): the author pulls their argument OUT of the
     pool it was auto-clustered into. Consent by opt-out — clustering stays
@@ -1474,7 +1758,7 @@ async def dissent_position(node_id: int, author=Depends(current_author)):
 
 @app.post("/api/positions/{position_id}/vote")
 async def vote_position(position_id: int, body: PositionVoteIn,
-                        author=Depends(current_author)):
+                        author=Depends(verified_author)):
     if body.stance not in ("agree", "disagree"):
         raise HTTPException(400, "stance must be 'agree' or 'disagree'")
     if await db.get_position(position_id) is None:
@@ -1527,7 +1811,7 @@ async def _render_material(topic_root_id, question):
 
 
 @app.post("/api/decisions", dependencies=[Depends(dev_only)])
-async def create_decision(body: DecisionIn, author=Depends(current_author)):
+async def create_decision(body: DecisionIn, author=Depends(verified_author)):
     return await db.create_decision(body.topic_root_id, body.question.strip(),
                                     created_by=author["id"])
 
@@ -1535,7 +1819,7 @@ async def create_decision(body: DecisionIn, author=Depends(current_author)):
 @app.post("/api/decisions/{decision_id}/options",
           dependencies=[Depends(dev_only)])
 async def add_decision_option(decision_id: int, body: OptionIn,
-                              author=Depends(current_author)):
+                              author=Depends(verified_author)):
     await _decision_or_404(decision_id)
     if body.origin not in ("initial", "proposed", "reframe"):
         raise HTTPException(400, "origin must be initial|proposed|reframe")
@@ -1570,8 +1854,8 @@ async def read_decision(decision_id: int):
 
 
 @app.post("/api/decisions/{decision_id}/dialogue/start",
-          dependencies=[Depends(llm_budget)])
-async def vote_dialogue_start(decision_id: int, author=Depends(current_author)):
+          dependencies=[Depends(verified_author), Depends(llm_budget)])
+async def vote_dialogue_start(decision_id: int, author=Depends(verified_author)):
     d = await _decision_or_404(decision_id)
     if d["status"] != "open":
         raise HTTPException(409, "голосование не открыто")
@@ -1591,9 +1875,9 @@ async def vote_dialogue_start(decision_id: int, author=Depends(current_author)):
 
 
 @app.post("/api/decisions/{decision_id}/dialogue/message",
-          dependencies=[Depends(llm_budget)])
+          dependencies=[Depends(verified_author), Depends(llm_budget)])
 async def vote_dialogue_message(decision_id: int, body: VoteMsgIn,
-                                author=Depends(current_author)):
+                                author=Depends(verified_author)):
     d, dlg, rev = await _vote_dlg_or_409(decision_id, author)
     if not body.text.strip():
         raise HTTPException(400, "пустое сообщение")
@@ -1615,9 +1899,9 @@ async def vote_dialogue_message(decision_id: int, body: VoteMsgIn,
 
 
 @app.post("/api/decisions/{decision_id}/dialogue/inform",
-          dependencies=[Depends(llm_budget)])
+          dependencies=[Depends(verified_author), Depends(llm_budget)])
 async def vote_dialogue_inform(decision_id: int, body: VoteInformIn,
-                               author=Depends(current_author)):
+                               author=Depends(verified_author)):
     d, dlg, rev = await _vote_dlg_or_409(decision_id, author)
     turns = dlg["transcript"]
     if not turns or turns[-1].get("meta") != "inform_offer_pending":
@@ -1641,9 +1925,9 @@ async def vote_dialogue_inform(decision_id: int, body: VoteInformIn,
 
 
 @app.post("/api/decisions/{decision_id}/dialogue/finalize",
-          dependencies=[Depends(llm_budget)])
+          dependencies=[Depends(verified_author), Depends(llm_budget)])
 async def vote_dialogue_finalize(decision_id: int,
-                                 author=Depends(current_author)):
+                                 author=Depends(verified_author)):
     """Phase 2. The PERSON decides they are ready — never the interlocutor."""
     d, dlg, rev = await _vote_dlg_or_409(decision_id, author)
     turns = dlg["transcript"]
@@ -1665,7 +1949,7 @@ async def vote_dialogue_finalize(decision_id: int,
 
 @app.post("/api/decisions/{decision_id}/vote")
 async def cast_vote(decision_id: int, body: CastIn,
-                    author=Depends(current_author)):
+                    author=Depends(verified_author)):
     d = await _decision_or_404(decision_id)
     if d["status"] != "open":
         raise HTTPException(409, "голосование не открыто")
@@ -2013,7 +2297,11 @@ async def dev_set_balance(author_id: int, body: BalanceIn):
         raise HTTPException(400, "balance_usd: 0..1000")
     if not await db.set_balance(author_id, body.balance_usd):
         raise HTTPException(404, "нет такого автора")
-    return {"ok": True, "author_id": author_id, "balance_usd": body.balance_usd}
+    # Granting money answers whatever request was open, so the queue empties
+    # itself as Alex works through it instead of needing a second click.
+    resolved = await db.resolve_balance_request(author_id, body.balance_usd)
+    return {"ok": True, "author_id": author_id,
+            "balance_usd": body.balance_usd, "request_closed": resolved}
 
 
 class ApiKeyIn(BaseModel):
@@ -2042,6 +2330,14 @@ async def dev_get_dialogue(author_id: int):
     if d is None:
         raise HTTPException(404, "у этого автора нет диалога")
     return _dlg_meta(d)
+
+
+@app.get("/api/dev/balance-requests", dependencies=[Depends(admin_only)])
+async def dev_balance_requests(include_resolved: bool = False):
+    """The queue of people waiting for a starting balance. Under admin_only
+    rather than DEV_TOOLS for the same reason as the budget view: DEV_TOOLS is
+    off on prod, and this is needed precisely there."""
+    return await db.list_balance_requests(include_resolved=include_resolved)
 
 
 # ---------------------------------------------------------------- AI navigator
@@ -2098,6 +2394,10 @@ class DraftReviewIn(BaseModel):
     connect_to: int | None = None         # reply target (None = new topic root)
     edge_type: str | None = None          # reply type: support/refute/qualify/question
     kind: str | None = None               # root type: argument/question
+    # насколько широко компаньон ищет место черновику: "near" — текущая тема и
+    # несколько похожих проблем (по умолчанию, дёшево), "map" — шире по карте,
+    # когда автор сам просит поискать
+    scope: str = "near"
 
 
 _REVIEW_CLEAN = {
@@ -2105,7 +2405,12 @@ _REVIEW_CLEAN = {
     "quality_note": "", "verdict": "new", "node_id": None,
     "position_id": None, "headline": "", "target_text": "", "note": "",
     "split": None,
+    # размещение: сюда / в другую проблему / отдельным корнем
+    "placement": "here", "place_id": None, "place_title": "", "place_note": "",
+    # один вопрос автору — с него начинается разговор с компаньоном
+    "think": "",
 }
+_PLACEMENTS = {"here", "elsewhere", "own_problem"}
 _REVIEW_TYPES = {"support", "refute", "qualify", "question",
                  "proposal", "exploration"}
 _ROOT_KINDS = {"argument", "question", "proposal", "exploration"}
@@ -2158,7 +2463,14 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         declared = body.edge_type or "support"
     else:
         declared = body.kind or "argument"
-    cache_key = (body.connect_to, text)
+    # Соседние проблемы — то, без чего компаньон не может сказать «ты пишешь не
+    # туда»: иначе он видит только ту тему, в которой автор уже стоит. Поиск
+    # триграммный (suggest_problems), без LLM, поэтому дёшев; "map" лишь берёт
+    # шире список кандидатов, когда автор сам просит поискать.
+    root_now = parent.get("topic_root_id") if parent else None
+    neighbours = await db.suggest_problems(
+        text, limit=8 if body.scope == "map" else 4, exclude_id=root_now)
+    cache_key = (body.connect_to, text, body.scope)
     result = _review_cache_get(cache_key)
     if result is None:
         # budget is charged only on a real LLM call — cache hits (the author
@@ -2170,7 +2482,8 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
             result = await asyncio.to_thread(
                 pools_mod.review_draft, text, parent, branch,
                 [{"id": p["id"], "headline": p["headline"], "composed": p["composed"]}
-                 for p in positions])
+                 for p in positions],
+                neighbours)
         except Exception:
             return dict(_REVIEW_CLEAN)    # fail-open: never stand in the way
         _review_cache_set(cache_key, result)
@@ -2191,6 +2504,22 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         if (len(parts) == 2 and all(p["type"] in _SPLIT_TYPES and p["text"] for p in parts)
                 and parts[0]["type"] != parts[1]["type"]):
             out["split"] = parts
+    # РАЗМЕЩЕНИЕ. id проверяется по списку, который мы сами и передали: LLM не
+    # должна уметь отправить автора к произвольному узлу графа.
+    known_near = {n["id"]: n for n in neighbours}
+    placement = result.get("placement")
+    place_id = result.get("place_id")
+    if placement == "elsewhere" and place_id in known_near:
+        n = known_near[place_id]
+        out.update(placement="elsewhere", place_id=place_id,
+                   place_title=n.get("title") or (n.get("text") or "")[:60],
+                   place_note=str(result.get("place_note") or ""))
+    elif placement == "own_problem" and body.connect_to is not None:
+        # для корня совет «заведи отдельную проблему» бессмыслен — он и так корень
+        out.update(placement="own_problem",
+                   place_note=str(result.get("place_note") or ""))
+    out["think"] = str(result.get("think") or "")
+
     verdict = result.get("verdict")
     nid, pid = result.get("node_id"), result.get("position_id")
     nodes = {n["id"]: n for n in branch}
@@ -2204,6 +2533,63 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         out.update(verdict=verdict, position_id=pid,
                    headline=known[pid]["headline"],
                    note=str(result.get("note") or ""))
+    return out
+
+
+# ------------------------------------------------------- ИИ-компаньон (диалог)
+# Разбор черновика выше — один ход: ИИ сказал, автор послушался или нет. Отсюда
+# начинается разговор: автор может возразить («нет, я о другом»), и компаньон
+# уточняет. Это стало обязательным, когда мы убрали правку опубликованного
+# текста (vault: decisions/edit-delete-window): думать вместе теперь можно
+# только ДО отправки, и подумать надо по-настоящему.
+#
+# Состояния на сервере нет: история приходит в запросе и умирает вместе с
+# публикацией. Черновик — ещё не высказывание, и хранить его дольше, чем нужно
+# автору, значит держать у себя то, чего человек не публиковал.
+class CompanionTurn(BaseModel):
+    role: str                              # author | companion
+    text: str
+
+
+class CompanionIn(BaseModel):
+    text: str                              # текущий черновик
+    connect_to: int | None = None
+    history: list[CompanionTurn] = []
+    scope: str = "near"
+
+
+# Потолок разговора: каждый ход — вызов LLM из гранта автора, а компаньон,
+# который готов болтать бесконечно, превращается из помощи в способ прожечь
+# бюджет. Десять ходов — заведомо больше, чем нужно, чтобы додумать один довод.
+COMPANION_MAX_TURNS = 10
+
+
+@app.post("/api/draft/companion", dependencies=[Depends(verified_author)])
+async def draft_companion(body: CompanionIn, author=Depends(verified_author)):
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(400, "пустой черновик")
+    if len(body.history) > COMPANION_MAX_TURNS * 2:
+        raise HTTPException(400, "разговор затянулся — публикуй или начни заново")
+    parent, branch = None, []
+    if body.connect_to is not None:
+        parent = await db.get_node(body.connect_to)
+        if parent is None:
+            raise HTTPException(404, f"connect_to node {body.connect_to} not found")
+        root_id = parent.get("topic_root_id") or await db.topic_root_of(body.connect_to)
+        branch = await db.topic_subtree(root_id)
+    neighbours = await db.suggest_problems(
+        text, limit=8 if body.scope == "map" else 4,
+        exclude_id=parent.get("topic_root_id") if parent else None)
+    await spend_llm(author)
+    try:
+        out = await asyncio.to_thread(
+            pools_mod.companion_reply, text,
+            [h.model_dump() for h in body.history], parent, branch, neighbours)
+    except Exception as e:
+        # молчаливого компаньона автор принял бы за «всё в порядке» — а это не
+        # проверка, это разговор, и его обрыв надо назвать вслух
+        raise HTTPException(502, f"компаньон не ответил, попробуй ещё раз: {e}")
     return out
 
 
@@ -2264,7 +2650,7 @@ async def atomize_preview(node_id: int, author=Depends(current_author)):
 
 @app.post("/api/nodes/{node_id}/atomize/confirm")
 async def atomize_confirm(node_id: int, body: AtomizeConfirmIn,
-                          author=Depends(current_author)):
+                          author=Depends(verified_author)):
     node = await _own_exploration_or_403(node_id, author)
     if not (1 <= len(body.atoms) <= 24):
         raise HTTPException(400, "нужно от 1 до 24 атомов")
@@ -2338,6 +2724,18 @@ def _dev_page(name: str):
 
 app.get("/dialogue-admin.html", include_in_schema=False)(
     _dev_page("dialogue-admin.html"))
+
+
+@app.get("/u/{username}", include_in_schema=False)
+async def public_profile_page(username: str):
+    """Every account has a permanent, shareable address: /u/<login>.
+
+    One page serves them all — it reads the name out of its own URL and asks
+    /api/u/<name> for the content. Declared above the mount, and under /u/ so
+    it cannot collide with a file in static/.
+    """
+    return FileResponse(static_dir / "u.html")
+
 
 if static_dir.exists():
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")

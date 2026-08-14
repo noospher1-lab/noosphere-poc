@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noosphere — Подтверждение почты</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg:#0e1016; --panel:#161922; --panel2:#1d212c; --line:#272c39;
+    --ivory:#edeef2; --dim:#9aa0b0; --dim2:#6f7688; --bronze:#e0b878;
+    --green:#5fd18f; --red:#ec6b66; --blue:#66b0ea;
+    --sans:'Inter',system-ui,sans-serif; --mono:'JetBrains Mono',monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg); color:var(--ivory);
+    font-family:var(--sans); font-size:15px; line-height:1.5; }
+  a { color:var(--blue); text-decoration:none; }
+  #wrap { max-width:420px; margin:0 auto; padding:12svh 18px; }
+  .word { font-family:var(--mono); letter-spacing:.24em; font-size:14px;
+    text-transform:uppercase; margin-bottom:26px; }
+  .word .noo { color:var(--blue); } .word .sphere { color:var(--bronze); }
+  h1 { font-size:20px; font-weight:600; margin:0 0 6px; }
+  p.lead { color:var(--dim); margin:0 0 18px; }
+  button { width:100%; padding:12px; margin-top:10px; border-radius:8px;
+    border:1px solid var(--bronze); background:#2a2110; color:var(--bronze);
+    font-weight:600; font-size:15px; cursor:pointer; }
+  button:hover { background:#342815; }
+  button:disabled { opacity:.5; cursor:default; }
+  .msg { padding:11px 14px; border-radius:8px; margin:14px 0; font-size:14px; }
+  .msg.err { background:rgba(236,107,102,.1); border:1px solid rgba(236,107,102,.35); color:#ffb3b0; }
+  .msg.ok { background:rgba(95,209,143,.1); border:1px solid rgba(95,209,143,.35); color:#9ae7bd; }
+  .hidden { display:none; }
+  .foot { margin-top:20px; color:var(--dim2); font-size:13px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div class="word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></div>
+
+  <h1 id="head">Подтверждение почты</h1>
+  <p class="lead" id="lead">Проверяем ссылку…</p>
+
+  <div id="msg" class="msg hidden"></div>
+
+  <!-- ссылка просрочена/уже потрачена, либо человек зашёл сюда без токена:
+       из кабинета можно выслать письмо заново, но только своему адресу -->
+  <div id="again" class="hidden">
+    <button id="againBtn">Прислать письмо заново</button>
+  </div>
+
+  <div class="foot"><a href="/">← к обсуждениям</a></div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const token = new URLSearchParams(location.search).get("token");
+
+function show(kind, text) {
+  const m = $("#msg");
+  m.className = "msg " + kind;
+  m.textContent = text;
+  m.classList.remove("hidden");
+}
+
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let data = null;
+  try { data = await r.json(); } catch (_) { /* пустой ответ */ }
+  if (!r.ok) throw new Error((data && data.detail) || ("ошибка " + r.status));
+  return data;
+}
+
+// Кнопка «прислать заново» бьёт по ручке, требующей сессии: если человек
+// открыл письмо в браузере, где не залогинен, честнее отправить его на вход,
+// чем показать голое 401.
+$("#againBtn").onclick = async () => {
+  $("#againBtn").disabled = true;
+  try {
+    const d = await post("/api/auth/verify/resend");
+    show("ok", d && d.already
+      ? "Адрес уже подтверждён — письмо не нужно."
+      : "Отправили новое письмо. Ссылка живёт 48 часов.");
+  } catch (e) {
+    show("err", /401|403/.test(e.message)
+      ? "Сначала войди в аккаунт, потом нажми ещё раз."
+      : e.message);
+    $("#againBtn").disabled = false;
+  }
+};
+
+(async () => {
+  if (!token) {
+    $("#lead").textContent = "Ссылка неполная — в ней нет кода подтверждения. "
+      + "Открой её из письма целиком или запроси новое письмо.";
+    $("#again").classList.remove("hidden");
+    return;
+  }
+  try {
+    await post("/api/auth/verify", { token });
+    $("#head").textContent = "Почта подтверждена";
+    $("#lead").textContent = "Теперь можно писать: создавать темы, возражать и "
+      + "разветвлять позиции.";
+    show("ok", "Адрес подтверждён.");
+  } catch (e) {
+    $("#lead").textContent = "";
+    show("err", e.message);
+    $("#again").classList.remove("hidden");
+  }
+})();
+</script>
+</body>
+</html>

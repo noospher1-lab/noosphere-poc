@@ -36,10 +36,16 @@ def test_user_and_session_flow():
         await db.init_db()
         await db.wipe(force=True)
 
-        uid = await db.add_user("alex_test", auth.hash_password("secret1"), "Алекс", "#fff")
+        # invite_required=False: регистрация открыта с 2026-08, и без этого флага
+        # add_user отсекает по отсутствующему коду раньше, чем доходит до проверки
+        # имени — тест ловил бы "invite" вместо интересующего его результата
+        uid = await db.add_user("alex_test", auth.hash_password("secret1"), "Алекс",
+                                "#fff", invite_required=False)
         assert uid is not None
-        # duplicate username is rejected, not overwritten
-        assert await db.add_user("alex_test", auth.hash_password("x" * 6), "Другой") is None
+        # duplicate username is rejected, not overwritten — add_user reports the
+        # reason as a tag rather than a bare None (see its docstring)
+        assert await db.add_user("alex_test", auth.hash_password("x" * 6), "Другой",
+                                 invite_required=False) == "taken"
 
         a = await db.get_author_by_username("alex_test")
         assert auth.verify_password("secret1", a["password_hash"])

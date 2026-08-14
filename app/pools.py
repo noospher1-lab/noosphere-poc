@@ -141,7 +141,7 @@ _ROOT_KINDS_DESC = ("argument (standalone claim opening a topic), question "
                     "taken a position)")
 
 
-def review_draft(text, parent, branch, positions):
+def review_draft(text, parent, branch, positions, neighbours=None):
     """
     The pre-publication draft review (vault: ai-navigator-draft-review) — one
     LLM call that determines the draft's ACTUAL type, suggests ONE quality
@@ -183,6 +183,16 @@ def review_draft(text, parent, branch, positions):
             f'[{p["id"]}] {p["headline"]}: {p["composed"]}' for p in positions)
         parts.append("Composed POSITIONS of the discussion, as [id] headline: "
                      "full text:\n\n" + poi.wrap_user_text(plist))
+    # СОСЕДНИЕ ПРОБЛЕМЫ: без них навигатор не может сказать «ты пишешь не туда» —
+    # он видит только ту тему, в которой автор уже стоит.
+    if neighbours:
+        nlist = "\n".join(
+            f'[{n["id"]}] {n.get("title") or ""}: {(n.get("text") or "")[:240]}'
+            for n in neighbours)
+        parts.append(
+            "OTHER PROBLEMS in the graph that look related to the draft, as "
+            "[id] title: text. The draft is NOT currently filed under these:\n\n"
+            + poi.wrap_user_text(nlist))
     parts.append(
         f"The draft (this is a {'new topic root' if is_root else 'reply'}), "
         f"types available: {type_vocab}:\n\n{poi.wrap_user_text(text)}\n\n"
@@ -225,6 +235,22 @@ def review_draft(text, parent, branch, positions):
         "it makes, is NOT a split candidate. When you provide split, "
         "actual_type must be the type of the dominant part — NEVER "
         "'exploration' for a short draft.\n"
+        "5. PLACEMENT: is this the right place for the draft at all? Default "
+        "is 'here' — say otherwise ONLY on a clear mismatch:\n"
+        "   - 'elsewhere': the draft is really about one of the OTHER PROBLEMS "
+        "listed above (set place_id to that problem's id);\n"
+        "   - 'own_problem': the draft states a distinct PROBLEM of its own "
+        "rather than arguing inside this one, and deserves its own root;\n"
+        "   - 'here': anything else. Never nudge a person out of a discussion "
+        "merely because their point is uncomfortable or tangential.\n"
+        "In place_note, one sentence saying why — empty when 'here'.\n"
+        "6. THINK: at most ONE genuine question TO THE AUTHOR — something you "
+        "would actually need answered to judge the claim, which the author "
+        "can answer and then strengthen the draft themselves (e.g. «через "
+        "какой механизм это происходит?», «а что с городами, где сделали "
+        "наоборот?»). Not a rhetorical prompt, not a restatement of the "
+        "quality note, not homework. Empty string when the draft leaves no "
+        "such gap.\n"
         "Respond with ONLY JSON:\n"
         '{"actual_type": "support|refute|qualify|question|proposal|exploration" '
         '(or "argument|question|proposal|exploration" for a topic root), '
@@ -235,12 +261,89 @@ def review_draft(text, parent, branch, positions):
         '"note": "one sentence: what exists and what the draft would add, '
         'empty if verdict is new", '
         '"split": [{"type": "support|refute|qualify|question|proposal", '
-        '"text": "..."}, {...}] or null}'
+        '"text": "..."}, {...}] or null, '
+        '"placement": "here|elsewhere|own_problem", '
+        '"place_id": <problem id or null>, '
+        '"place_note": "one sentence or empty", '
+        '"think": "one question to the author or empty"}'
     )
     raw = poi.complete(REVIEW_SYSTEM, "\n\n---\n\n".join(parts),
                        max_tokens=1024, temperature=0)
     cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(cleaned)
+
+
+COMPANION_SYSTEM = (
+    "You are the AI companion of an argument-graph platform, talking with an "
+    "author who is still WRITING — nothing has been published yet, and on this "
+    "platform published text can never be edited. So this conversation is the "
+    "only chance to think the contribution through, and your job is to help "
+    "the person think, not to write for them.\n"
+    "How you talk:\n"
+    "- You are a thinking partner, not a reviewer handing down notes. Short "
+    "turns, plain language, one thing at a time.\n"
+    "- Take the author's answers seriously: if they explain what they meant, "
+    "accept it and move to what is still weak — never repeat a point they have "
+    "already addressed.\n"
+    "- Push where the reasoning is thin (a missing mechanism, an unaddressed "
+    "counter in the branch, a claim with no way to check it), but say plainly "
+    "when a draft is ready — a companion who always finds fault teaches people "
+    "to ignore it.\n"
+    "- You may offer a REWORDING when asked or when the phrasing genuinely "
+    "buries the point, but it is always an offer, and the author's own voice "
+    "wins over your polish.\n"
+    "- You never decide whether something gets published. The author does.\n"
+    "Write in the SAME LANGUAGE as the draft." + DATA_GUARD
+)
+
+
+def companion_reply(text, history, parent=None, branch=None, neighbours=None):
+    """
+    Один ход разговора с автором о ещё не опубликованном черновике.
+
+    history — [{"role": "author"|"companion", "text": str}] в порядке разговора.
+    Состояние живёт у клиента и приходит в запросе: разговор эфемерен, он умирает
+    вместе с публикацией, и заводить под него таблицу значило бы хранить черновики
+    людей дольше, чем им самим нужно.
+
+    Возвращает {"reply": str, "suggestion": str|null} — suggestion непустой, только
+    когда компаньон предлагает конкретную переформулировку, чтобы UI мог показать
+    её отдельной кнопкой «взять эту формулировку».
+    """
+    parts = []
+    if parent is not None:
+        parts.append("The draft replies to this node:\n\n"
+                     + poi.wrap_user_text(parent["text"]))
+    if branch:
+        listing = "\n".join(
+            f'{"  " * n["depth"]}[{n["id"]}] ({n["kind"]}) {n["text"]}'
+            for n in branch)
+        parts.append("The discussion so far:\n\n" + poi.wrap_user_text(listing))
+    if neighbours:
+        nlist = "\n".join(
+            f'[{n["id"]}] {n.get("title") or ""}: {(n.get("text") or "")[:240]}'
+            for n in neighbours)
+        parts.append("Related problems elsewhere in the graph:\n\n"
+                     + poi.wrap_user_text(nlist))
+    parts.append("The author's current draft:\n\n" + poi.wrap_user_text(text))
+    if history:
+        convo = "\n".join(
+            f'{"АВТОР" if h.get("role") == "author" else "ТЫ"}: {h.get("text", "")}'
+            for h in history)
+        parts.append("Your conversation so far:\n\n" + poi.wrap_user_text(convo))
+    parts.append(
+        "Reply to the author's last message — one short turn, at most a few "
+        "sentences. If a concrete rewording would genuinely help, put it in "
+        "'suggestion' (the full replacement text of the draft, in the author's "
+        "own register); otherwise leave 'suggestion' empty. Never put the "
+        "rewording inside 'reply' as well.\n"
+        'Respond with ONLY JSON: {"reply": "...", "suggestion": "..." }')
+    raw = poi.complete(COMPANION_SYSTEM, "\n\n---\n\n".join(parts),
+                       max_tokens=900, temperature=0.3)
+    cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    out = json.loads(cleaned)
+    return {"reply": str(out.get("reply") or "").strip(),
+            "suggestion": str(out.get("suggestion") or "").strip() or None}
 
 
 CONCLUDE_SYSTEM = (
