@@ -171,3 +171,63 @@ def test_email_change_replaces_address_and_kills_stale_links():
                 "SELECT email FROM authors WHERE id = $1", uid) == "new@example.com"
         await db.close_pool()
     asyncio.run(go())
+
+
+@pytest.mark.skipif(not TEST_DB, reason="TEST_DATABASE_URL not set")
+def test_registration_is_finished_by_confirming_the_address(monkeypatch):
+    """Регистрация завершается подтверждением почты, а не отправкой формы.
+
+    До этого аккаунт существует, но не работает: сессии нет и вход закрыт —
+    иначе аккаунт с чужой или выдуманной почтой живёт полноценно, а
+    восстановить его потом нечем (Alex, 2026-08-14).
+    """
+    from fastapi.testclient import TestClient
+    from app import db, mail, main
+
+    async def prepare():
+        db.DATABASE_URL = TEST_DB
+        await db.close_pool()
+        await db.init_pool()
+        await db.init_db()
+        await db.wipe(force=True)
+        await db.close_pool()
+    asyncio.run(prepare())
+
+    # письмо перехватываем: ссылка из него — единственный путь к рабочему
+    # аккаунту, поэтому и проверять надо именно её
+    links = []
+    monkeypatch.setattr(mail, "send_verification",
+                        lambda to, link: links.append(link) or True)
+    monkeypatch.setattr(main, "INVITE_REQUIRED", False)
+    db.DATABASE_URL = TEST_DB
+
+    with TestClient(main.app) as c:
+        r = c.post("/api/auth/register", json={
+            "username": "fresh", "password": "secret12345",
+            "email": "fresh@example.com", "accept_terms": True})
+        assert r.status_code == 200, r.text
+        assert r.json()["check_email"] is True
+        # ключевое: регистрация не впускает
+        assert "session" not in r.cookies
+        assert c.get("/api/auth/me").json() is None
+
+        r = c.post("/api/auth/login",
+                   json={"username": "fresh", "password": "secret12345"})
+        assert r.status_code == 403
+        assert "не подтверждён" in r.json()["detail"]
+
+        # письмо можно попросить заново, не имея сессии
+        assert c.post("/api/auth/verify/resend", json={
+            "username": "fresh", "password": "secret12345"}).status_code == 200
+        assert c.post("/api/auth/verify/resend", json={
+            "username": "fresh", "password": "wrong"}).status_code == 401
+
+        assert links, "письмо с подтверждением не ушло"
+        token = links[-1].split("token=")[1]
+        assert c.post("/api/auth/verify", json={"token": token}).status_code == 200
+
+        # и только теперь вход работает
+        r = c.post("/api/auth/login",
+                   json={"username": "fresh", "password": "secret12345"})
+        assert r.status_code == 200, r.text
+        assert c.get("/api/auth/me").json()["username"] == "fresh"

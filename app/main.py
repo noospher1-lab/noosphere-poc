@@ -486,13 +486,13 @@ async def register(body: RegisterIn, response: Response, request: Request):
         return {"ok": True, "check_email": True}
 
     await _send_verification(author_id, email)
-    token = auth.new_token()
-    await db.create_session(token, author_id, SESSION_DAYS)
-    _set_session(response, token)
-    author = await db.get_author(author_id)
+    # Сессия НЕ выдаётся: регистрация считается завершённой только после того,
+    # как человек доказал адрес (Alex, 2026-08-14). Иначе аккаунт с чужой или
+    # выдуманной почтой полноценно живёт, а восстановить его потом нечем.
     # check_email is the same flag the taken-address branch returns, so the
     # client can show one identical screen for both.
-    return {**author, "ok": True, "check_email": True, "email_verified": False}
+    return {"ok": True, "check_email": True, "email_verified": False,
+            "username": username}
 
 
 @app.post("/api/auth/login")
@@ -502,6 +502,12 @@ async def login(body: LoginIn, response: Response, request: Request):
     if not a or not a.get("password_hash") or \
             not auth.verify_password(body.password, a["password_hash"]):
         raise HTTPException(401, "неверный логин или пароль")
+    # Пароль верный, но адрес не доказан — это не «неверный логин», и говорить
+    # так значило бы отправить человека искать несуществующую ошибку. Отдельный
+    # код 403, чтобы клиент показал кнопку «выслать письмо ещё раз».
+    if not a.get("email_verified"):
+        raise HTTPException(
+            403, "адрес не подтверждён — откройте ссылку из письма")
     token = auth.new_token()
     await db.create_session(token, a["id"], SESSION_DAYS)
     _set_session(response, token)
@@ -720,13 +726,37 @@ async def my_balance_request(author=Depends(current_author)):
             "email_verified": bool(author.get("email_verified"))}
 
 
+class ResendIn(BaseModel):
+    """Логин и пароль — для того, кто ещё НЕ может войти: до подтверждения
+    адреса сессии у него нет, а письмо потерялось или ушло в спам."""
+    username: str | None = None
+    password: str | None = None
+
+
 @app.post("/api/auth/verify/resend")
-async def resend_verification(request: Request,
-                              author=Depends(current_author)):
-    """Ask for another confirmation letter. Throttled like the other auth
-    endpoints — otherwise it is a free way to mail anyone repeatedly, since the
-    address is chosen by whoever registered."""
+async def resend_verification(request: Request, body: ResendIn | None = None):
+    """Выслать письмо с подтверждением ещё раз.
+
+    Работает двумя путями: для вошедшего (по сессии) и для того, кто войти пока
+    не может — по логину и паролю. Без второго пути человек с потерянным письмом
+    оказывался заперт: войти нельзя, попросить письмо нельзя.
+
+    Троттлинг как у остальных auth-эндпоинтов: адрес выбирает тот, кто
+    регистрировался, и без ограничения это бесплатный способ слать письма кому
+    угодно.
+    """
     _login_throttle(request, "verify-resend")
+    author = None
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        author = await db.session_author(token)
+    if author is None and body and body.username and body.password:
+        a = await db.get_author_by_username(body.username.strip().lower())
+        if a and a.get("password_hash") and \
+                auth.verify_password(body.password, a["password_hash"]):
+            author = a
+    if author is None:
+        raise HTTPException(401, "нужен вход или логин с паролем")
     if author.get("email_verified"):
         return {"ok": True, "already": True}
     email = (author.get("email") or "").strip().lower()

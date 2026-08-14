@@ -202,6 +202,8 @@ async function loadMe() {
 function openAuth(msg) {
   $("#authErr").textContent = msg || "";
   $("#authModal").style.display = "flex";
+  const ce = $("#checkEmailBox");
+  if (ce) { ce.style.display = "none"; ce.innerHTML = ""; }
   showForgot(false);
   $("#authUser").focus();
 }
@@ -219,6 +221,8 @@ function showForgot(on) {
   }
   $("#authModal .actions").style.display = on ? "none" : "";
   $("#authTitle").textContent = on ? "Восстановление доступа" : "Вход или регистрация";
+  const ce = $("#checkEmailBox");
+  if (ce && !on) { ce.style.display = "none"; ce.innerHTML = ""; }
   $("#forgotLine").style.display = on ? "none" : "";
   $("#forgotBox").style.display = on ? "" : "none";
   $("#authErr").textContent = "";
@@ -276,10 +280,17 @@ async function doAuth(path) {
     }
   }
   try {
-    ME = await api(path, {
+    const out = await api(path, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
+    // Регистрация теперь НЕ впускает: аккаунт заработает, когда человек
+    // откроет ссылку из письма. Показываем это вместо молчаливого «привет».
+    if (out && out.check_email) {
+      showCheckEmail(body.username, body.password);
+      return;
+    }
+    ME = out;
     renderAuthUI();
     closeAuth();
     toast("привет, " + ME.name);
@@ -287,6 +298,67 @@ async function doAuth(path) {
     let msg = e.message;
     try { msg = JSON.parse(msg).detail || msg; } catch (_) { /* raw */ }
     $("#authErr").textContent = msg;
+    // «адрес не подтверждён» — не тупик: даём выслать письмо заново прямо тут,
+    // войти-то человек всё равно не может
+    if (/не подтверждён/i.test(msg)) offerResend(body.username, body.password);
+  }
+}
+
+// Экран «проверьте почту»: единственное, что должно быть видно после
+// регистрации. Логин и пароль держим в замыкании, чтобы кнопка повторной
+// отправки работала без входа — до подтверждения сессии у человека нет.
+function showCheckEmail(username, password) {
+  // прячем и вход, и восстановление — на этом шаге они только мешают
+  showForgot(false);
+  for (const id of ["authUser", "authPass", "authName", "authEmail",
+                    "authInvite", "authTermsLine", "forgotLine"]) {
+    const el = $("#" + id);
+    if (el) el.style.display = "none";
+  }
+  $("#authModal .actions").style.display = "none";
+  $("#authTitle").textContent = "Проверьте почту";
+  $("#authErr").textContent = "";
+  const box = $("#checkEmailBox");
+  box.style.display = "";
+  box.innerHTML = "";
+  const p = el("div", "muted");
+  p.style.fontSize = "12.5px";
+  p.textContent = "Мы отправили письмо со ссылкой. Аккаунт заработает, когда " +
+    "вы её откроете: до этого войти нельзя.";
+  box.appendChild(p);
+  const acts = el("div", "actions");
+  acts.style.marginTop = "8px";
+  const again = el("button", "mini", "выслать письмо ещё раз");
+  again.onclick = () => resendVerification(username, password, again);
+  const done = el("button", "mini primary", "Готово");
+  done.onclick = () => { closeAuth(); location.reload(); };
+  acts.append(done, again);
+  box.appendChild(acts);
+}
+
+function offerResend(username, password) {
+  const line = $("#forgotLine");
+  line.innerHTML = "";
+  const b = el("a", "muted", "выслать письмо с подтверждением ещё раз");
+  b.href = "#";
+  b.style.fontSize = "12.5px";
+  b.onclick = (e) => { e.preventDefault(); resendVerification(username, password, b); };
+  line.appendChild(b);
+}
+
+async function resendVerification(username, password, btn) {
+  const label = btn.textContent;
+  btn.textContent = "отправляю…";
+  try {
+    await api("/api/auth/verify/resend", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    $("#authErr").textContent = "письмо отправлено — проверьте почту и спам";
+  } catch (e) {
+    $("#authErr").textContent = errText(e);
+  } finally {
+    btn.textContent = label;
   }
 }
 
