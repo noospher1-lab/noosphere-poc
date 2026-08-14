@@ -212,6 +212,11 @@ log = logging.getLogger("noosphere")
 # points at localhost.
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "http://localhost:8000").rstrip("/")
 
+# Версия условий, под которой регистрируются сейчас. Меняется вместе с
+# текстом tos.html: без версии запись «согласился» через год не говорит,
+# с чем именно человек согласился.
+TERMS_VERSION = os.environ.get("TERMS_VERSION", "2026-07-21")
+
 SESSION_COOKIE = "session"
 SESSION_DAYS = 30
 
@@ -447,7 +452,7 @@ async def register(body: RegisterIn, response: Response, request: Request):
         username, auth.hash_password(body.password),
         (body.name or username).strip() or username, color,
         invite=body.invite, email=email, balance_usd=DEFAULT_BALANCE_USD,
-        invite_required=INVITE_REQUIRED)
+        invite_required=INVITE_REQUIRED, terms_version=TERMS_VERSION)
     if author_id == "invite":
         raise HTTPException(403, "нужен действующий код приглашения")
     # Usernames are public — they appear under every argument — so saying this

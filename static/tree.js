@@ -211,7 +211,8 @@ function closeAuth() { $("#authModal").style.display = "none"; }
 // Серверная часть (/api/auth/forgot + reset.html) была с самого начала, а входа
 // в неё из интерфейса не было: забывший пароль упирался в тупик.
 function showForgot(on) {
-  const login = ["authUser", "authPass", "authName", "authEmail", "authInvite"];
+  const login = ["authUser", "authPass", "authName", "authEmail", "authInvite",
+                 "authTermsLine"];
   for (const id of login) {
     const el = $("#" + id);
     if (el) el.style.display = on ? "none" : "";
@@ -266,6 +267,13 @@ async function doAuth(path) {
     body.name = $("#authName").value.trim() || undefined;
     body.invite = $("#authInvite").value.trim() || undefined;
     body.email = $("#authEmail").value.trim() || undefined;
+    // Сервер требует явного согласия. Проверяем и здесь, чтобы человек увидел
+    // причину рядом с чекбоксом, а не общей ошибкой формы после запроса.
+    body.accept_terms = $("#authTerms").checked;
+    if (!body.accept_terms) {
+      $("#authErr").textContent = "нужно принять условия и политику данных";
+      return;
+    }
   }
   try {
     ME = await api(path, {
@@ -974,6 +982,51 @@ async function react(id, root, stance) {
   } catch (e) { toast("ошибка: " + e.message); }
 }
 
+
+// ---- необратимость: сказать до, а не после
+//
+// Опубликованный текст неизменен (vault: decisions/edit-delete-window), и
+// узнать об этом человек должен ДО отправки. Подсказки в форме для этого не
+// годятся: их можно выключить, и тогда единственное упоминание исчезает. Один
+// раз на браузер показываем явное окно, дальше — тихая строка у кнопки.
+function irreversibleNote() {
+  const n = el("div", "muted");
+  n.style.fontSize = "12px";
+  n.textContent = "опубликованное не редактируется";
+  n.title = "Снять свой довод можно в течение часа, пока никто не ответил. " +
+            "Позже — только отозвать или добавить примечание";
+  return n;
+}
+
+function confirmIrreversible() {
+  if (localStorage.getItem("noo_irrev_ok") === "1") return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const back = el("div", "modal");
+    back.style.display = "flex";
+    const card = el("div", "card modal-card");
+    card.appendChild(el("div", "section-title", "Прежде чем опубликовать"));
+    card.appendChild(el("div", null,
+      "Опубликованный текст нельзя отредактировать — ни сейчас, ни потом. " +
+      "На нём строят ответы, и он остаётся в общем корпусе."));
+    const list = el("div", "muted");
+    list.style.marginTop = "8px";
+    list.textContent = "Снять свой довод целиком можно в течение часа и только " +
+      "пока никто не ответил. Позже остаются отзыв («больше не настаиваю») и " +
+      "примечание сбоку.";
+    card.appendChild(list);
+    const acts = el("div", "actions");
+    const ok = el("button", "primary", "Понятно, публикую");
+    const no = el("button", null, "Вернуться к тексту");
+    ok.onclick = () => { localStorage.setItem("noo_irrev_ok", "1"); back.remove(); resolve(true); };
+    no.onclick = () => { back.remove(); resolve(false); };
+    acts.append(ok, no);
+    card.appendChild(acts);
+    back.appendChild(card);
+    document.body.appendChild(back);
+    ok.focus();
+  });
+}
+
 // ---- AI navigator: pre-publication check against the topic's positions.
 // A suggestion, never a block — "отправить всё равно" is always available.
 async function precheck(root, text) {
@@ -1585,6 +1638,7 @@ function replyForm(parentId) {
     if (typeSel.value === "undercut" && !anchor) {
       toast("«подорвать» целится в участок — выдели фрагмент текста"); return;
     }
+    if (!await confirmIrreversible()) return;
     try {
       await api("/api/argument", {
         method: "POST", headers: { "content-type": "application/json" },
@@ -1653,6 +1707,9 @@ function replyForm(parentId) {
   send.onclick = runReview;
   act.append(typeSel, send);
   card.appendChild(act);
+  // видно всегда, в отличие от подсказок: их выключают, и тогда о
+  // неизменности текста узнать негде
+  card.appendChild(irreversibleNote());
   card.appendChild(hint);
   return card;
 }
@@ -1798,6 +1855,7 @@ function newTopicForm(prefill) {
   const doCreate = async (text) => {
     const title = titleIn.value.trim();
     if (!title) { toast("укажи название темы"); titleIn.focus(); return; }
+    if (!await confirmIrreversible()) return;
     send.disabled = true; send.textContent = "создаю…";
     try {
       // no connect_to => a new root; the review has no topic to compare
@@ -1860,6 +1918,7 @@ function newTopicForm(prefill) {
   send.onclick = runReview;
   act.append(kindSel, send, cancel);
   card.appendChild(act);
+  card.appendChild(irreversibleNote());
   card.appendChild(hint);
   d.appendChild(card);
   ta.focus();

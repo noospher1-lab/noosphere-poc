@@ -63,3 +63,41 @@ def test_user_and_session_flow():
         assert all("password_hash" not in x for x in await db.list_authors())
         await db.close_pool()
     asyncio.run(go())
+
+
+@pytest.mark.skipif(not TEST_DB, reason="TEST_DATABASE_URL not set")
+def test_terms_consent_is_recorded():
+    """Согласие фиксируется, а не подразумевается.
+
+    Регистрация открыта незнакомым людям, и через год должно быть видно не
+    только «согласился», но и с какой версией текста (vault:
+    data-deletion-model).
+    """
+    async def go():
+        from app import db
+        db.DATABASE_URL = TEST_DB
+        await db.close_pool()
+        await db.init_pool()
+        await db.init_db()
+        await db.wipe(force=True)
+
+        uid = await db.add_user("terms_user", auth.hash_password("secret12"),
+                                "Согласный", "#fff", invite_required=False,
+                                terms_version="2026-07-21")
+        pool = db._pool_or_raise()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT terms_version, terms_accepted_at FROM authors WHERE id = $1",
+                uid)
+        assert row["terms_version"] == "2026-07-21"
+        assert row["terms_accepted_at"] is not None
+
+        # без версии — время согласия не проставляется само собой
+        other = await db.add_user("no_terms", auth.hash_password("secret12"),
+                                  "Без версии", "#fff", invite_required=False)
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT terms_accepted_at FROM authors WHERE id = $1", other)
+        assert row["terms_accepted_at"] is None
+        await db.close_pool()
+    asyncio.run(go())

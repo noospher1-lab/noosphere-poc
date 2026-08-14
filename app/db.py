@@ -548,6 +548,13 @@ _SCHEMA = [
     # рейтинге выше человеческих просто потому, что писавший знает рубрику
     # изнутри. Служебные узлы остаются с пустым PoI и в соревновании не участвуют.
     "ALTER TABLE authors ADD COLUMN IF NOT EXISTS is_service BOOLEAN NOT NULL DEFAULT FALSE",
+    # СОГЛАСИЕ С УСЛОВИЯМИ. Регистрация открыта незнакомым людям, и лицензия на
+    # вклады с политикой данных должны быть приняты тем, кому их показали
+    # (vault: data-deletion-model). Согласие фиксируется, а не подразумевается:
+    # запоминаем момент и версию текста, иначе через год нечем будет показать,
+    # с чем именно человек соглашался.
+    "ALTER TABLE authors ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ",
+    "ALTER TABLE authors ADD COLUMN IF NOT EXISTS terms_version TEXT",
     # Рубрикация темы. Отдельной таблицей, а не колонками в nodes: рубрика
     # есть только у КОРНЯ обсуждения, и держать её на всех узлах значило бы
     # хранить пустоту в 99% строк.
@@ -1461,7 +1468,8 @@ async def shared_key_spend():
 
 
 async def add_user(username, password_hash, name, color=None, invite=None,
-                   email=None, balance_usd=0, invite_required=True):
+                   email=None, balance_usd=0, invite_required=True,
+                   terms_version=None):
     """Register: an account is an author with credentials.
 
     Returns the new author id, or a string error tag: "taken" (username in
@@ -1494,12 +1502,14 @@ async def add_user(username, password_hash, name, color=None, invite=None,
                 author_id = await conn.fetchval(
                     """
                     INSERT INTO authors (name, color, username, password_hash,
-                                         email, balance_usd)
-                    VALUES ($1, $2, $3, $4, $5, $6)
+                                         email, balance_usd,
+                                         terms_accepted_at, terms_version)
+                    VALUES ($1, $2, $3, $4, $5, $6,
+                            CASE WHEN $7::text IS NULL THEN NULL ELSE now() END, $7)
                     ON CONFLICT (username) DO NOTHING
                     RETURNING id
                     """, name, color, username, password_hash, email,
-                    balance_usd)
+                    balance_usd, terms_version)
             except asyncpg.UniqueViolationError:
                 return "email_taken"      # the lower(email) unique index
             if author_id is None:
@@ -1512,7 +1522,11 @@ async def add_user(username, password_hash, name, color=None, invite=None,
             await _log(conn, "author_added",
                        {"name": name, "username": username,
                         "invite": row["code"] if row is not None else None,
-                        "open": row is None},
+                        "open": row is None,
+                        # согласие уходит и в append-only лог: строку в authors
+                        # можно потом стереть по требованию об удалении данных,
+                        # а факт принятия условий должен пережить это
+                        "terms_version": terms_version},
                        author_id)
     return author_id
 
