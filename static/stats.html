@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noosphere — статистика</title>
+<style>
+  :root {
+    --bg:#05060a; --panel:#0b0d14; --panel2:#10131d; --line:#1e2230;
+    --ivory:#ece6d8; --dim:#8a8f9e; --bronze:#d8af6e; --green:#57d98a;
+    --red:#e25b56; --blue:#5aa9e6; --violet:#b98cff;
+    --mono:'JetBrains Mono',ui-monospace,'SFMono-Regular',Menlo,monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; min-height:100%; background:var(--bg); color:var(--ivory);
+    font-family:var(--mono); font-size:13px; }
+  a { color:var(--blue); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  header { display:flex; align-items:center; gap:14px; padding:10px 16px;
+    border-bottom:1px solid var(--line); background:var(--panel);
+    position:sticky; top:0; z-index:5; }
+  header .brand { font-weight:600; letter-spacing:.08em; color:var(--bronze); }
+  header .spacer { flex:1; }
+  .muted { color:var(--dim); }
+  main { max-width:1080px; margin:0 auto; padding:20px 20px 80px; }
+
+  .section-title { color:var(--dim); letter-spacing:.08em; text-transform:uppercase;
+    font-size:10px; margin:26px 0 10px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    padding:14px 16px; }
+
+  /* плитки */
+  .tiles { display:grid; gap:10px;
+    grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); }
+  .tile { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    padding:14px 16px; }
+  .tile .k { color:var(--dim); font-size:10px; text-transform:uppercase;
+    letter-spacing:.08em; }
+  .tile .v { font-size:34px; font-weight:700; line-height:1.15; margin-top:6px;
+    font-variant-numeric:tabular-nums; }
+  .tile .sub { color:var(--dim); font-size:11px; margin-top:2px; }
+  .tile.hero .v { color:var(--bronze); }
+  .tile.live .v { color:var(--green); }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%;
+    background:var(--green); margin-right:6px; vertical-align:middle; }
+  .dot.off { background:var(--dim); }
+
+  table { width:100%; border-collapse:collapse; }
+  th { text-align:left; color:var(--dim); font-weight:400; font-size:10px;
+    text-transform:uppercase; letter-spacing:.06em; padding:0 10px 8px 0;
+    border-bottom:1px solid var(--line); }
+  td { padding:8px 10px 8px 0; border-bottom:1px solid var(--line);
+    vertical-align:top; }
+  tr:last-child td { border-bottom:none; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .who { font-weight:600; }
+  .yes { color:var(--green); }
+  .no  { color:var(--dim); }
+
+  .bar { height:7px; background:var(--panel2); border-radius:4px; overflow:hidden;
+    margin:10px 0 6px; display:flex; }
+  .bar i { display:block; height:100%; }
+  .bar .used { background:var(--bronze); }
+  .bar .free { background:#243a2b; }
+  .legend { display:flex; gap:16px; color:var(--dim); font-size:11px; }
+  .legend b { color:var(--ivory); font-weight:600; }
+
+  .kv { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+    gap:12px 20px; }
+  .kv div span { display:block; }
+  .kv .k { color:var(--dim); font-size:10px; text-transform:uppercase;
+    letter-spacing:.06em; }
+  .kv .v { font-size:20px; font-weight:600; margin-top:3px;
+    font-variant-numeric:tabular-nums; }
+
+  /* Таблица профилей прокручивается ВНУТРИ карточки — и по горизонтали
+     (колонок много), и по вертикали. Так шапка со столбцами остаётся на
+     виду: sticky отсчитывается от прокручиваемого предка, а не от окна,
+     и без собственной высоты у контейнера заголовки просто уезжали бы вверх
+     вместе со всей карточкой. */
+  .scroll { overflow:auto; max-height:70vh; }
+  .scroll table { min-width:820px; }
+  .scroll th { position:sticky; top:0; background:var(--panel); z-index:2;
+    cursor:pointer; user-select:none; white-space:nowrap; }
+  .scroll th:hover { color:var(--ivory); }
+  .scroll th .arrow { color:var(--bronze); }
+  .toolbar { display:flex; align-items:center; gap:12px; margin-bottom:10px; }
+  #q { flex:1; max-width:320px; font-family:var(--mono); font-size:12px;
+    color:var(--ivory); background:var(--panel2); border:1px solid var(--line);
+    border-radius:6px; padding:6px 9px; }
+  #q:focus { outline:none; border-color:var(--bronze); }
+  .money { color:var(--bronze); }
+  .zero { color:var(--dim); }
+  .warn { color:var(--red); }
+  .tag { font-size:10px; color:var(--violet); border:1px solid #2a1a33;
+    border-radius:4px; padding:0 4px; margin-left:5px; }
+
+  .err { color:var(--red); margin:14px 0; }
+  .empty { color:var(--dim); padding:18px 0; }
+  button { font-family:var(--mono); font-size:12px; color:var(--ivory);
+    background:var(--panel2); border:1px solid var(--line); border-radius:6px;
+    padding:5px 10px; cursor:pointer; }
+  button:hover { border-color:var(--bronze); }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">NOOSPHERE</span>
+  <span class="muted">статистика</span>
+  <span class="spacer"></span>
+  <span class="muted" id="updated"></span>
+  <button id="refresh">обновить</button>
+  <button id="forget" title="забыть сохранённый ADMIN_TOKEN">выйти</button>
+  <a href="/dialogue-admin.html">диалоги ▸</a>
+  <a href="/">← к обсуждениям</a>
+</header>
+
+<main>
+  <div id="error"></div>
+
+  <div class="section-title">люди</div>
+  <div class="tiles" id="people"></div>
+
+  <div class="section-title">кто сейчас онлайн</div>
+  <div class="card" id="online"></div>
+
+  <div class="section-title">деньги на ИИ</div>
+  <div class="tiles" id="money"></div>
+
+  <div class="section-title" id="profilesTitle">все профили</div>
+  <div class="card">
+    <div class="toolbar">
+      <input id="q" placeholder="фильтр: логин, имя или почта" autocomplete="off">
+      <span class="muted" id="profilesCount"></span>
+    </div>
+    <div class="scroll" id="profiles"></div>
+  </div>
+
+  <div class="section-title">инвайты</div>
+  <div class="card" id="invites"></div>
+
+  <div class="section-title">граф</div>
+  <div class="card" id="content"></div>
+</main>
+
+<script>
+const $ = (s, r=document) => r.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g,
+  c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+
+function getToken() {
+  let t = localStorage.getItem("admin_token");
+  if (!t) {
+    t = prompt("X-Admin-Token (ADMIN_TOKEN сервера):") || "";
+    if (t) localStorage.setItem("admin_token", t);
+  }
+  return t;
+}
+
+async function api(path) {
+  const r = await fetch(path, { headers: { "X-Admin-Token": getToken() } });
+  if (r.status === 403) localStorage.removeItem("admin_token");  // спросим заново
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || String(r.status));
+  return r.json();
+}
+
+// «5 минут назад» вместо голого ISO: на этой странице важно не когда именно,
+// а насколько давно.
+function ago(iso) {
+  if (!iso) return "—";
+  const sec = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (sec < 60)    return "только что";
+  if (sec < 3600)  return Math.floor(sec / 60) + " мин назад";
+  if (sec < 86400) return Math.floor(sec / 3600) + " ч назад";
+  const d = Math.floor(sec / 86400);
+  return d + " " + (d % 10 === 1 && d % 100 !== 11 ? "день" :
+    (d % 10 >= 2 && d % 10 <= 4 && (d % 100 < 10 || d % 100 >= 20)) ? "дня" : "дней") + " назад";
+}
+
+function fmtDate(iso) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString("ru-RU", { day:"2-digit", month:"2-digit",
+    year:"2-digit", hour:"2-digit", minute:"2-digit" });
+}
+
+// Доли цента здесь не шум, а типичная величина одного вызова: $0.0043 сказало бы
+// «почти ничего», а $0.00 — «ничего», что уже неправда. До цента округляем
+// только суммы от доллара, где четвёртый знак действительно не нужен.
+function usd(x) {
+  const v = Number(x) || 0;
+  if (v === 0) return "$0";
+  return "$" + (v >= 1 ? v.toFixed(2) : v.toFixed(4));
+}
+
+function tile(k, v, sub, cls="") {
+  return `<div class="tile ${cls}"><div class="k">${esc(k)}</div>` +
+         `<div class="v">${esc(v)}</div>` +
+         (sub ? `<div class="sub">${sub}</div>` : "") + `</div>`;
+}
+
+function render(d) {
+  const u = d.users, p = d.presence, win = d.online_window_min;
+
+  $("#people").innerHTML =
+    tile("зарегистрировано", u.registered, "живых аккаунтов, без служебных", "hero") +
+    tile("онлайн сейчас", p.online,
+         `<span class="dot ${p.online ? "" : "off"}"></span>активность за ${win} мин`, "live") +
+    tile("активны за сутки", p.active_24h) +
+    tile("активны за неделю", p.active_7d) +
+    tile("подтвердили почту", u.verified,
+         u.registered ? Math.round(100 * u.verified / u.registered) + "% от всех" : "") +
+    tile("прошли диалог PoI", u.with_poi) +
+    tile("новых за сутки", u.new_24h, "за неделю: " + u.new_7d) +
+    tile("живых сессий", p.live_sessions, "включая неактивные вкладки");
+
+  $("#online").innerHTML = d.online_now.length ? `<table>
+    <tr><th>кто</th><th>логин</th><th class="num">последний запрос</th></tr>
+    ${d.online_now.map(o => `<tr>
+      <td class="who">${esc(o.name)}</td>
+      <td class="muted">${esc(o.username)}</td>
+      <td class="num muted">${ago(o.last_seen)}</td></tr>`).join("")}
+    </table>` : `<div class="empty">сейчас никого — активность за ${win} мин</div>`;
+
+  const m = d.spend_total;
+  $("#money").innerHTML =
+    tile("потрачено всего", usd(m.spent_usd), "на вызовы ИИ, за всё время", "hero") +
+    tile("за сутки", usd(m.spent_24h_usd)) +
+    tile("выдано бюджета", usd(m.granted_usd),
+         "осталось: " + usd(m.granted_usd - m.spent_usd)) +
+    tile("вызовов ИИ", m.calls);
+
+  profiles = d.profiles;
+  renderProfiles();
+
+  const inv = d.invites, total = inv.total || 1;
+  $("#invites").innerHTML = `
+    <div class="bar">
+      <i class="used" style="width:${100 * inv.used / total}%"></i>
+      <i class="free" style="width:${100 * inv.free / total}%"></i>
+    </div>
+    <div class="legend">
+      <span>потрачено <b>${inv.used}</b></span>
+      <span>свободно <b>${inv.free}</b></span>
+      <span>выпущено всего <b>${inv.total}</b></span>
+    </div>`;
+
+  const c = d.content, g = d.dialogues;
+  $("#content").innerHTML = `<div class="kv">
+    <div><span class="k">тем</span><span class="v">${c.topics}</span></div>
+    <div><span class="k">узлов</span><span class="v">${c.nodes}</span></div>
+    <div><span class="k">доводов</span><span class="v">${c.arguments}</span></div>
+    <div><span class="k">вопросов</span><span class="v">${c.questions}</span></div>
+    <div><span class="k">за сутки</span><span class="v">${c.nodes_24h}</span></div>
+    <div><span class="k">диалогов начато</span><span class="v">${g.started}</span></div>
+    <div><span class="k">из них с итогом</span><span class="v">${g.finished}</span></div>
+  </div>`;
+
+  $("#updated").textContent = "обновлено " +
+    new Date().toLocaleTimeString("ru-RU", { hour:"2-digit", minute:"2-digit", second:"2-digit" });
+  $("#error").innerHTML = "";
+}
+
+// ---- полный список профилей: сортировка по любому столбцу + фильтр.
+// Состояние живёт вне render(): страница перечитывает данные раз в 30 секунд,
+// и таблица не должна прыгать обратно к сортировке по умолчанию под руками.
+let profiles = [];
+let sortKey = "created_at", sortDesc = true, filter = "";
+
+const COLS = [
+  { k:"name",          t:"кто",         cell:r => `<span class="who">${esc(r.name)}</span>` +
+      (r.own_key ? `<span class="tag" title="свой ключ Anthropic">свой ключ</span>` : "") },
+  { k:"username",      t:"логин",       cell:r => `<a href="/u/${encodeURIComponent(r.username)}" class="muted">${esc(r.username)}</a>` },
+  { k:"email",         t:"почта",       cell:r => r.email
+      ? `<span class="${r.email_verified ? "yes" : "no"}" title="${r.email_verified ? "подтверждена" : "не подтверждена"}">${esc(r.email)}</span>`
+      : `<span class="no">—</span>` },
+  { k:"created_at",    t:"регистрация", num:true, cell:r => `<span class="muted">${fmtDate(r.created_at)}</span>` },
+  { k:"last_seen",     t:"был здесь",   num:true, cell:r => `<span class="muted">${ago(r.last_seen)}</span>` },
+  { k:"nodes",         t:"узлов",       num:true, cell:r => r.nodes || `<span class="zero">0</span>` },
+  { k:"dialogue_poi",  t:"PoI",         num:true, cell:r => r.dialogue_poi ?? `<span class="zero">—</span>` },
+  { k:"calls",         t:"вызовов",     num:true, cell:r => r.calls || `<span class="zero">0</span>` },
+  { k:"spent_usd",     t:"потрачено",   num:true, cell:r => r.spent_usd
+      ? `<span class="money">${usd(r.spent_usd)}</span>` : `<span class="zero">$0</span>` },
+  { k:"spent_24h_usd", t:"за сутки",    num:true, cell:r => r.spent_24h_usd
+      ? usd(r.spent_24h_usd) : `<span class="zero">$0</span>` },
+  { k:"granted_usd",   t:"выдано",      num:true, cell:r => `<span class="muted">${usd(r.granted_usd)}</span>` },
+  // Минус — это перерасход: бюджет ушёл в ноль, а вызовы продолжались.
+  { k:"left_usd",      t:"осталось",    num:true, cell:r =>
+      `<span class="${r.left_usd <= 0 ? "warn" : ""}">${usd(r.left_usd)}</span>` },
+];
+
+function renderProfiles() {
+  const q = filter.trim().toLowerCase();
+  const rows = profiles.filter(r => !q ||
+    [r.username, r.name, r.email].some(v => (v || "").toLowerCase().includes(q)));
+
+  rows.sort((a, b) => {
+    let x = a[sortKey], y = b[sortKey];
+    if (x === null || x === undefined) x = -Infinity;   // «никогда» — всегда в хвосте
+    if (y === null || y === undefined) y = -Infinity;
+    if (sortKey === "created_at" || sortKey === "last_seen") {
+      x = x === -Infinity ? x : new Date(x).getTime();
+      y = y === -Infinity ? y : new Date(y).getTime();
+    }
+    const c = typeof x === "string" && typeof y === "string"
+      ? x.localeCompare(y, "ru") : (x < y ? -1 : x > y ? 1 : 0);
+    return sortDesc ? -c : c;
+  });
+
+  $("#profilesCount").textContent = rows.length === profiles.length
+    ? `${profiles.length} всего`
+    : `${rows.length} из ${profiles.length}`;
+
+  $("#profiles").innerHTML = rows.length ? `<table>
+    <tr>${COLS.map(c => `<th data-k="${c.k}" class="${c.num ? "num" : ""}">${c.t}` +
+      (sortKey === c.k ? `<span class="arrow">${sortDesc ? " ↓" : " ↑"}</span>` : "") +
+      `</th>`).join("")}</tr>
+    ${rows.map(r => `<tr>${COLS.map(c =>
+      `<td class="${c.num ? "num" : ""}">${c.cell(r)}</td>`).join("")}</tr>`).join("")}
+    </table>` : `<div class="empty">${profiles.length ? "никто не подошёл под фильтр"
+                                                      : "пока ни одного аккаунта"}</div>`;
+
+  $("#profiles").querySelectorAll("th").forEach(th => th.onclick = () => {
+    const k = th.dataset.k;
+    // тот же столбец — переворот; новый — сначала по убыванию (чаще всего нужен верх)
+    if (sortKey === k) sortDesc = !sortDesc; else { sortKey = k; sortDesc = true; }
+    renderProfiles();
+  });
+}
+
+$("#q").oninput = e => { filter = e.target.value; renderProfiles(); };
+
+async function load() {
+  try {
+    render(await api("/api/dev/stats"));
+  } catch (e) {
+    $("#error").innerHTML = `<div class="err">не вышло: ${esc(e.message)}</div>`;
+  }
+}
+
+$("#refresh").onclick = load;
+$("#forget").onclick = () => { localStorage.removeItem("admin_token"); location.reload(); };
+load();
+setInterval(load, 30000);   // «онлайн» с точностью до минуты — чаще незачем
+</script>
+</body>
+</html>

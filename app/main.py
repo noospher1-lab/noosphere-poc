@@ -731,6 +731,18 @@ async def config():
     return {"dev_tools": DEV_TOOLS}
 
 
+@app.get("/api/stats")
+async def public_stats():
+    """Сколько людей здесь зарегистрировано и сколько онлайн прямо сейчас.
+
+    Открыто намеренно: присутствие — часть того, что площадка показывает о
+    себе, и прятать его за токеном значило бы врать умолчанием. Наружу идут
+    только два числа: ни имён, ни адресов, ни времени входа конкретного
+    человека (это уже /api/dev/stats под ADMIN_TOKEN).
+    """
+    return await db.stats_public()
+
+
 @app.get("/api/graph")
 async def get_graph():
     return await db.get_graph()
@@ -2288,6 +2300,14 @@ async def dev_mint_invites(body: InviteIn):
 @app.get("/api/dev/invites", dependencies=[Depends(admin_only)])
 async def dev_list_invites():
     return await db.list_invites()
+
+
+@app.get("/api/dev/stats", dependencies=[Depends(admin_only)])
+async def dev_stats():
+    """Полная сводка для /stats.html: регистрации, присутствие, инвайты,
+    содержимое графа. Под ADMIN_TOKEN, а не под DEV_TOOLS — нужна именно на
+    живом инстансе, где dev-инструменты выключены."""
+    return await db.stats_admin()
 
 
 @app.get("/api/dev/llm-budget", dependencies=[Depends(admin_only)])

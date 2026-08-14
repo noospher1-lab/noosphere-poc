@@ -46,6 +46,14 @@ EDGE_TYPES = ("support", "refute", "qualify", "question",
 # остаётся только примечание сбоку (node_addenda) — приписка, не правка.
 EDIT_WINDOW = timedelta(hours=1)
 
+# «Онлайн» = у аккаунта была живая сессия за последние ONLINE_WINDOW. Пятнадцать
+# минут, а не пять: человек, который читает длинную ветку или пишет ответ, не
+# шлёт запросов, но никуда не уходил — узкое окно выдавало бы ноль при живых
+# читателях. TOUCH_EVERY — как часто отметка вообще пишется в базу; точность
+# «онлайна» упирается именно в него, поэтому минута.
+ONLINE_WINDOW = timedelta(minutes=15)
+TOUCH_EVERY = timedelta(minutes=1)
+
 
 class Locked(Exception):
     """Высказывание больше не принадлежит автору: окно вышло, или уже ответили,
@@ -686,6 +694,12 @@ _SCHEMA = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS node_addenda_node_idx ON node_addenda (node_id)",
+    # ПОСЛЕДНЯЯ АКТИВНОСТЬ СЕССИИ — из неё считается «сколько человек сейчас
+    # онлайн». Живёт на сессии, а не на аккаунте: у одного человека может быть
+    # открыт телефон и ноутбук, и «онлайн» тогда честнее считать по
+    # DISTINCT author_id, а не по последней перезаписанной отметке.
+    # Пишется не на каждый запрос, а не чаще раза в минуту (см. session_author).
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ",
 ]
 
 
@@ -721,6 +735,8 @@ _INDEXES = [
     "CREATE INDEX IF NOT EXISTS node_topics_node_idx ON node_topics(node_id)",
     # атрибуции одной записи реестра — индексный поиск, не скан таблицы узлов
     "CREATE INDEX IF NOT EXISTS idx_nodes_intervention ON nodes(intervention_id)",
+    # «кто онлайн» — запрос по окну последней активности, а не скан всех сессий
+    "CREATE INDEX IF NOT EXISTS sessions_last_seen_idx ON sessions(last_seen)",
 ]
 
 
@@ -1520,6 +1536,160 @@ async def list_invites():
         return [dict(r) for r in rows]
 
 
+# ---- сколько нас: регистрации и присутствие.
+#
+# Служебные аккаунты (is_service) и посевные персоны (username IS NULL, войти
+# нельзя) в счёт не идут: «зарегистрировано» должно отвечать на вопрос «сколько
+# живых людей завело здесь учётную запись», а не «сколько строк в authors».
+_REAL_USER = "a.username IS NOT NULL AND NOT a.is_service"
+
+
+async def stats_public():
+    """Две цифры, которые не выдают ничего личного: сколько людей завело
+    аккаунт и сколько из них здесь прямо сейчас. Отдаётся открыто (см.
+    GET /api/stats) — публичный счётчик присутствия и есть смысл затеи."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"""
+            SELECT
+              (SELECT COUNT(*) FROM authors a WHERE {_REAL_USER}) AS registered,
+              (SELECT COUNT(DISTINCT s.author_id)
+                 FROM sessions s JOIN authors a ON a.id = s.author_id
+                WHERE {_REAL_USER} AND s.last_seen > now() - $1::interval) AS online
+            """, ONLINE_WINDOW)
+    return {"registered": row["registered"], "online": row["online"],
+            "online_window_min": int(ONLINE_WINDOW.total_seconds() // 60)}
+
+
+async def stats_admin():
+    """Полная сводка для страницы /stats.html — под ADMIN_TOKEN.
+
+    Здесь можно больше, чем в публичной: имена тех, кто сейчас онлайн, свежие
+    регистрации, остаток инвайтов. Один вызов вместо пяти — страница обновляется
+    по таймеру, и каждый лишний round-trip умножается на частоту опроса.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        users = await conn.fetchrow(
+            f"""
+            SELECT
+              COUNT(*)                                              AS registered,
+              COUNT(*) FILTER (WHERE a.email_verified)              AS verified,
+              COUNT(*) FILTER (WHERE a.created_at > now() - interval '24 hours') AS new_24h,
+              COUNT(*) FILTER (WHERE a.created_at > now() - interval '7 days')   AS new_7d,
+              COUNT(*) FILTER (WHERE a.dialogue_poi IS NOT NULL)    AS with_poi
+            FROM authors a WHERE {_REAL_USER}
+            """)
+        presence = await conn.fetchrow(
+            f"""
+            SELECT
+              COUNT(DISTINCT s.author_id) FILTER (
+                WHERE s.last_seen > now() - $1::interval)             AS online,
+              COUNT(DISTINCT s.author_id) FILTER (
+                WHERE s.last_seen > now() - interval '24 hours')      AS active_24h,
+              COUNT(DISTINCT s.author_id) FILTER (
+                WHERE s.last_seen > now() - interval '7 days')        AS active_7d,
+              COUNT(*)                                                AS live_sessions
+            FROM sessions s JOIN authors a ON a.id = s.author_id
+            WHERE {_REAL_USER} AND s.expires_at >= now()
+            """, ONLINE_WINDOW)
+        online_now = await conn.fetch(
+            f"""
+            SELECT a.id, a.username, a.name, MAX(s.last_seen) AS last_seen
+            FROM sessions s JOIN authors a ON a.id = s.author_id
+            WHERE {_REAL_USER} AND s.last_seen > now() - $1::interval
+            GROUP BY a.id, a.username, a.name
+            ORDER BY MAX(s.last_seen) DESC
+            """, ONLINE_WINDOW)
+        invites = await conn.fetchrow(
+            """
+            SELECT COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE used_at IS NOT NULL) AS used,
+                   COUNT(*) FILTER (WHERE used_at IS NULL)     AS free
+            FROM invites
+            """)
+        content = await conn.fetchrow(
+            """
+            SELECT COUNT(*)                                            AS nodes,
+                   COUNT(*) FILTER (WHERE kind = 'argument')           AS arguments,
+                   COUNT(*) FILTER (WHERE kind = 'question')           AS questions,
+                   COUNT(*) FILTER (WHERE id = topic_root_id)          AS topics,
+                   COUNT(*) FILTER (WHERE created_at > now() - interval '24 hours')
+                                                                       AS nodes_24h
+            FROM nodes WHERE deleted_at IS NULL
+            """)
+        dialogues = await conn.fetchrow(
+            """
+            SELECT COUNT(*)                                     AS started,
+                   COUNT(*) FILTER (WHERE phase = 'results')    AS finished
+            FROM dialogues
+            """)
+        # ВСЕ профили одной строкой каждый: кто, когда завёл, был ли здесь,
+        # что написал и сколько денег сжёг на ИИ. Одна таблица, а не две
+        # («свежие» + «расходы»): человек — это и есть его строка, и сводить
+        # их глазами по логину значило бы делать работу за читателя.
+        #
+        # Подзапросами, а не JOIN-ами: три независимых агрегата (сессии, узлы,
+        # траты) в одном GROUP BY перемножились бы друг на друга и раздули
+        # суммы. На масштабах PoC это дешевле и, главное, не врёт.
+        profiles = await conn.fetch(
+            f"""
+            SELECT a.id, a.username, a.name, a.created_at,
+                   a.email, a.email_verified, a.dialogue_poi,
+                   a.balance_usd            AS granted,
+                   a.api_key IS NOT NULL    AS own_key,
+                   (SELECT MAX(s.last_seen) FROM sessions s
+                     WHERE s.author_id = a.id)                    AS last_seen,
+                   (SELECT COUNT(*) FROM nodes n
+                     WHERE n.author_id = a.id AND n.deleted_at IS NULL) AS nodes,
+                   (SELECT COALESCE(SUM(u.cost_usd), 0) FROM usage_events u
+                     WHERE u.author_id = a.id)                    AS spent,
+                   (SELECT COALESCE(SUM(u.cost_usd), 0) FROM usage_events u
+                     WHERE u.author_id = a.id
+                       AND u.created_at > now() - interval '24 hours') AS spent_24h,
+                   (SELECT COUNT(*) FROM usage_events u
+                     WHERE u.author_id = a.id)                    AS calls,
+                   (SELECT MAX(u.created_at) FROM usage_events u
+                     WHERE u.author_id = a.id)                    AS last_call
+            FROM authors a WHERE {_REAL_USER}
+            ORDER BY a.created_at DESC
+            """)
+    rows = []
+    for r in profiles:
+        granted, spent_usd = float(r["granted"] or 0), float(r["spent"] or 0)
+        rows.append({
+            "id": r["id"], "username": r["username"], "name": r["name"],
+            "created_at": r["created_at"], "email": r["email"],
+            "email_verified": r["email_verified"],
+            "dialogue_poi": (round(float(r["dialogue_poi"]), 1)
+                             if r["dialogue_poi"] is not None else None),
+            "last_seen": r["last_seen"], "nodes": r["nodes"],
+            "granted_usd": round(granted, 4),
+            "spent_usd": round(spent_usd, 6),
+            "spent_24h_usd": round(float(r["spent_24h"] or 0), 6),
+            "left_usd": round(granted - spent_usd, 4),
+            "calls": r["calls"], "own_key": r["own_key"],
+            "last_call": r["last_call"],
+        })
+    return {
+        "users": dict(users),
+        "presence": dict(presence),
+        "online_window_min": int(ONLINE_WINDOW.total_seconds() // 60),
+        "online_now": [dict(r) for r in online_now],
+        "profiles": rows,
+        "invites": dict(invites),
+        "content": dict(content),
+        "dialogues": dict(dialogues),
+        "spend_total": {
+            "granted_usd": round(sum(r["granted_usd"] for r in rows), 4),
+            "spent_usd": round(sum(r["spent_usd"] for r in rows), 6),
+            "spent_24h_usd": round(sum(r["spent_24h_usd"] for r in rows), 6),
+            "calls": sum(r["calls"] for r in rows),
+        },
+    }
+
+
 async def record_usage(author_id, rows, endpoint=None):
     """Write one usage_event per LLM call made during a request."""
     if not rows:
@@ -2000,18 +2170,30 @@ async def session_author(token):
     publishing is allowed. These extra columns must not be echoed into a public
     response — that is why they are added here and not to _AUTHOR_COLS, which
     goes out over the open GET /api/authors.
+
+    Also stamps last_seen: this function runs on every authenticated request, so
+    it is the one place that knows someone is still there. The write is throttled
+    to once a minute per session (TOUCH_EVERY) — «онлайн» с точностью до минуты
+    стоит ровно ничего, а UPDATE на каждый запрос превратил бы чтение графа в
+    поток записей. Обе операции одним round-trip: CTE обновляет, SELECT читает.
     """
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM sessions WHERE expires_at < now()")
         row = await conn.fetchrow(
             f"""
+            WITH touched AS (
+                UPDATE sessions SET last_seen = now()
+                WHERE token = $1 AND expires_at >= now()
+                  AND (last_seen IS NULL OR last_seen < now() - $2::interval)
+                RETURNING author_id
+            )
             SELECT {', '.join('a.' + c.strip() for c in _AUTHOR_COLS.split(','))},
                    a.email, a.email_verified, a.is_service
             FROM sessions s
             JOIN authors a ON a.id = s.author_id
             WHERE s.token = $1 AND s.expires_at >= now()
-            """, token)
+            """, token, TOUCH_EVERY)
     return dict(row) if row else None
 
 

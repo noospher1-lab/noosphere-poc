@@ -155,6 +155,31 @@ function renderAuthUI() {
   }
 }
 
+// ---- присутствие: сколько всего зарегистрировано и сколько здесь сейчас.
+// Открытая ручка, работает и для наблюдателя. Молча пропускаем ошибку: счётчик
+// — украшение шапки, и упавший запрос не должен ронять загрузку дерева.
+async function loadPresence() {
+  const box = $("#presence");
+  if (!box) return;
+  try {
+    const s = await api("/api/stats");
+    const online = s.online
+      ? `<span class="live"><span class="dot"></span><b>${s.online}</b> сейчас</span> · `
+      : "";
+    box.innerHTML = online + `<b>${s.registered}</b> ` + plural(s.registered,
+      "участник", "участника", "участников");
+    box.title = `Зарегистрировано: ${s.registered}. ` +
+      `Онлайн — те, кто был активен за последние ${s.online_window_min} минут.`;
+  } catch (_) { box.innerHTML = ""; }
+}
+
+function plural(n, one, few, many) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b > 1 && b < 5) return few;
+  return b === 1 ? one : many;
+}
+
 async function loadMe() {
   try { ME = await api("/api/auth/me"); } catch (_) { ME = null; }
   renderAuthUI();
@@ -2027,6 +2052,8 @@ $("#authPass").addEventListener("keydown", (e) => {
     await loadMe();
     await loadTopics();
     listenEvents();
+    loadPresence();                       // не ждём: шапка догрузится сама
+    setInterval(loadPresence, 60000);     // «онлайн» с точностью до минуты
     // Гостю показываем карту: рабочего дерева у него нет, а карта честно
     // отвечает «вот что здесь есть» — это лучший первый экран.
     // Явная ссылка (?topic= / ?view=) сильнее умолчания и уже отработала.
