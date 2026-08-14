@@ -77,6 +77,12 @@ def send(to: str, subject: str, text: str, html: str | None = None,
         headers={
             "content-type": "application/json",
             "authorization": f"Bearer {api_key}",
+            # Обязателен. Перед Resend стоит Cloudflare, и запрос с дефолтным
+            # агентом urllib («Python-urllib/3.x») он отбивает своим 403 с кодом
+            # 1010 — до Resend такой запрос вообще не доходит. Проверено
+            # 2026-08-14: с этим заголовком 200, без него 403 на любой вызов,
+            # то есть НИ ОДНО письмо с прода не уходило.
+            "user-agent": "noosphere/1.0",
         },
         method="POST",
     )
