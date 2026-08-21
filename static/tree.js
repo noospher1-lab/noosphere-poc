@@ -438,6 +438,19 @@ async function refreshVisible() {
   renderTree();
 }
 
+// Посевной довод подписан именем персоны, под которой нельзя войти. Без метки
+// читатель считает её участником — а это ровно то доверие, которое дороже
+// красивой картинки: узнав правду потом, он не поверит и остальному.
+// Убрать метку — поставить false здесь (посев от этого не изменится).
+const SHOW_SEED_BADGE = true;
+
+function seedBadge(node) {
+  if (!SHOW_SEED_BADGE || !node.author_is_seed) return null;
+  const b = el("span", "seedtag", "посев");
+  b.title = "Довод из посева: имя-персона, войти под ней нельзя, PoI не считался";
+  return b;
+}
+
 // ---- tree render
 function relLabel(type) {
   return { support: "за", refute: "против", qualify: "уточн.", question: "вопрос",
@@ -537,6 +550,8 @@ function nodeRow(node, type) {
   }
   if (node.author_color) who.style.color = node.author_color;
   row.appendChild(who);
+  const sb = seedBadge(node);
+  if (sb) row.appendChild(sb);
 
   // Управление подборкой — только у корней и только у вошедшего.
   if (type === "root" && ME) {
@@ -789,8 +804,9 @@ async function selectNode(id) {
   }
   // an atom of an exploration is a point under investigation: it carries no
   // LLM base score (the разбор was scored as a whole) and no taken position
+  const sbDetail = seedBadge(node);
   meta.append(
-    "автор: ", authorEl,
+    "автор: ", authorEl, ...(sbDetail ? [" ", sbDetail] : []),
     "  ·  PoI: " + (node.poi_score != null ? node.poi_score
                     : node.atom_group ? "— (атом разбора, живёт реакциями)"
                     : node.author_is_service ? "— (служебная публикация платформы)"
