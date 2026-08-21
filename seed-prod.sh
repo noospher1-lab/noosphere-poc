@@ -57,9 +57,25 @@ fi
 
 # 3. Сам пересев. NOOSPHERE_ALLOW_WIPE=1 — осознанное снятие гарда, который
 #    иначе отказывается стирать базу с зарегистрированными аккаунтами.
+#
+#    `python` без пути брать НЕЛЬЗЯ: в контейнере Nixpacks системный питон стоит
+#    раньше в PATH, а зависимости лежат в собственном venv сборки. Первый заход
+#    так и умер на `ModuleNotFoundError: asyncpg` — по счастью, на импорте, то
+#    есть до wipe(). Ищем интерпретатор, который ВИДИТ asyncpg, и только им.
+REMOTE_SEED='
+for PY in /opt/venv/bin/python /app/.venv/bin/python "$(command -v python3)" "$(command -v python)"; do
+  [ -x "$PY" ] || continue
+  if "$PY" -c "import asyncpg" 2>/dev/null; then
+    echo "интерпретатор: $PY"
+    NOOSPHERE_ALLOW_WIPE=1 "$PY" -m app.seed
+    exit $?
+  fi
+done
+echo "не нашёл питон с asyncpg — пересев не выполнен" >&2
+exit 1
+'
 "$RAILWAY" ssh --project "$PROJECT" --environment "$ENVIRONMENT" \
-    --service "$SERVICE" -i "$KEY" \
-    'NOOSPHERE_ALLOW_WIPE=1 python -m app.seed'
+    --service "$SERVICE" -i "$KEY" "sh -c '$REMOTE_SEED'"
 
 # 4. Проверка снаружи: то, что сид напечатал внутри контейнера, ничего не
 #    говорит о том, что видит читатель.
