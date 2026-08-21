@@ -219,7 +219,10 @@ function renderControls(view) {
   const ctl = $("#dctl");
   const st = { open: "открыто", closed: "закрыто", draft: "черновик" }[d.status] || d.status;
   const isCreator = ME && d.created_by === ME.id;
+  const canManage = isCreator || (ME && ME.is_admin);
+  const empty = (view.tally.voters || 0) === 0;
   ctl.innerHTML = `<span class="badge ${d.status === "open" ? "open" : ""}">${st}</span>`;
+
   if (isCreator && d.status === "open") {
     const b = document.createElement("button");
     b.className = "btn ghost"; b.textContent = "Закрыть голосование";
@@ -229,6 +232,23 @@ function renderControls(view) {
       catch (e) { err("Не удалось закрыть: " + e.message); b.disabled = false; }
     };
     ctl.appendChild(b);
+  }
+
+  // Удалить можно только пустое (0 голосов) — автору или админу.
+  if (canManage && empty) {
+    const del = document.createElement("button");
+    del.className = "btn ghost"; del.textContent = "Удалить";
+    del.title = "Удалить пустое голосование";
+    del.onclick = async () => {
+      if (!confirm("Удалить это голосование? Оно пустое, отменить нельзя.")) return;
+      del.disabled = true;
+      try {
+        const r = await fetch(`/api/decisions/${d.id}`, { method: "DELETE" });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
+        location.href = "/vote.html";
+      } catch (e) { err("Не удалось удалить: " + e.message); del.disabled = false; }
+    };
+    ctl.appendChild(del);
   }
 }
 
@@ -251,7 +271,9 @@ function renderTally(t) {
 function renderVote(view) {
   const box = $("#vote");
   if (view.decision.status !== "open") {
-    box.innerHTML = '<div class="note">Голосование закрыто — приём голосов завершён. Итог выше.</div>';
+    box.innerHTML = `<div class="note">${view.decision.status === "draft"
+      ? "Черновик — голосование ещё не открыто."
+      : "Голосование закрыто — приём голосов завершён. Итог выше."}</div>`;
     return;
   }
   if (!ME) { box.innerHTML = '<div class="note">Чтобы проголосовать, <a href="/">войди</a> и подтверди адрес.</div>'; return; }
@@ -289,7 +311,10 @@ async function castVote() {
 function renderPrepare() {
   const box = $("#prepare");
   if (D && D.decision.status !== "open") {
-    box.innerHTML = '<div class="note">Голосование закрыто — подготовка больше не нужна.</div>'; return;
+    box.innerHTML = `<div class="note">${D.decision.status === "draft"
+      ? "Черновик ещё не открыт — подготовка станет доступна после открытия."
+      : "Голосование закрыто — подготовка больше не нужна."}</div>`;
+    return;
   }
   if (!ME) { box.innerHTML = '<div class="note">Подготовка доступна после входа.</div>'; return; }
   if (!DLG) {

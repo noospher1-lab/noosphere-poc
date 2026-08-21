@@ -1989,13 +1989,19 @@ async def close_decision(decision_id):
     return dict(row) if row else None
 
 
-async def delete_draft_decision(decision_id):
-    """Удалить черновик (ещё не открытый). Открытые/закрытые не трогаем —
-    у них уже есть материал и, возможно, голоса; их только закрывают."""
+async def delete_decision_if_untouched(decision_id):
+    """Удалить голосование, только если его никто не тронул: ни одного голоса и
+    ни одного начатого разбора-диалога. Как только есть голос или подготовка
+    (человек потратил на неё усилия/деньги) — это уже участие, не удаляем, только
+    закрываем. Черновики (0 всего) удаляются свободно. Каскад снимает варианты и
+    ревизии."""
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "DELETE FROM decisions WHERE id = $1 AND status = 'draft' "
+            "DELETE FROM decisions d WHERE d.id = $1 "
+            "AND NOT EXISTS (SELECT 1 FROM votes v WHERE v.decision_id = d.id) "
+            "AND NOT EXISTS (SELECT 1 FROM vote_dialogues vd "
+            "                  WHERE vd.decision_id = d.id) "
             "RETURNING id", decision_id)
     return row is not None
 

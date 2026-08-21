@@ -79,6 +79,17 @@ def admin_only(x_admin_token: str | None = Header(default=None)):
         raise HTTPException(403, "нужен верный заголовок X-Admin-Token (ADMIN_TOKEN в .env)")
 
 
+# Аккаунт-администратор (основатель). Может, например, удалять чужие пустые
+# голосования. По умолчанию — root; переопределяется ADMIN_USERNAMES (через
+# запятую). Не секрет: это просто список логинов.
+ADMIN_USERNAMES = {u.strip().lower() for u in
+                   (os.environ.get("ADMIN_USERNAMES") or "root").split(",") if u.strip()}
+
+
+def is_admin_author(author):
+    return bool(author) and (author.get("username") or "").lower() in ADMIN_USERNAMES
+
+
 class EventHub:
     """
     Minimal in-process pub/sub for Server-Sent Events. Each SSE client gets its
@@ -809,7 +820,9 @@ async def my_profile(author=Depends(current_author)):
 async def me(request: Request):
     token = request.cookies.get(SESSION_COOKIE)
     if token:
-        return await db.session_author(token)   # author or JSON null
+        author = await db.session_author(token)   # author or None
+        if author is not None:
+            return {**author, "is_admin": is_admin_author(author)}
     return None
 
 
@@ -2129,13 +2142,14 @@ async def close_decision(decision_id: int, author=Depends(verified_author)):
 
 @app.delete("/api/decisions/{decision_id}")
 async def delete_decision(decision_id: int, author=Depends(verified_author)):
-    """Автор удаляет свой черновик. Открытые/закрытые не удаляются (у них
-    материал и, возможно, голоса) — их только закрывают."""
+    """Удалить пустое голосование (ни голосов, ни начатых разборов) — может его
+    автор или администратор. Как только кто-то проголосовал или начал разбор,
+    удаление недоступно (только закрытие): это уже участие людей."""
     d = await _decision_or_404(decision_id)
-    if d.get("created_by") and d["created_by"] != author["id"]:
-        raise HTTPException(403, "удалить голосование может только его автор")
-    if not await db.delete_draft_decision(decision_id):
-        raise HTTPException(409, "удалить можно только черновик (открытое — закрывают)")
+    if not (d.get("created_by") == author["id"] or is_admin_author(author)):
+        raise HTTPException(403, "удалить голосование может только его автор или админ")
+    if not await db.delete_decision_if_untouched(decision_id):
+        raise HTTPException(409, "удалить можно только голосование без голосов и без начатых разборов")
     return {"ok": True}
 
 
