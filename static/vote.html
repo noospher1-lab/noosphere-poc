@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noosphere — Голосования</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg:#0e1016; --panel:#161922; --panel2:#1d212c; --line:#272c39; --line2:#333a49;
+    --ivory:#edeef2; --dim:#9aa0b0; --dim2:#6f7688; --bronze:#e0b878; --green:#5fd18f;
+    --red:#ec6b66; --blue:#66b0ea;
+    --sans:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,'SFMono-Regular',Menlo,monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg); color:var(--ivory);
+    font-family:var(--sans); font-size:15px; line-height:1.5; -webkit-font-smoothing:antialiased; }
+  a { color:var(--blue); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  header { display:flex; align-items:center; flex-wrap:wrap; gap:8px 14px; padding:11px 18px;
+    border-bottom:1px solid var(--line); background:var(--panel); }
+  .home { display:flex; align-items:center; gap:10px; flex:none; }
+  .home:hover { text-decoration:none; opacity:.85; }
+  .header-word { font-family:var(--mono); font-weight:500; letter-spacing:.24em;
+    font-size:14px; text-transform:uppercase; }
+  .header-word .noo { color:var(--blue); }
+  .header-word .sphere { color:var(--bronze); }
+  header .tagline { color:var(--dim2); font-size:13px; }
+  header .spacer { flex:1; }
+
+  #wrap { max-width:680px; margin:0 auto; padding:22px 16px 70px; }
+  h1 { font-size:22px; font-weight:600; margin:8px 0 4px; }
+  .lead { color:var(--dim); margin:0 0 16px; }
+  .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .spacer { flex:1; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:15px 17px; margin:12px 0; }
+  .muted { color:var(--dim); }
+  .hidden { display:none; }
+
+  /* список */
+  a.vote-card { display:block; color:inherit; }
+  a.vote-card:hover { text-decoration:none; border-color:var(--blue); }
+  .vc-q { font-weight:600; font-size:15.5px; margin-bottom:6px; }
+  .vc-meta { font-size:12px; color:var(--dim2); font-family:var(--mono); }
+  .vc-topic { color:var(--dim); font-size:12.5px; margin-bottom:8px; }
+  .badge { display:inline-block; font-size:11px; font-family:var(--mono);
+    padding:1px 8px; border-radius:99px; border:1px solid var(--line2); color:var(--dim); }
+  .badge.open { color:var(--green); border-color:var(--green); }
+
+  /* кнопки */
+  button { font-family:inherit; }
+  .btn { font-size:13px; cursor:pointer; color:var(--ivory); background:var(--panel2);
+    border:1px solid var(--line2); border-radius:7px; padding:9px 14px; }
+  .btn:hover { border-color:var(--blue); }
+  .btn:disabled { opacity:.5; cursor:default; }
+  .btn.primary { background:var(--bronze); color:#0e1016; border:none; font-weight:600; }
+  .btn.primary:hover { filter:brightness(1.06); }
+  .btn.ghost { background:transparent; border:1px dashed var(--line2); color:var(--dim); }
+
+  /* варианты + tally */
+  .opt { margin:10px 0; }
+  .opt-top { display:flex; align-items:center; gap:9px; }
+  .opt-label { flex:1; }
+  .bars { margin-top:5px; font-size:11.5px; color:var(--dim2); font-family:var(--mono); }
+  .bar-track { height:6px; background:var(--panel2); border-radius:3px; margin:3px 0; overflow:hidden; }
+  .bar-fill { height:100%; border-radius:3px; }
+  .bar-heads { background:var(--blue); }
+  .bar-weight { background:var(--bronze); }
+
+  /* диалог */
+  .chat { display:flex; flex-direction:column; gap:9px; margin:10px 0; max-height:46vh;
+    overflow-y:auto; padding-right:4px; }
+  .msg { padding:9px 12px; border-radius:10px; max-width:86%; font-size:14px; white-space:pre-wrap; }
+  .msg.ai { background:var(--panel2); border:1px solid var(--line); align-self:flex-start;
+    border-bottom-left-radius:3px; }
+  .msg.me { background:rgba(102,176,234,.12); border:1px solid var(--line2); align-self:flex-end;
+    border-bottom-right-radius:3px; }
+  .offer { align-self:flex-start; max-width:86%; }
+  .offer .msg { border-color:var(--bronze); }
+  .prog { font-size:12px; color:var(--dim2); font-family:var(--mono); margin:8px 0; }
+  .compose { display:flex; gap:8px; margin-top:8px; }
+  .compose textarea { flex:1; min-height:46px; resize:vertical; font-family:inherit; font-size:14px;
+    color:var(--ivory); background:var(--panel2); border:1px solid var(--line2); border-radius:7px; padding:9px 11px; }
+  .compose textarea:focus { outline:none; border-color:var(--blue); }
+
+  .weight-badge { font-family:var(--mono); color:var(--bronze); font-weight:600; }
+  .summary { color:var(--dim); font-size:13.5px; margin-top:6px; }
+  .err { background:rgba(236,107,102,.12); border:1px solid var(--red); color:#f4b0ad;
+    border-radius:8px; padding:10px 12px; margin:12px 0; font-size:13.5px; }
+  .note { background:rgba(102,176,234,.10); border:1px solid var(--line2); color:var(--dim);
+    border-radius:8px; padding:10px 12px; margin:10px 0; font-size:13px; }
+  .sec-h { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim2);
+    margin:22px 0 6px; }
+</style>
+</head>
+<body>
+<header>
+  <a class="home" href="/" title="На главную">
+    <span class="header-word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
+  </a>
+  <span class="tagline">голосования</span>
+  <span class="spacer"></span>
+  <span id="user" class="muted"></span>
+  <a href="/">← к обсуждениям</a>
+</header>
+
+<div id="wrap">
+  <div id="err" class="err hidden"></div>
+
+  <!-- СПИСОК -->
+  <section id="list" class="hidden">
+    <div class="row">
+      <h1>Открытые голосования</h1>
+      <span class="spacer"></span>
+      <a class="btn ghost" href="/create-vote.html">+ создать</a>
+    </div>
+    <p class="lead">Голосование — совещательная карта мнений: результат виден и по головам,
+      и по весу (кто насколько разобрался). Вес даёт разбор темы с ИИ перед голосом.</p>
+    <div id="list-body"></div>
+  </section>
+
+  <!-- ДЕТАЛЬ -->
+  <section id="detail" class="hidden">
+    <a href="/vote.html" class="muted" style="font-size:13px">← ко всем голосованиям</a>
+    <h1 id="dq" style="margin-top:8px"></h1>
+    <div id="dtopic" class="vc-topic"></div>
+
+    <div class="sec-h">Расклад сейчас</div>
+    <div id="tally" class="card"></div>
+
+    <div class="sec-h">Подготовка с ИИ <span class="muted" style="text-transform:none;letter-spacing:0">— даёт вес голоса</span></div>
+    <div id="prepare" class="card"></div>
+
+    <div class="sec-h">Твой голос</div>
+    <div id="vote" class="card"></div>
+  </section>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const qs = new URLSearchParams(location.search);
+let ME = null, D = null, DLG = null;
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
+  return r.json();
+}
+function err(m) {
+  const e = $("#err"); e.textContent = m; e.classList.remove("hidden");
+  window.scrollTo(0, 0); setTimeout(() => e.classList.add("hidden"), 7000);
+}
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function topicName(t) {
+  const n = (t.topic_title && t.topic_title.trim()) || (t.topic_text || "").trim();
+  return n.length > 90 ? n.slice(0, 90) + "…" : n;
+}
+
+// ---------- СПИСОК ----------
+async function renderList() {
+  $("#list").classList.remove("hidden");
+  let rows = [];
+  try { rows = await api("/api/decisions?status=open"); }
+  catch (e) { err("Список не загрузился: " + e.message); }
+  const box = $("#list-body");
+  if (!rows.length) {
+    box.innerHTML = '<div class="note">Пока нет открытых голосований. '
+      + '<a href="/create-vote.html">Создай первое</a>.</div>';
+    return;
+  }
+  box.innerHTML = rows.map((d) => `
+    <a class="card vote-card" href="/vote.html?id=${d.id}">
+      <div class="vc-q">${esc(d.question)}</div>
+      <div class="vc-topic">Тема: ${esc(topicName(d))}</div>
+      <div class="vc-meta">
+        <span class="badge open">открыто</span>
+        &nbsp;· голосов: ${d.voters} · вариантов: ${d.options}
+      </div>
+    </a>`).join("");
+}
+
+// ---------- ДЕТАЛЬ ----------
+async function loadDetail(id) {
+  $("#detail").classList.remove("hidden");
+  const view = await api(`/api/decisions/${id}`);
+  D = view;
+  $("#dq").textContent = view.decision.question;
+  renderTally(view.tally);
+  renderVote(view);
+  renderPrepare();
+}
+
+function renderTally(t) {
+  const maxH = Math.max(1, ...t.answers.map((a) => a.heads));
+  const maxW = Math.max(1, ...t.answers.map((a) => Number(a.weighted)));
+  $("#tally").innerHTML = `
+    <div class="muted" style="font-size:12.5px;margin-bottom:8px">
+      участников: ${t.voters} · средний вес: ${t.avg_weight.toFixed(2)}</div>
+    ${t.answers.map((a) => `
+      <div class="opt">
+        <div class="opt-top"><span class="opt-label">${esc(a.label || a.headline || "—")}</span></div>
+        <div class="bar-track"><div class="bar-fill bar-heads" style="width:${Math.round(a.heads / maxH * 100)}%"></div></div>
+        <div class="bars">по головам: ${a.heads}
+          &nbsp;·&nbsp; по весу: ${Number(a.weighted).toFixed(1)}</div>
+        <div class="bar-track"><div class="bar-fill bar-weight" style="width:${Math.round(Number(a.weighted) / maxW * 100)}%"></div></div>
+      </div>`).join("")}`;
+}
+
+function renderVote(view) {
+  const box = $("#vote");
+  if (!ME) { box.innerHTML = '<div class="note">Чтобы проголосовать, <a href="/">войди</a> и подтверди адрес.</div>'; return; }
+  const w = (DLG && DLG.finished) ? DLG.weight : 1;
+  box.innerHTML = `
+    <div class="muted" style="font-size:13px;margin-bottom:8px">
+      Твой вес: <span class="weight-badge">${w}</span>
+      ${(DLG && DLG.finished) ? "" : "— пройди подготовку с ИИ, чтобы поднять вес (без неё голос весит 1)"}</div>
+    ${view.options.map((o) => `
+      <label class="opt-top" style="margin:6px 0">
+        <input type="checkbox" name="opt" value="${o.id}" />
+        <span class="opt-label">${esc(o.label || o.headline || "—")}</span>
+      </label>`).join("")}
+    <button class="btn primary" id="cast" style="margin-top:12px">Проголосовать</button>
+    <div id="cast-done" class="note hidden" style="margin-top:10px"></div>`;
+  $("#cast").onclick = castVote;
+}
+
+async function castVote() {
+  const ids = [...document.querySelectorAll('input[name=opt]:checked')].map((i) => Number(i.value));
+  if (!ids.length) return err("Выбери хотя бы один вариант.");
+  const btn = $("#cast"); btn.disabled = true;
+  try {
+    const res = await api(`/api/decisions/${D.decision.id}/vote`, { option_ids: ids });
+    renderTally(res.tally);
+    const done = $("#cast-done");
+    done.classList.remove("hidden");
+    done.innerHTML = `✓ Голос учтён, вес <span class="weight-badge">${res.weight}</span>. Спасибо!`;
+  } catch (e) { err("Не удалось проголосовать: " + e.message); btn.disabled = false; }
+}
+
+// ---------- ПОДГОТОВКА (диалог) ----------
+function renderPrepare() {
+  const box = $("#prepare");
+  if (!ME) { box.innerHTML = '<div class="note">Подготовка доступна после входа.</div>'; return; }
+  if (!DLG) {
+    box.innerHTML = `
+      <p class="muted" style="font-size:13.5px;margin-top:0">
+        Разбери вопрос с ИИ-собеседником: он идёт по реальному срезу спора, без подсказок
+        «правильного» ответа. После ${D ? "" : ""}разбора судья оценит понимание и даст твоему
+        голосу вес от 1 до 5.</p>
+      <button class="btn primary" id="dlg-start">Начать разбор</button>`;
+    $("#dlg-start").onclick = startDialogue;
+    return;
+  }
+  // есть диалог — рендерим переписку
+  const t = DLG.transcript || [];
+  const last = t[t.length - 1];
+  const pending = last && last.meta === "inform_offer_pending";
+  let html = '<div class="chat" id="chat">';
+  for (const m of t) {
+    if (m.meta === "inform_offer_pending") {
+      html += `<div class="offer"><div class="msg ai">${esc(m.content)}</div></div>`;
+    } else {
+      html += `<div class="msg ${m.role === "user" ? "me" : "ai"}">${esc(m.content)}</div>`;
+    }
+  }
+  html += "</div>";
+  html += `<div class="prog">ходов: ${DLG.user_turns} / ${DLG.min_turns} (мин.) · до ${DLG.max_turns} макс.</div>`;
+
+  if (DLG.finished) {
+    html += `<div class="note">Разбор завершён. Твой вес: <span class="weight-badge">${DLG.weight}</span>.
+      ${DLG.summary ? '<div class="summary">' + esc(DLG.summary) + "</div>" : ""}</div>`;
+  } else if (pending) {
+    html += `<div class="row" style="margin-top:8px">
+        <span class="muted" style="font-size:13px">ИИ предлагает пояснение:</span>
+        <button class="btn" id="inf-yes">Показать</button>
+        <button class="btn ghost" id="inf-no">Не нужно</button></div>`;
+  } else {
+    html += `<div class="compose">
+        <textarea id="msg" placeholder="Твой ответ…"></textarea>
+        <button class="btn" id="send">Отправить</button></div>`;
+    const canFinalize = DLG.user_turns >= DLG.min_turns;
+    html += `<button class="btn primary" id="finalize" style="margin-top:10px" ${canFinalize ? "" : "disabled"}>
+        ${canFinalize ? "Готов — оценить и открыть голос" : `Ещё минимум ${DLG.min_turns - DLG.user_turns} ход(а)`}</button>`;
+  }
+  box.innerHTML = html;
+  $("#chat") && ($("#chat").scrollTop = $("#chat").scrollHeight);
+  if ($("#dlg-start")) $("#dlg-start").onclick = startDialogue;
+  if ($("#send")) $("#send").onclick = sendMessage;
+  if ($("#finalize")) $("#finalize").onclick = finalize;
+  if ($("#inf-yes")) $("#inf-yes").onclick = () => informOffer(true);
+  if ($("#inf-no")) $("#inf-no").onclick = () => informOffer(false);
+}
+
+function busy(text) {
+  const box = $("#prepare");
+  const b = document.createElement("div");
+  b.className = "note"; b.id = "busy"; b.textContent = text;
+  box.appendChild(b);
+  document.querySelectorAll("#prepare button, #vote button").forEach((x) => (x.disabled = true));
+}
+
+async function startDialogue() {
+  busy("ИИ читает срез спора и открывает разговор…");
+  try { DLG = await api(`/api/decisions/${D.decision.id}/dialogue/start`, {}); }
+  catch (e) { err("Не удалось начать: " + e.message); }
+  renderPrepare(); renderVote(D);
+}
+async function sendMessage() {
+  const text = $("#msg").value.trim();
+  if (!text) return;
+  busy("Собеседник думает…");
+  try { DLG = await api(`/api/decisions/${D.decision.id}/dialogue/message`, { text }); }
+  catch (e) { err("Сообщение не прошло: " + e.message); }
+  renderPrepare();
+}
+async function informOffer(accept) {
+  busy(accept ? "ИИ поясняет…" : "Продолжаем…");
+  try { DLG = await api(`/api/decisions/${D.decision.id}/dialogue/inform`, { accept }); }
+  catch (e) { err(e.message); }
+  renderPrepare();
+}
+async function finalize() {
+  busy("Судья перечитывает разбор и ставит вес…");
+  try { DLG = await api(`/api/decisions/${D.decision.id}/dialogue/finalize`, {}); }
+  catch (e) { err("Оценка не прошла: " + e.message); }
+  renderPrepare(); renderVote(D);
+}
+
+// ---------- boot ----------
+async function boot() {
+  try { ME = await api("/api/auth/me"); } catch (_) {}
+  if (ME && ME.name) $("#user").textContent = ME.name;
+  const id = qs.get("id");
+  if (id) { try { await loadDetail(Number(id)); } catch (e) { err("Голосование не найдено: " + e.message); renderList(); } }
+  else renderList();
+}
+boot();
+</script>
+</body>
+</html>

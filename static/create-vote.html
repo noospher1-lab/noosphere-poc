@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noosphere — Создать голосование</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg:#0e1016; --panel:#161922; --panel2:#1d212c; --line:#272c39; --line2:#333a49;
+    --ivory:#edeef2; --dim:#9aa0b0; --dim2:#6f7688; --bronze:#e0b878; --green:#5fd18f;
+    --red:#ec6b66; --blue:#66b0ea;
+    --sans:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,'SFMono-Regular',Menlo,monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg); color:var(--ivory);
+    font-family:var(--sans); font-size:15px; line-height:1.5;
+    -webkit-font-smoothing:antialiased; }
+  a { color:var(--blue); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  header { display:flex; align-items:center; flex-wrap:wrap; gap:8px 14px; padding:11px 18px;
+    border-bottom:1px solid var(--line); background:var(--panel); }
+  .home { display:flex; align-items:center; gap:10px; flex:none; }
+  .home:hover { text-decoration:none; opacity:.85; }
+  .header-word { font-family:var(--mono); font-weight:500; letter-spacing:.24em;
+    font-size:14px; text-transform:uppercase; }
+  .header-word .noo { color:var(--blue); }
+  .header-word .sphere { color:var(--bronze); }
+  header .tagline { color:var(--dim2); font-size:13px; }
+  header .spacer { flex:1; }
+
+  #wrap { max-width:640px; margin:0 auto; padding:22px 16px 60px; }
+  h1 { font-size:22px; font-weight:600; margin:14px 0 4px; }
+  .lead { color:var(--dim); margin:0 0 18px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:16px 18px; margin:13px 0; }
+  label.fld { display:block; margin:14px 0 6px; font-size:12.5px; color:var(--dim2);
+    text-transform:uppercase; letter-spacing:.08em; }
+  select, textarea, input[type=text] {
+    width:100%; font-family:inherit; font-size:14px; color:var(--ivory);
+    background:var(--panel2); border:1px solid var(--line2); border-radius:6px;
+    padding:9px 11px; }
+  textarea { min-height:70px; resize:vertical; }
+  select:focus, textarea:focus, input:focus { outline:none; border-color:var(--blue); }
+  ::placeholder { color:var(--dim2); }
+
+  .opt-row { display:flex; gap:8px; align-items:center; margin-top:8px; }
+  .opt-row input { flex:1; }
+  .opt-x { flex:none; width:32px; height:32px; border-radius:6px; cursor:pointer;
+    background:var(--panel2); border:1px solid var(--line2); color:var(--dim);
+    font-size:15px; line-height:1; }
+  .opt-x:hover { color:var(--red); border-color:var(--red); }
+  .btn-ghost { margin-top:10px; font-family:inherit; font-size:13px; cursor:pointer;
+    background:transparent; border:1px dashed var(--line2); color:var(--dim);
+    border-radius:6px; padding:7px 12px; }
+  .btn-ghost:hover { color:var(--ivory); border-color:var(--blue); }
+
+  .btn-primary { margin-top:20px; width:100%; font-family:inherit; font-size:14px;
+    font-weight:600; cursor:pointer; color:#0e1016; background:var(--bronze);
+    border:none; border-radius:7px; padding:12px; }
+  .btn-primary:hover { filter:brightness(1.06); }
+  .btn-primary:disabled { opacity:.5; cursor:default; filter:none; }
+
+  .err { background:rgba(236,107,102,.12); border:1px solid var(--red); color:#f4b0ad;
+    border-radius:8px; padding:10px 12px; margin:12px 0; font-size:13.5px; }
+  .note { background:rgba(102,176,234,.10); border:1px solid var(--line2);
+    color:var(--dim); border-radius:8px; padding:10px 12px; margin:12px 0; font-size:13px; }
+  .hidden { display:none; }
+
+  .ok-title { color:var(--green); font-weight:600; font-size:16px; margin-bottom:6px; }
+  .tally { font-family:var(--mono); font-size:13px; color:var(--dim); margin-top:8px; }
+  .kv { color:var(--dim2); }
+  code { font-family:var(--mono); font-size:12.5px; color:var(--bronze);
+    background:var(--panel2); padding:1px 6px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  <a class="home" href="/" title="На главную">
+    <span class="header-word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
+  </a>
+  <span class="tagline">создать голосование</span>
+  <span class="spacer"></span>
+  <span id="user" class="muted"></span>
+  <a href="/">← к обсуждениям</a>
+</header>
+
+<div id="wrap">
+  <h1>Создать голосование</h1>
+  <p class="lead">Голосование привязано к теме и показывает распределение мнений —
+    <b>по головам и по весу</b> (кто насколько разобрался). Оно совещательное:
+    это карта размежевания, а не команда системе.</p>
+
+  <div id="err" class="err hidden"></div>
+  <div id="auth-msg" class="note hidden">
+    Чтобы создать голосование, нужно <a href="/">войти</a> и подтвердить адрес.
+  </div>
+
+  <div id="form" class="card">
+    <label class="fld" for="topic">Тема</label>
+    <select id="topic"><option value="">— загрузка тем… —</option></select>
+
+    <label class="fld" for="question">Вопрос голосования</label>
+    <textarea id="question" placeholder="Например: Принять ли предложение X?"></textarea>
+
+    <label class="fld">Варианты <span class="kv">(минимум два)</span></label>
+    <div id="options"></div>
+    <button class="btn-ghost" id="add-opt" type="button">+ добавить вариант</button>
+
+    <button class="btn-primary" id="submit" type="button">Создать и открыть голосование</button>
+  </div>
+
+  <div id="result" class="card hidden"></div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.status);
+  return r.json();
+}
+
+function err(m) {
+  const e = $("#err");
+  e.textContent = m;
+  e.classList.remove("hidden");
+  window.scrollTo(0, 0);
+  setTimeout(() => e.classList.add("hidden"), 7000);
+}
+
+// ---- Варианты (строки ввода) ----
+function addOptionRow(value = "") {
+  const row = document.createElement("div");
+  row.className = "opt-row";
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.placeholder = "Текст варианта";
+  inp.value = value;
+  const x = document.createElement("button");
+  x.className = "opt-x";
+  x.type = "button";
+  x.textContent = "×";
+  x.title = "Убрать вариант";
+  x.onclick = () => { row.remove(); ensureMinRows(); };
+  row.append(inp, x);
+  $("#options").append(row);
+}
+function ensureMinRows() {
+  while ($("#options").children.length < 2) addOptionRow();
+}
+function optionLabels() {
+  return [...document.querySelectorAll("#options input")]
+    .map((i) => i.value.trim()).filter(Boolean);
+}
+
+// ---- Инициализация ----
+async function boot() {
+  addOptionRow(); addOptionRow();
+  $("#add-opt").onclick = () => addOptionRow();
+  $("#submit").onclick = submit;
+
+  let me = null;
+  try { me = await api("/api/auth/me"); } catch (_) {}
+  if (me && me.name) {
+    $("#user").textContent = me.name;
+  } else {
+    $("#auth-msg").classList.remove("hidden");
+    $("#submit").disabled = true;
+  }
+
+  try {
+    const topics = await api("/api/topics");
+    const sel = $("#topic");
+    sel.innerHTML = '<option value="">— выбери тему —</option>';
+    for (const t of topics) {
+      const o = document.createElement("option");
+      o.value = t.id;
+      const name = (t.title && t.title.trim()) || (t.text || "").trim();
+      o.textContent = name.length > 80 ? name.slice(0, 80) + "…" : name;
+      sel.append(o);
+    }
+  } catch (e) {
+    $("#topic").innerHTML = '<option value="">— не удалось загрузить темы —</option>';
+    err("Темы не загрузились: " + e.message);
+  }
+}
+
+// ---- Создание: decision -> options -> open ----
+async function submit() {
+  const topicId = Number($("#topic").value);
+  const question = $("#question").value.trim();
+  const labels = optionLabels();
+
+  if (!topicId) return err("Выбери тему.");
+  if (!question) return err("Впиши вопрос голосования.");
+  if (labels.length < 2) return err("Нужно минимум два непустых варианта.");
+
+  const btn = $("#submit");
+  btn.disabled = true;
+  const restore = btn.textContent;
+  btn.textContent = "Создаю…";
+
+  try {
+    const dec = await api("/api/decisions", { topic_root_id: topicId, question });
+    for (const label of labels) {
+      await api(`/api/decisions/${dec.id}/options`, { label, origin: "initial" });
+    }
+    await api(`/api/decisions/${dec.id}/open`, {}); // {} → POST (у /open нет тела, но метод POST)
+    const view = await api(`/api/decisions/${dec.id}`);
+    showResult(view);
+    $("#form").classList.add("hidden");
+  } catch (e) {
+    err("Не получилось: " + e.message);
+    btn.disabled = false;
+    btn.textContent = restore;
+  }
+}
+
+function showResult(view) {
+  const d = view.decision || {};
+  const opts = view.options || [];
+  const box = $("#result");
+  box.classList.remove("hidden");
+  box.innerHTML = `
+    <div class="ok-title">✓ Голосование открыто</div>
+    <div><b>${escapeHtml(d.question || "")}</b></div>
+    <div class="tally">id <code>${d.id}</code> · статус ${escapeHtml(d.status || "open")} ·
+      вариантов: ${opts.length}</div>
+    <div class="note" style="margin-top:14px">
+      Голосование открыто. Участники разбирают тему с ИИ и голосуют на
+      <a href="/vote.html?id=${d.id}">странице голосования</a>; результат виден
+      по головам и по весу.
+    </div>
+    <a class="btn-ghost" href="/vote.html?id=${d.id}" style="text-decoration:none">Перейти к голосованию →</a>
+    <button class="btn-ghost" onclick="location.reload()">Создать ещё одно</button>`;
+  window.scrollTo(0, 0);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+boot();
+</script>
+</body>
+</html>

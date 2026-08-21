@@ -1934,6 +1934,32 @@ async def get_decision(decision_id):
     return dict(row) if row else None
 
 
+async def list_decisions(status=None):
+    """Список голосований для экрана участника: вопрос, тема, счётчики.
+
+    Голоса и варианты считаем подзапросами, чтобы одно голосование давало одну
+    строку (JOIN по votes/options раздул бы её). Открыто на чтение всем.
+    """
+    pool = _pool_or_raise()
+    where = "WHERE d.status = $1" if status else ""
+    args = [status] if status else []
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT d.id, d.topic_root_id, d.question, d.status, "
+            "       d.opens_at, d.closes_at, d.created_at, "
+            "       t.title AS topic_title, t.text AS topic_text, "
+            "       (SELECT COUNT(*) FROM decision_options o "
+            "          WHERE o.decision_id = d.id) AS options, "
+            "       (SELECT COUNT(DISTINCT v.author_id) FROM votes v "
+            "          WHERE v.decision_id = d.id) AS voters "
+            "FROM decisions d "
+            "LEFT JOIN nodes t ON t.id = d.topic_root_id "
+            f"{where} "
+            "ORDER BY d.opens_at DESC NULLS LAST, d.created_at DESC",
+            *args)
+    return [dict(r) for r in rows]
+
+
 async def current_revision(decision_id):
     """The revision a voter starting now is judged against."""
     pool = _pool_or_raise()

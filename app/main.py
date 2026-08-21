@@ -2028,14 +2028,13 @@ async def _render_material(topic_root_id, question):
                            m["atoms"], m["dissents"])
 
 
-@app.post("/api/decisions", dependencies=[Depends(dev_only)])
+@app.post("/api/decisions")
 async def create_decision(body: DecisionIn, author=Depends(verified_author)):
     return await db.create_decision(body.topic_root_id, body.question.strip(),
                                     created_by=author["id"])
 
 
-@app.post("/api/decisions/{decision_id}/options",
-          dependencies=[Depends(dev_only)])
+@app.post("/api/decisions/{decision_id}/options")
 async def add_decision_option(decision_id: int, body: OptionIn,
                               author=Depends(verified_author)):
     await _decision_or_404(decision_id)
@@ -2047,10 +2046,17 @@ async def add_decision_option(decision_id: int, body: OptionIn,
                                revision=rev["revision"] if rev else 1)
 
 
-@app.post("/api/decisions/{decision_id}/open", dependencies=[Depends(dev_only)])
-async def open_decision(decision_id: int):
-    """Freeze the material and the judge model, then accept votes."""
+@app.post("/api/decisions/{decision_id}/open")
+async def open_decision(decision_id: int, author=Depends(verified_author)):
+    """Freeze the material and the judge model, then accept votes.
+
+    Открыть может только автор голосования: чужой не должен «раскрывать»
+    недособранный черновик. Голосование совещательное — оно ничем не правит,
+    tally показывает распределение по головам и по весу (карта размежевания).
+    """
     d = await _decision_or_404(decision_id)
+    if d.get("created_by") and d["created_by"] != author["id"]:
+        raise HTTPException(403, "открыть голосование может только его автор")
     snapshot = await _render_material(d["topic_root_id"], d["question"])
     row = await db.open_decision(decision_id, snapshot,
                                  votedialogue.DEFAULT_JUDGE_MODEL)
@@ -2061,6 +2067,18 @@ async def open_decision(decision_id: int):
     return {**row,
             "cache": material.cache_outlook(
                 prefix, votedialogue.INTERLOCUTOR_MODEL)}
+
+
+@app.get("/api/decisions")
+async def get_decisions_list(status: str = "open"):
+    """Список голосований (по умолчанию открытые) — для экрана участника.
+
+    Открыто на чтение всем: голосования прозрачны, их видно и наблюдателю.
+    """
+    allowed = {"open", "draft", "closed", "all"}
+    if status not in allowed:
+        raise HTTPException(400, f"status ∈ {sorted(allowed)}")
+    return await db.list_decisions(None if status == "all" else status)
 
 
 @app.get("/api/decisions/{decision_id}")
