@@ -932,9 +932,9 @@ async def get_workspace_ids(author=Depends(current_author)):
 async def add_to_workspace(topic_root_id: int, author=Depends(current_author)):
     node = await db.get_node(topic_root_id)
     if node is None:
-        raise HTTPException(404, f"тема {topic_root_id} не найдена")
+        raise HTTPException(404, f"проблема {topic_root_id} не найдена")
     if node.get("topic_root_id") != topic_root_id:
-        raise HTTPException(400, "в дерево кладётся тема, а не узел внутри неё")
+        raise HTTPException(400, "в дерево кладётся проблема, а не узел внутри неё")
     await db.workspace_add(author["id"], topic_root_id)
     return {"ok": True, "topic": topic_root_id, "in_workspace": True}
 
@@ -979,7 +979,7 @@ async def put_topic_facets(topic_root_id: int, body: FacetsIn,
     """
     node = await db.get_node(topic_root_id)
     if node is None:
-        raise HTTPException(404, f"тема {topic_root_id} не найдена")
+        raise HTTPException(404, f"проблема {topic_root_id} не найдена")
     if node.get("topic_root_id") != topic_root_id:
         raise HTTPException(400, "рубрика ставится только корню обсуждения")
     try:
@@ -1000,9 +1000,17 @@ OUTCOME_KINDS = {"success", "partial", "failure", "mixed", "unclear"}
 
 class ProblemIn(BaseModel):
     causes: str | None = None            # причины и составные части
-    scale_note: str | None = None        # где, сколько — своими словами
-    scale_url: str | None = None         # несущая внешняя ссылка на данные
+    gap: str | None = None               # чего не хватает / что не переносится
+    scale_note: str | None = None        # где, сколько — своими словами (устар.)
+    scale_url: str | None = None         # несущая внешняя ссылка на данные (устар.)
     scale_excerpt: str | None = None     # сохранённая выдержка (текст, не блоб)
+
+
+class ScaleIn(BaseModel):
+    region: str                          # где встречается
+    figure: str                          # в каких объёмах — цифра словами автора
+    source_url: str | None = None        # откуда цифра
+    source_excerpt: str | None = None    # выдержка, переживающая линк-рот
 
 
 class InterventionIn(BaseModel):
@@ -1021,7 +1029,7 @@ async def _problem_root_or_404(topic_root_id: int):
     """Проблема ставится только КОРНЮ обсуждения, и корень должен быть kind='problem'."""
     node = await db.get_node(topic_root_id)
     if node is None:
-        raise HTTPException(404, f"тема {topic_root_id} не найдена")
+        raise HTTPException(404, f"проблема {topic_root_id} не найдена")
     if node.get("topic_root_id") != topic_root_id:
         raise HTTPException(400, "проблема — это корень обсуждения, не узел внутри")
     return node
@@ -1058,11 +1066,36 @@ async def put_problem(topic_root_id: int, body: ProblemIn,
     event log."""
     await _problem_root_or_404(topic_root_id)
     retrieved = datetime.now(timezone.utc) if body.scale_url else None
-    await db.set_problem(topic_root_id, causes=body.causes,
+    await db.set_problem(topic_root_id, causes=body.causes, gap=body.gap,
                          scale_note=body.scale_note, scale_url=body.scale_url,
                          scale_excerpt=body.scale_excerpt,
                          scale_retrieved_at=retrieved, author_id=author["id"])
     return {"ok": True, **await db.get_problem(topic_root_id)}
+
+
+@app.post("/api/problems/{topic_root_id}/scale")
+async def post_scale(topic_root_id: int, body: ScaleIn,
+                     author=Depends(verified_author)):
+    """Строка масштаба: регион + цифра + источник. Одна проблема живёт в разных
+    странах с разными числами, и каждое число несёт свою ссылку."""
+    await _problem_root_or_404(topic_root_id)
+    if not body.region.strip() or not body.figure.strip():
+        raise HTTPException(400, "нужны и регион, и цифра")
+    retrieved = datetime.now(timezone.utc) if body.source_url else None
+    return await db.add_scale_row(
+        topic_root_id, region=body.region.strip(), figure=body.figure.strip(),
+        source_url=body.source_url, source_excerpt=body.source_excerpt,
+        retrieved_at=retrieved, author_id=author["id"])
+
+
+@app.delete("/api/scale/{row_id}")
+async def delete_scale(row_id: int, author=Depends(verified_author)):
+    """Снять строку масштаба. Цифру не правят — снимают и вносят заново, иначе
+    число меняется под уже написанными доводами."""
+    row = await db.delete_scale_row(row_id, author_id=author["id"])
+    if row is None:
+        raise HTTPException(404, f"строка масштаба {row_id} не найдена")
+    return {"ok": True}
 
 
 @app.post("/api/problems/{topic_root_id}/interventions")
@@ -1909,14 +1942,14 @@ async def dissent_position(node_id: int, author=Depends(verified_author)):
     if node is None:
         raise HTTPException(404, f"node {node_id} not found")
     if node.get("author_id") != author["id"]:
-        raise HTTPException(403, "выйти из позиции может только автор аргумента")
+        raise HTTPException(403, "выйти из позиции может только автор довода")
     if (node.get("kind") or "argument") != "argument":
-        raise HTTPException(400, "из позиции выходит только аргумент")
+        raise HTTPException(400, "из позиции выходит только довод")
     old_pid = node.get("position_id")
     if not old_pid:
-        raise HTTPException(400, "этот аргумент не входит ни в одну позицию")
+        raise HTTPException(400, "этот довод не входит ни в одну позицию")
     if node.get("dissented"):
-        raise HTTPException(409, "аргумент уже вынесен в собственную позицию")
+        raise HTTPException(409, "довод уже вынесен в собственную позицию")
 
     root = node.get("topic_root_id") or await db.topic_root_of(node_id)
     # 1. spin the argument into its own verbatim position and pin it

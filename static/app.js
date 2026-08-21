@@ -355,7 +355,7 @@ function computeDiscussions(norm) {
     let rootId = [...ids].find((id) => !srcSet.has(id));
     if (rootId == null) rootId = [...ids][0];
     const rootNode = norm.nodes.find((x) => x.id === rootId);
-    const title = (rootNode && (rootNode.topic || truncate(rootNode.label, 26))) || ('Тема ' + rootId);
+    const title = (rootNode && (rootNode.topic || truncate(rootNode.label, 26))) || ('Проблема ' + rootId);
     comps.push({ rootId, title, ids });
   }
   return comps;
@@ -1008,7 +1008,7 @@ function bucketBarsHTML(support, color) {
       <span class="bars"><span class="bar" style="width:${(b.count / max) * 70}px;background:${color}"></span></span>
       <span class="cnt">${b.count}</span></div>`;
   }
-  if (support.no_data) rows += `<div class="rx-empty">без PoI в теме: ${support.no_data}</div>`;
+  if (support.no_data) rows += `<div class="rx-empty">без PoI здесь: ${support.no_data}</div>`;
   return rows || '<div class="rx-empty">пока никто не поддержал</div>';
 }
 
@@ -1029,8 +1029,8 @@ function renderPoolHud(n) {
   document.getElementById('hud-content').innerHTML =
     `<div style="margin-bottom:10px;color:#ece6d8;white-space:pre-wrap;line-height:1.55">${escapeHtml(n.composed || n.label)}</div>`
     + `<div style="color:var(--bronze);font-size:11px;margin-bottom:12px">👥 поддержали: ${n.support.count}</div>`
-    + `<div style="border-top:1px solid rgba(216,175,110,0.18);padding-top:10px;font-size:11.5px;color:var(--dim);line-height:1.5;margin-bottom:10px">Это сборка ИИ, не отдельный довод. Чтобы возразить или ответить — открой конкретный аргумент ниже: ответ прикрепится к нему.</div>`
-    + `<div style="color:#8a8576;font-size:9px;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px">Реальные аргументы (${ids.length}) — открыть</div>`
+    + `<div style="border-top:1px solid rgba(216,175,110,0.18);padding-top:10px;font-size:11.5px;color:var(--dim);line-height:1.5;margin-bottom:10px">Это сборка ИИ, не отдельный довод. Чтобы возразить или ответить — открой конкретный довод ниже: ответ прикрепится к нему.</div>`
+    + `<div style="color:#8a8576;font-size:9px;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px">Реальные доводы (${ids.length}) — открыть</div>`
     + args;
 
   // клик по реальному аргументу → выйти из пулов и открыть этот узел в графе,
@@ -1103,7 +1103,7 @@ const FORM_CHROME = {
   'branch-question': { h2: 'Под-вопрос', ph: 'Задай уточняющий вопрос…', btn: '❓ Оценить и спросить' },
   'branch-detail': { h2: 'Уточнение к ветке', ph: 'Добавь деталь…', btn: '➕ Оценить и добавить' },
 };
-const DEFAULT_CHROME = { h2: 'Добавить аргумент', ph: 'Сформулируй тезис…', btn: 'Оценить и добавить' };
+const DEFAULT_CHROME = { h2: 'Добавить довод', ph: 'Сформулируй тезис…', btn: 'Оценить и добавить' };
 
 function setFormChrome(c) {
   document.getElementById('arg-h2').textContent = c.h2;
@@ -1155,7 +1155,7 @@ async function buildPoolGraph(refresh) {
   if (bar) bar.textContent = topic + ' · позиций: ' + positions.length;
 
   const rootRaw = ((liveNorm && liveNorm.nodes) || []).find((n) => n.id === currentTopicId);
-  const rootLabel = rootRaw ? (rootRaw.topic || rootRaw.label) : 'тема';
+  const rootLabel = rootRaw ? (rootRaw.topic || rootRaw.label) : 'проблема';
   const nodes = [{
     id: currentTopicId, label: rootLabel, type: 'proposal', topic: truncate(rootLabel, 30),
     turn: 0, source: 'context', poi_score: 0, confidence: 1, authorColor: '#7fe3d4', breakdown: null,
@@ -1236,7 +1236,7 @@ async function refreshWeights() {
 
 async function submitArgument() {
   const text = document.getElementById('arg-text').value.trim();
-  if (!text) { setArgStatus('Введите текст аргумента', 'err'); return; }
+  if (!text) { setArgStatus('Введите текст довода', 'err'); return; }
 
   // автора ставит сервер по сессии
   const authorId = null;
@@ -1307,7 +1307,7 @@ async function submitArgument() {
   const body = { text, title: text.slice(0, 80) };
 
   btn.disabled = true;
-  setArgStatus('LLM оценивает аргумент…', 'busy');
+  setArgStatus('LLM оценивает довод…', 'busy');
   try {
     const res = await fetch('/api/argument', {
       method: 'POST', headers: { 'content-type': 'application/json' },

@@ -73,9 +73,9 @@ function shortEmpty() {
   const e = el("div", "empty");
   e.innerHTML =
     "<h3>Выбери обсуждение слева</h3>" +
-    "<p>Каждая ветка — тема. Разворачивай её, чтобы читать аргументы за и " +
+    "<p>Каждая ветка — проблема. Разворачивай её, чтобы читать доводы за и " +
     "против, задавать вопросы и добавлять свои.</p>" +
-    "<p class='muted'>Или начни своё — кнопка «Новая тема» сверху. " +
+    "<p class='muted'>Или начни своё — кнопка «Новая проблема» сверху. " +
     "Подсказки можно выключить кнопкой «💡 Подсказки» вверху.</p>";
   return e;
 }
@@ -87,25 +87,25 @@ function guidePanel() {
     "каждый довод виден отдельно и связан с тем, к чему относится."));
   const steps = [
     ["1", "Читай дерево слева",
-      "Верхние ветки — темы, вложенные — ответы. Цветная метка показывает связь " +
-      "с родителем: <b>за</b>, <b>против</b>, <b>уточнение</b>, <b>вопрос</b>."],
+      "Верхние ветки — проблемы, вложенные — ответы. Цветная метка показывает " +
+      "связь с родителем: <b>за</b>, <b>против</b>, <b>уточнение</b>, <b>вопрос</b>."],
     ["2", "PoI — это качество довода",
-      "PoI оценивает, насколько аргумент проработан: логика, полнота, работа с " +
-      "неопределённостью и с возражениями. Проработанные доводы <b>поднимаются " +
-      "выше</b> в дереве — так качество мысли определяет видимость, а не капитал " +
-      "и не громкость. Высокий PoI не значит «прав», значит «сделан " +
-      "добросовестно». <b>Вес в голосовании</b> — отдельное: его даёт разбор темы " +
-      "с ИИ в момент голосования, а не PoI твоих доводов."],
+      "PoI оценивает, насколько довод проработан: логика, полнота, работа с " +
+      "неопределённостью и с возражениями. Высокий PoI не значит «прав», значит " +
+      "«сделан добросовестно» — поэтому <b>порядок доводов не зависит от PoI</b>: " +
+      "внутри одного родителя они идут по времени, иначе первый в списке читался " +
+      "бы как ответ. <b>Вес в голосовании</b> — отдельное: его даёт разбор " +
+      "проблемы с ИИ в момент голосования, а не PoI твоих доводов."],
     ["3", "Реагируй: ▲ согласен / ▼ не согласен",
       "Так ты показываешь своё отношение к доводу. Согласие и несогласие — это " +
       "не оценка качества: сильный довод остаётся сильным, даже когда с ним " +
       "не согласны."],
-    ["4", "Отвечай или начни тему",
+    ["4", "Отвечай или заводи проблему",
       "Выбери тип ответа (за/против/уточнение/вопрос) и напиши. Перед отправкой " +
       "ИИ-компаньон разберёт черновик и с ним можно поспорить — а опубликованный " +
       "текст уже неизменен, поэтому думать стоит здесь. Решаешь всё равно ты."],
-    ["5", "Позиции — общая карта по теме",
-      "ИИ группирует близкие аргументы в позиции. Их можно поддержать, оспорить, " +
+    ["5", "Позиции — общая карта по проблеме",
+      "ИИ группирует близкие доводы в позиции. Их можно поддержать, оспорить, " +
       "развить или сделать вывод. Если тебя свели не туда — можно выйти в свою " +
       "отдельную позицию (дословно твоими словами)."],
     ["6", "Тренажёр рассуждения",
@@ -125,7 +125,7 @@ function guidePanel() {
   }
   const foot = el("p", "muted");
   foot.style.marginTop = "16px";
-  foot.innerHTML = "Выбери тему слева, чтобы начать. Эти подсказки можно " +
+  foot.innerHTML = "Выбери проблему слева, чтобы начать. Эти подсказки можно " +
     "выключить кнопкой «💡 Подсказки» вверху.";
   g.appendChild(foot);
   return g;
@@ -399,8 +399,8 @@ async function workspaceToggle(id, want) {
     else WS_IDS.delete(id);
     await loadTopics();
     if (typeof MapView !== "undefined") MapView.syncWorkspace(WS_IDS);
-    toast(want ? "тема в рабочем дереве"
-               : "убрал из своего дерева — в графе тема осталась");
+    toast(want ? "проблема в рабочем дереве"
+               : "убрал из своего дерева — в графе проблема осталась");
   } catch (e) { toast("не вышло: " + e.message); }
 }
 
@@ -441,7 +441,8 @@ async function refreshVisible() {
 // ---- tree render
 function relLabel(type) {
   return { support: "за", refute: "против", qualify: "уточн.", question: "вопрос",
-           proposal: "предл.", exploration: "разбор", atom: "атом", root: "тема",
+           proposal: "предл.", exploration: "разбор", atom: "атом",
+           root: "обсуждение",
            undercut: "подрыв", attribution: "атрибуция" }[type] || type;
 }
 const KIND_CHIP = { question: "вопрос", proposal: "предложение", exploration: "разбор" };
@@ -470,7 +471,7 @@ const CRIT_RU = {
   evenhandedness: "честность к обеим сторонам",
   question_quality: "качество вопросов",
   fact_vs_guess: "факты отделены от догадок",
-  coverage: "охват темы",
+  coverage: "охват проблемы",
 };
 // one-sentence label for the tree row (shown in full, wraps up to 3 lines via CSS);
 // full text lives in the detail panel. Only a safety cap for sentences without
@@ -489,9 +490,13 @@ function nodeRow(node, type) {
   const tw = el("span", "tw", hasKids ? (expanded.has(node.id) ? "▾" : "▸") : "·");
   tw.onclick = (e) => { e.stopPropagation(); toggleExpand(node.id); };
   row.appendChild(tw);
-  row.appendChild(el("span", "rel " + type, relLabel(type)));
-  if (type === "root" && KIND_CHIP[node.kind])
-    row.appendChild(el("span", "rel question", KIND_CHIP[node.kind]));
+  // Корень несёт ОДИН бейдж — свой тип (проблема / предложение / вопрос / …).
+  // Раньше их было два: «тема» + тип, и первый ничего не сообщал — корень и так
+  // виден отступом, а слово «тема» противоречило единице «проблема».
+  row.appendChild(type === "root"
+    ? el("span", "rel " + (node.kind === "problem" ? "root" : "question"),
+         KIND_RU[node.kind] || "обсуждение")
+    : el("span", "rel " + type, relLabel(type)));
   // a topic root shows its own short title; replies fall back to a text excerpt
   const label = type === "root" ? (node.title || shortLabel(node.text)) : shortLabel(node.text);
   const txt = el("span", "txt", label);
@@ -507,11 +512,16 @@ function nodeRow(node, type) {
   if (hasKids) row.appendChild(el("span", "poi", "(" + node.reply_count + ")"));
   const poi = el("span", "poi");
   // служебный текст платформы не оценивается вовсе — «…» здесь читалось бы как
-  // «оценка вот-вот придёт», а она не придёт никогда
+  // «оценка вот-вот придёт», а она не придёт никогда. То же и с посевом: у
+  // посевных доводов PoI не считался, и рисовать им правдоподобное число
+  // значило бы повторить болезнь бота — оценку, которую никто не выставлял.
+  const unscored = node.author_is_service || node.author_is_seed;
   poi.innerHTML = node.poi_score != null ? "PoI <b>" + node.poi_score + "</b>"
-                : node.author_is_service ? "" : "…";
-  if (node.author_is_service && node.poi_score == null)
-    poi.title = "Служебная публикация платформы — в ранжировании не участвует";
+                : unscored ? "" : "…";
+  if (unscored && node.poi_score == null)
+    poi.title = node.author_is_service
+      ? "Служебная публикация платформы — в ранжировании не участвует"
+      : "Посевной довод — PoI не считался";
   row.appendChild(poi);
   // имя автора → его публичный профиль (история голосований). Новая вкладка,
   // чтобы не терять обсуждение; клик не выбирает узел.
@@ -533,14 +543,14 @@ function nodeRow(node, type) {
     if (PREVIEW && PREVIEW.id === node.id) {
       row.classList.add("preview");
       const keep = el("span", "ws keep", "оставить у себя");
-      keep.title = "Сейчас тема открыта на просмотр и исчезнет при перезагрузке";
+      keep.title = "Сейчас проблема открыта на просмотр и исчезнет при перезагрузке";
       keep.onclick = (e) => { e.stopPropagation(); workspaceToggle(node.id, true); };
       row.appendChild(keep);
     } else {
       // Подпись явная: голый «−» рядом с темой читается как «удалить тему»,
       // хотя убирает её только из ЛИЧНОЙ подборки и ни на кого не влияет.
       const drop = el("span", "ws", "убрать у себя");
-      drop.title = "Убрать тему из своего рабочего дерева. " +
+      drop.title = "Убрать проблему из своего рабочего дерева. " +
         "В графе она остаётся — её видят все и найдёшь на карте";
       drop.onclick = (e) => { e.stopPropagation(); workspaceToggle(node.id, false); };
       row.appendChild(drop);
@@ -574,20 +584,31 @@ function renderTree() {
   const tree = $("#tree");
   tree.innerHTML = "";
   if (HINTS) {
-    const lg = el("div", "legend");
-    lg.append(
-      el("span", "rel root", "тема"),
+    // Две строки, а не одна: тип узла и связь с родителем — разные вещи, и в
+    // общем ряду «проблема» читалась как ещё один вид ответа. Слова местами
+    // совпадают («вопрос» есть и там, и там) — тем более их надо развести.
+    const kinds = el("div", "legend");
+    kinds.append(
+      el("span", "legend-key", "что это:"),
+      el("span", "rel root", "проблема"),
+      el("span", "rel question", "предложение"),
+      el("span", "rel question", "уточнение"),
+      el("span", "rel question", "вопрос"),
+    );
+    const rels = el("div", "legend");
+    rels.append(
+      el("span", "legend-key", "как связано с тем, к чему прикреплено:"),
       el("span", "rel support", "за"),
       el("span", "rel refute", "против"),
       el("span", "rel qualify", "уточн."),
       el("span", "rel question", "вопрос"),
-      el("span", null, "— как ответ связан с тем, к чему прикреплён"),
+      el("span", "rel undercut", "подрыв"),
     );
-    tree.appendChild(lg);
+    tree.append(kinds, rels);
   }
   if (!TOPICS.length) {
     tree.appendChild(el("div", "muted",
-      "Пока нет тем. Создай первую кнопкой «Новая тема» сверху."));
+      "Пока нет проблем. Заведи первую кнопкой «+ Новая проблема» сверху."));
     return;
   }
   for (const t of TOPICS) renderSubtree(tree, t, "root");
@@ -773,6 +794,7 @@ async function selectNode(id) {
     "  ·  PoI: " + (node.poi_score != null ? node.poi_score
                     : node.atom_group ? "— (атом разбора, живёт реакциями)"
                     : node.author_is_service ? "— (служебная публикация платформы)"
+                    : node.author_is_seed ? "— (посевной довод, PoI не считался)"
                     : "оценивается…"),
     "  ·  тип: " + (KIND_RU[node.kind] || node.kind || "тезис"),
     ...(node.atom_group ? ["  ·  из разбора · " + node.atom_group] : []),
@@ -781,8 +803,9 @@ async function selectNode(id) {
   );
   card.appendChild(meta);
   appendHint(card, "<b>PoI</b> — насколько довод проработан, а не «правота». " +
-    "Проработанные доводы поднимаются выше в дереве. Вес в голосовании — отдельное: " +
-    "его даёт разбор темы с ИИ при голосовании, не PoI доводов.");
+    "На порядок в дереве он не влияет: внутри одного родителя доводы идут по " +
+    "времени, иначе верхний читался бы как ответ. Вес в голосовании — " +
+    "отдельное: его даёт разбор проблемы с ИИ при голосовании, не PoI доводов.");
   if (node.poi_breakdown && !node.poi_breakdown.seed) card.appendChild(critBreakdown(node.poi_breakdown));
 
   // reactions live INSIDE the argument card, right under the text — not a
@@ -843,9 +866,9 @@ async function selectNode(id) {
   // positions (only for the discussion root)
   if (isRoot) {
     const pc = el("div", "card");
-    pc.appendChild(el("div", "section-title", "Позиции по теме"));
-    appendHint(pc, "ИИ сводит близкие аргументы в <b>позиции</b> — общую карту " +
-      "мнений по теме. Позицию можно поддержать, оспорить, развить или выйти из " +
+    pc.appendChild(el("div", "section-title", "Позиции по проблеме"));
+    appendHint(pc, "ИИ сводит близкие доводы в <b>позиции</b> — общую карту " +
+      "мнений по проблеме. Позицию можно поддержать, оспорить, развить или выйти из " +
       "неё в свою, если тебя свели не туда.");
     const pbody = el("div"); pbody.textContent = "сборка позиций…";
     pc.appendChild(pbody);
@@ -890,7 +913,7 @@ function positionMembershipCard(node) {
   const card = el("div", "card");
   const own = node.position_stance === "dissent" || node.dissented;
   card.appendChild(el("div", "section-title",
-    own ? "твоя отдельная позиция" : "позиция, в которую вошёл аргумент"));
+    own ? "твоя отдельная позиция" : "позиция, в которую вошёл довод"));
   card.appendChild(el("div", null, node.position_headline || ""));
   if (node.position_composed && !own) {
     const c = el("div", "muted", node.position_composed);
@@ -905,17 +928,17 @@ function positionMembershipCard(node) {
   // only the author can dissent from how their own argument was composed
   if (ME && node.author_id === ME.id) {
     card.appendChild(el("div", "muted",
-      "это ИИ-композиция пула, включающая твой аргумент. Если она искажает " +
-      "твою мысль — вынеси аргумент в отдельную позицию (дословно)."));
+      "это ИИ-композиция пула, включающая твой довод. Если она искажает " +
+      "твою мысль — вынеси довод в отдельную позицию (дословно)."));
     const act = el("div", "actions");
     const btn = el("button", "mini", "не согласен с трактовкой — выйти");
     btn.onclick = async () => {
-      if (!confirm("Вынести твой аргумент в отдельную позицию? Пул будет " +
+      if (!confirm("Вынести твой довод в отдельную позицию? Пул будет " +
                    "перекомпонован без него.")) return;
       btn.disabled = true; btn.textContent = "выношу…";
       try {
         await api(`/api/nodes/${node.id}/dissent`, { method: "POST" });
-        toast("аргумент вынесен в собственную позицию");
+        toast("довод вынесен в собственную позицию");
         selectNode(node.id);
       } catch (e) {
         toast("ошибка: " + e.message);
@@ -1175,7 +1198,7 @@ function companionThread(hint, { getText, setText, connectTo, opening }) {
   const acts = el("div", "actions");
   const send = el("button", "mini", "ответить");
   const wider = el("button", "mini", "поискать шире по карте");
-  wider.title = "Компаньон посмотрит не только эту тему, но и остальные проблемы";
+  wider.title = "Компаньон посмотрит не только эту проблему, но и остальные";
   let scope = "near";
 
   async function turn(msg) {
@@ -1327,7 +1350,7 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
   } else if (rev.placement === "own_problem") {
     hint.appendChild(el("div", "section-title", "это тянет на отдельную проблему"));
     if (rev.place_note) hint.appendChild(el("div", "muted", rev.place_note));
-    const nt = el("button", "mini", "завести своей темой");
+    const nt = el("button", "mini", "завести отдельной проблемой");
     nt.onclick = () => { hint.style.display = "none"; newTopicForm(getText && getText()); };
     actions.appendChild(nt);
   }
@@ -1475,17 +1498,24 @@ async function problemCard(nodeId) {
     body.appendChild(el("div", "section-title", "Причины и составные части"));
     body.appendChild(el("div", "causes", p.causes));
   }
-  if (p.scale_note || p.scale_url) {
+  // Масштаб — где встречается и в каких объёмах. Строками: один регион, одна
+  // цифра, свой источник у каждой. Старый сплошной абзац (scale_note/url)
+  // показываем только пока строк нет — данные, записанные до разделения.
+  const rows = p.scale || [];
+  if (rows.length || p.scale_note || p.scale_url) {
     const s = el("div", "prob-block");
-    s.appendChild(el("div", "section-title", "Масштаб · данные извне"));
-    if (p.scale_note) s.appendChild(el("div", "causes", p.scale_note));
-    if (p.scale_url) {
-      const src = el("div", "scale-src");
-      if (p.scale_excerpt) src.appendChild(el("span", "q", "«" + p.scale_excerpt + "» "));
-      const a = el("a", null, "источник ↗");
-      a.href = p.scale_url; a.target = "_blank"; a.rel = "noopener";
-      src.appendChild(a);
-      s.appendChild(src);
+    s.appendChild(el("div", "section-title", "Масштаб · где и в каких объёмах"));
+    for (const r of rows) s.appendChild(scaleRow(r, nodeId));
+    if (!rows.length) {
+      if (p.scale_note) s.appendChild(el("div", "causes", p.scale_note));
+      if (p.scale_url) {
+        const src = el("div", "scale-src");
+        if (p.scale_excerpt) src.appendChild(el("span", "q", "«" + p.scale_excerpt + "» "));
+        const a = el("a", null, "источник ↗");
+        a.href = p.scale_url; a.target = "_blank"; a.rel = "noopener";
+        src.appendChild(a);
+        s.appendChild(src);
+      }
     }
     body.appendChild(s);
   }
@@ -1501,9 +1531,20 @@ async function problemCard(nodeId) {
   }
   const ivs = p.interventions || [];
   if (!ivs.length) reg.appendChild(el("div", "muted",
-    "пока нет записей — пустая проблема хуже пустой темы, внеси первую попытку"));
+    "пока нет записей — внеси первую попытку: где пробовали и чем кончилось"));
   for (const iv of ivs) reg.appendChild(await interventionCard(iv));
   body.appendChild(reg);
+
+  // Чего не хватает — читается ПОСЛЕ реестра, потому что это про дыру именно в
+  // нём: что ни одна из перечисленных попыток не закрыла и что не переносится.
+  // Пустой блок показываем тоже — он говорит, куда писать следующий довод.
+  const g = el("div", "prob-block");
+  g.appendChild(el("div", "section-title", "Чего не хватает"));
+  g.appendChild(p.gap
+    ? el("div", "causes", p.gap)
+    : el("div", "muted", "не описано — а это главное место для довода: "
+        + "что во всех попытках выше осталось незакрытым"));
+  body.appendChild(g);
 
   // авторские действия: заполнить состояние и накопитель (иначе страница пустая)
   if (ME) {
@@ -1515,10 +1556,77 @@ async function problemCard(nodeId) {
     };
     const ivBtn = el("button", "mini", "+ вмешательство");
     ivBtn.onclick = () => interventionForm(nodeId, card);
-    foot.append(editBtn, ivBtn);
+    const scBtn = el("button", "mini", "+ строка масштаба");
+    scBtn.onclick = () => scaleForm(nodeId, card);
+    foot.append(editBtn, scBtn, ivBtn);
     card.appendChild(foot);
   }
   return card;
+}
+
+// строка масштаба: регион — цифра — источник. Цифра не правится: её снимают и
+// вносят заново, иначе число меняется под уже написанными доводами.
+function scaleRow(r, nodeId) {
+  const row = el("div", "scale-row");
+  const head = el("div", "sr-head");
+  head.append(el("span", "sr-region", r.region), el("span", "sr-figure", r.figure));
+  if (ME) {
+    const x = el("span", "sr-x", "×");
+    x.title = "снять строку";
+    x.onclick = async () => {
+      try {
+        await api(`/api/scale/${r.id}`, { method: "DELETE" });
+        toast("строка снята"); selectNode(nodeId);
+      } catch (e) { toast("ошибка: " + e.message); }
+    };
+    head.appendChild(x);
+  }
+  row.appendChild(head);
+  if (r.source_url || r.source_excerpt) {
+    const src = el("div", "scale-src");
+    if (r.source_excerpt) src.appendChild(el("span", "q", "«" + r.source_excerpt + "» "));
+    if (r.source_url) {
+      const a = el("a", null, "источник ↗");
+      a.href = r.source_url; a.target = "_blank"; a.rel = "noopener";
+      src.appendChild(a);
+      if (r.retrieved_at) src.appendChild(el("span", null,
+        " · проверено " + new Date(r.retrieved_at).toLocaleDateString("ru-RU")));
+    }
+    row.appendChild(src);
+  }
+  return row;
+}
+
+function scaleForm(nodeId, mount) {
+  if (!requireAuth()) return;
+  const f = el("div", "pedit prob-block");
+  f.appendChild(el("div", "section-title", "Добавить строку масштаба"));
+  const two = el("div", "two");
+  const region = el("input"); region.placeholder = "Где — страна, город, площадка";
+  const figure = el("input"); figure.placeholder = "Сколько — цифра словами";
+  two.append(region, figure);
+  const url = el("input"); url.placeholder = "Ссылка на источник цифры";
+  const exc = el("textarea"); exc.placeholder = "Выдержка из источника (текст)";
+  f.append(two, url, exc);
+  const act = el("div", "actions");
+  const save = el("button", "primary mini", "внести");
+  save.onclick = async () => {
+    if (!region.value.trim() || !figure.value.trim())
+      return toast("нужны и регион, и цифра");
+    try {
+      await api(`/api/problems/${nodeId}/scale`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          region: region.value.trim(), figure: figure.value.trim(),
+          source_url: url.value.trim() || null,
+          source_excerpt: exc.value.trim() || null,
+        }),
+      });
+      toast("строка внесена"); selectNode(nodeId);
+    } catch (e) { toast("ошибка: " + e.message); }
+  };
+  act.appendChild(save); f.appendChild(act);
+  mount.appendChild(f);
 }
 
 // правка состояния проблемы: причины + масштаб (данные извне с выдержкой)
@@ -1528,13 +1636,10 @@ function problemEditForm(nodeId, p, rerender) {
   f.appendChild(el("div", "section-title", "Состояние проблемы"));
   const causes = el("textarea"); causes.placeholder = "Причины и составные части";
   causes.value = p.causes || "";
-  const note = el("input"); note.placeholder = "Масштаб — где, сколько (своими словами)";
-  note.value = p.scale_note || "";
-  const url = el("input"); url.placeholder = "Ссылка на данные (внешняя)";
-  url.value = p.scale_url || "";
-  const exc = el("textarea"); exc.placeholder = "Сохранённая выдержка из источника (текст)";
-  exc.value = p.scale_excerpt || "";
-  f.append(causes, note, url, exc);
+  const gap = el("textarea");
+  gap.placeholder = "Чего не хватает: что ни одна из попыток не закрыла и что не переносится";
+  gap.value = p.gap || "";
+  f.append(causes, gap);
   const act = el("div", "actions");
   const save = el("button", "primary mini", "сохранить состояние");
   save.onclick = async () => {
@@ -1542,8 +1647,12 @@ function problemEditForm(nodeId, p, rerender) {
       await api(`/api/problems/${nodeId}`, {
         method: "PUT", headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          causes: causes.value.trim() || null, scale_note: note.value.trim() || null,
-          scale_url: url.value.trim() || null, scale_excerpt: exc.value.trim() || null,
+          causes: causes.value.trim() || null,
+          gap: gap.value.trim() || null,
+          // масштаб живёт строками (см. scaleForm) — здесь его больше нет,
+          // но старые поля не затираем: шлём то, что уже лежит в базе
+          scale_note: p.scale_note || null, scale_url: p.scale_url || null,
+          scale_excerpt: p.scale_excerpt || null,
         }),
       });
       toast("состояние сохранено"); rerender();
@@ -1666,12 +1775,12 @@ function attributionForm(interventionId, mount) {
 function replyForm(parentId) {
   const card = el("div", "card");
   card.appendChild(el("div", "section-title", "Ответить"));
-  appendHint(card, "Выбери, как твоя реплика относится к этому доводу " +
+  appendHint(card, "Выбери, как твой довод относится к этому доводу " +
     "(за / против / уточнение / вопрос), и напиши её. Перед отправкой " +
     "ИИ-компаньон разберёт черновик — с ним можно спорить и переспрашивать. " +
     "<b>После публикации текст изменить нельзя</b>: на нём строят ответы.");
   const ta = el("textarea");
-  ta.placeholder = "Твой аргумент…";
+  ta.placeholder = "Твой довод…";
   // чип якоря: показывает, на какой участок отвечаем (ответ на фрагмент)
   const chip = el("div", "anchor-chip");
   chip.style.display = "none";
@@ -1795,10 +1904,10 @@ function newTopicForm(prefill) {
   const d = $("#detail");
   d.innerHTML = "";
   const card = el("div", "card");
-  card.appendChild(el("div", "section-title", "Новая тема"));
+  card.appendChild(el("div", "section-title", "Новая проблема"));
   const titleIn = el("input");
   titleIn.type = "text";
-  titleIn.placeholder = "Название темы — коротко, одним предложением";
+  titleIn.placeholder = "Проблема — заявленный вред, коротко";
   titleIn.style.width = "100%";
   titleIn.style.marginBottom = "8px";
   card.appendChild(titleIn);
@@ -1907,13 +2016,13 @@ function newTopicForm(prefill) {
   kindSel.appendChild(new Option("вопрос", "question"));
   kindSel.appendChild(new Option("предложение", "proposal"));
   kindSel.appendChild(new Option("разбор", "exploration"));
-  const send = el("button", "primary", "создать тему");
+  const send = el("button", "primary", "опубликовать");
   // проблема — единица по умолчанию: форма открывается в режиме проблемы
   const syncKind = () => {
     const isProb = kindSel.value === "problem";
-    send.textContent = isProb ? "создать проблему" : "создать тему";
+    send.textContent = "опубликовать";
     titleIn.placeholder = isProb ? "Проблема — заявленный вред, коротко"
-      : "Название темы — коротко, одним предложением";
+      : "Название — коротко, одним предложением";
     ta.placeholder = isProb ? "Постановка: в чём вред, кого касается, каков масштаб…"
       : "тезис, вопрос, предложение или разбор, открывающий обсуждение…";
   };
@@ -1926,7 +2035,7 @@ function newTopicForm(prefill) {
 
   const doCreate = async (text) => {
     const title = titleIn.value.trim();
-    if (!title) { toast("укажи название темы"); titleIn.focus(); return; }
+    if (!title) { toast("укажи название"); titleIn.focus(); return; }
     if (!await confirmIrreversible()) return;
     send.disabled = true; send.textContent = "создаю…";
     try {
@@ -1942,17 +2051,17 @@ function newTopicForm(prefill) {
           tags: tagsIn.value.split(",").map(s => s.trim()).filter(Boolean),
         }),
       });
-      const noun = kindSel.value === "problem" ? "проблема создана" : "тема создана";
+      const noun = kindSel.value === "problem" ? "проблема создана" : "опубликовано";
       toast(kindSel.value === "problem" ? noun + " — заполни состояние ниже"
         : domSel.value ? noun + " — PoI оценивается в фоне…"
         : noun + ", но без рубрики — на карте её найдут только поиском");
       ROOT.set(node.id, node.id);
       await loadTopics();
-      MapView.reload();                 // карта должна увидеть тему сразу
+      MapView.reload();                 // карта должна увидеть проблему сразу
       selectNode(node.id);
     } catch (e) {
       toast("ошибка: " + e.message);
-      send.disabled = false; send.textContent = "создать тему";
+      send.disabled = false; send.textContent = "опубликовать";
     }
   };
 
@@ -1960,15 +2069,15 @@ function newTopicForm(prefill) {
     const text = ta.value.trim();
     // Молчаливый return читался как «кнопка не работает»: название заполнено,
     // жмёшь — ничего. Пустой текст объясняем так же, как пустое название.
-    if (!text) { toast("напиши текст темы — одним абзацем"); ta.focus(); return; }
-    if (!titleIn.value.trim()) { toast("укажи название темы"); titleIn.focus(); return; }
+    if (!text) { toast("напиши постановку — одним-двумя абзацами"); ta.focus(); return; }
+    if (!titleIn.value.trim()) { toast("укажи название"); titleIn.focus(); return; }
     if (!requireAuth()) return;
     // проблема — не черновик, который навигатор классифицирует по типам
     // (тезис/вопрос/…): создаём сразу, состояние заполняется на её странице.
     if (kindSel.value === "problem") { await doCreate(text); return; }
     send.disabled = true; send.textContent = "ИИ читает черновик…";
     const rev = await reviewDraft({ text, kind: kindSel.value });
-    send.disabled = false; send.textContent = "создать тему";
+    send.disabled = false; send.textContent = "опубликовать";
     if (!reviewHasNotes(rev)) { hint.style.display = "none"; await doCreate(text); return; }
 
     // a root is a thesis, question, proposal or exploration — map onto kinds
@@ -2011,7 +2120,12 @@ function positionCard(p, root, byId, links) {
   const box = el("div"); box.style.borderTop = "1px solid var(--line)";
   box.style.padding = "10px 0";
   const head = el("div");
-  head.append(el("span", "pill stance-" + (p.stance || "mixed"), p.stance || "mixed"), " ");
+  // подпись позиции по-русски: латинское "support" в русском интерфейсе
+  // читается как непереведённый техномусор
+  const STANCE_RU = { support: "за", oppose: "против", mixed: "смешанная",
+                      dissent: "отдельная", conclusion: "вывод" };
+  const st = p.stance || "mixed";
+  head.append(el("span", "pill stance-" + st, STANCE_RU[st] || st), " ");
   head.appendChild(el("b", null, p.headline || "(без заголовка)"));
   box.appendChild(head);
   if (p.composed) box.appendChild(el("div", "muted", p.composed));
@@ -2038,7 +2152,7 @@ function positionCard(p, root, byId, links) {
   const cont = el("button", "mini", "развить");
   cont.onclick = () => positionText(p.id, root, "continue", "чем развить позицию?");
   const opp = el("button", "mini", "оспорить");
-  opp.onclick = () => positionText(p.id, root, "oppose", "контр-аргумент:");
+  opp.onclick = () => positionText(p.id, root, "oppose", "контр-довод:");
   const q = el("button", "mini", "вопрос");
   q.onclick = () => positionText(p.id, root, "question", "острый вопрос к позиции:");
   act.append(vote, cont, opp, q);
@@ -2181,7 +2295,7 @@ function showView(v) {
   const map = v === "map";
   $("#mapView").style.display = map ? "" : "none";
   $("#wrap").style.display = map ? "none" : "";
-  $("#tagline").textContent = map ? "карта тем" : "дерево обсуждений";
+  $("#tagline").textContent = map ? "карта проблем" : "дерево проблем";
   document.querySelectorAll("#viewSeg .seg-i").forEach(b =>
     b.classList.toggle("on", b.dataset.view === v));
   if (map) {

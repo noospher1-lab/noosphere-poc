@@ -605,6 +605,33 @@ _SCHEMA = [
         updated_at          TIMESTAMPTZ DEFAULT now()
     )
     """,
+    # ЧЕГО НЕ ХВАТАЕТ — что во всех записях реестра не покрыто и что не
+    # переносится. Отдельное поле, а не часть постановки: постановка описывает
+    # проблему, а этот текст описывает ДЫРУ в накопленных попытках, и переписывать
+    # его придётся при каждой новой записи реестра. Без него накопитель читается
+    # как список ссылок; с ним видно, куда писать следующий довод.
+    "ALTER TABLE problems ADD COLUMN IF NOT EXISTS gap TEXT",
+    # МАСШТАБ СТРОКАМИ: «где встречается и в каких объёмах». Одна строка — один
+    # регион с одной цифрой и своим источником. Раньше масштаб был одним абзацем
+    # (problems.scale_*): для проблемы, которая живёт в четырёх странах с разными
+    # числами, это склеивало несравнимое в одно предложение и не давало сослаться
+    # на каждый источник отдельно. Старые поля остаются — данные, записанные до
+    # разделения, никуда не деваются и показываются, пока строк нет.
+    """
+    CREATE TABLE IF NOT EXISTS problem_scale (
+        id             SERIAL PRIMARY KEY,
+        topic_root_id  INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        region         TEXT NOT NULL,
+        figure         TEXT NOT NULL,
+        source_url     TEXT,
+        source_excerpt TEXT,
+        retrieved_at   TIMESTAMPTZ,
+        author_id      INTEGER REFERENCES authors(id) ON DELETE SET NULL,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+        deleted_at     TIMESTAMPTZ
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS problem_scale_root ON problem_scale (topic_root_id)",
     # НАКОПИТЕЛЬ РЕШЕНИЙ — реестр вмешательств. Запись ФАКТА, не аргумент: что
     # пробовали, где, когда, кто, что вышло, от каких условий зависело. Копит
     # провалы наравне с успехами — outcome_kind='failure' первоклассное значение,
@@ -818,11 +845,25 @@ async def wipe(force=False):
                     f"отказ: в базе {registered} зарегистрированных аккаунтов. "
                     "wipe() удалит их вместе со всеми текстами и оценками. "
                     "Если это действительно нужно — NOOSPHERE_ALLOW_WIPE=1.")
+        # Коды приглашений переживают сброс. Они не данные обсуждения, а КЛЮЧИ
+        # от входа: регистрация закрыта кодом (INVITE_REQUIRED), а invites.used_by
+        # ссылается на authors — значит CASCADE уносит и неиспользованные коды
+        # вместе с аккаунтами. Инстанс после пересева оказался бы читаемым и
+        # закрытым на запись для всех, включая владельца: завести аккаунт стало
+        # бы нечем. Сохраняем только НЕиспользованные — использованные указывают
+        # на авторов, которых больше нет.
+        kept = await conn.fetch(
+            "SELECT code, note FROM invites WHERE used_by IS NULL")
         await conn.execute(
             "TRUNCATE position_reactions, position_links, positions, "
             "author_topic_poi, reactions, edges, nodes, sessions, dialogues, "
             "usage_events, authors, events RESTART IDENTITY CASCADE"
         )
+        if kept:
+            await conn.executemany(
+                "INSERT INTO invites (code, note) VALUES ($1, $2) "
+                "ON CONFLICT (code) DO NOTHING",
+                [(r["code"], r["note"]) for r in kept])
 
 
 # ---------------------------------------------------------------- nodes
@@ -1166,6 +1207,7 @@ async def get_node_full(node_id):
             """
             SELECT n.*, a.name AS author, a.color AS author_color,
                    a.is_service AS author_is_service,
+                   (a.username IS NULL AND NOT a.is_service) AS author_is_seed,
                    p.headline AS position_headline,
                    p.composed AS position_composed,
                    p.stance   AS position_stance,
@@ -1185,9 +1227,14 @@ async def get_node_full(node_id):
 
 async def get_children(node_id, limit=20, offset=0):
     """
-    A RANKED PAGE of a node's children (replies), ordered by the child's own
-    PoI. This — not get_graph — is the read path the tree UI uses: the client
-    only ever asks for the slice it is looking at.
+    A PAGE of a node's children (replies), oldest first. This — not get_graph —
+    is the read path the tree UI uses: the client only ever asks for the slice
+    it is looking at.
+
+    Порядок ХРОНОЛОГИЧЕСКИЙ, а не по PoI. На взаимоисключающих предложениях
+    сортировка по числу читается как ответ («вот это победило»), и никакая
+    подсказка рядом этого не переигрывает — читатель видит первый пункт списка.
+    Время нейтрально: оно говорит только «это написали раньше».
     """
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
@@ -1201,12 +1248,13 @@ async def get_children(node_id, limit=20, offset=0):
                    e.anchor_start, e.anchor_end, e.anchor_quote, n.author_id,
                    a.name AS author, a.color AS author_color,
                    a.is_service AS author_is_service,
+                   (a.username IS NULL AND NOT a.is_service) AS author_is_seed,
                    (SELECT count(*) FROM edges e2 WHERE e2.target_id = n.id) AS reply_count
             FROM edges e
             JOIN nodes n ON n.id = e.source_id
             LEFT JOIN authors a ON a.id = n.author_id
             WHERE e.target_id = $1 AND n.deleted_at IS NULL
-            ORDER BY n.poi_score DESC NULLS LAST, n.id
+            ORDER BY n.created_at, n.id
             LIMIT $2 OFFSET $3
             """, node_id, limit, offset)
     return {"total": total, "children": [dict(r) for r in rows]}
@@ -2903,6 +2951,7 @@ async def workspace_topics(author_id):
                    n.retracted_at, n.retract_note,
                    a.name AS author, a.color AS author_color,
                    a.is_service AS author_is_service,
+                   (a.username IS NULL AND NOT a.is_service) AS author_is_seed,
                    w.added_at,
                    (SELECT count(*) FROM edges e2
                     JOIN nodes cn ON cn.id = e2.source_id
@@ -3048,6 +3097,7 @@ async def list_topics():
                    n.retracted_at, n.retract_note,
                    a.name AS author, a.color AS author_color,
                    a.is_service AS author_is_service,
+                   (a.username IS NULL AND NOT a.is_service) AS author_is_seed,
                    (SELECT count(*) FROM edges e2
                     JOIN nodes cn ON cn.id = e2.source_id
                     WHERE e2.target_id = n.id AND cn.deleted_at IS NULL) AS reply_count
@@ -3063,7 +3113,7 @@ async def list_topics():
 
 
 # ---------------------------------------------------------------- problems
-async def set_problem(topic_root_id, causes=None, scale_note=None,
+async def set_problem(topic_root_id, causes=None, gap=None, scale_note=None,
                       scale_url=None, scale_excerpt=None,
                       scale_retrieved_at=None, author_id=None):
     """Проставить/переписать состояние проблемы (причины, масштаб). Идемпотентно.
@@ -3077,18 +3127,19 @@ async def set_problem(topic_root_id, causes=None, scale_note=None,
         async with conn.transaction():
             await conn.execute(
                 """
-                INSERT INTO problems (topic_root_id, causes, scale_note,
+                INSERT INTO problems (topic_root_id, causes, gap, scale_note,
                                       scale_url, scale_excerpt, scale_retrieved_at,
                                       updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, now())
+                VALUES ($1, $2, $3, $4, $5, $6, $7, now())
                 ON CONFLICT (topic_root_id) DO UPDATE SET
                     causes = EXCLUDED.causes,
+                    gap = EXCLUDED.gap,
                     scale_note = EXCLUDED.scale_note,
                     scale_url = EXCLUDED.scale_url,
                     scale_excerpt = EXCLUDED.scale_excerpt,
                     scale_retrieved_at = EXCLUDED.scale_retrieved_at,
                     updated_at = now()
-                """, topic_root_id, causes, scale_note, scale_url,
+                """, topic_root_id, causes, gap, scale_note, scale_url,
                 scale_excerpt, scale_retrieved_at)
             await _log(conn, "problem_set",
                        {"topic_root_id": topic_root_id, "causes": causes,
@@ -3105,7 +3156,11 @@ async def get_problem(topic_root_id):
         totals = await conn.fetch(
             "SELECT outcome_kind, count(*) AS n FROM interventions "
             "WHERE topic_root_id = $1 GROUP BY outcome_kind", topic_root_id)
+        scale = await conn.fetch(
+            "SELECT * FROM problem_scale WHERE topic_root_id = $1 "
+            "AND deleted_at IS NULL ORDER BY id", topic_root_id)
     d = dict(row) if row else {"topic_root_id": topic_root_id}
+    d["scale"] = [_scale_dict(r) for r in scale]
     if d.get("scale_retrieved_at") is not None:
         d["scale_retrieved_at"] = d["scale_retrieved_at"].isoformat()
     if d.get("updated_at") is not None:
@@ -3113,6 +3168,62 @@ async def get_problem(topic_root_id):
     d["outcomes"] = {r["outcome_kind"]: r["n"] for r in totals}
     d["interventions_total"] = sum(d["outcomes"].values())
     return d
+
+
+def _scale_dict(row):
+    d = dict(row)
+    for k in ("retrieved_at", "created_at", "deleted_at"):
+        if d.get(k) is not None:
+            d[k] = d[k].isoformat()
+    return d
+
+
+async def add_scale_row(topic_root_id, region, figure, source_url=None,
+                        source_excerpt=None, retrieved_at=None, author_id=None):
+    """Строка масштаба: один регион — одна цифра — свой источник.
+
+    Регистрируется как ФАКТ, наравне с записью реестра: спорят с ней в графе, а
+    не правкой строки. Поэтому строку нельзя переписать, только снять и внести
+    заново — иначе цифра меняется под уже написанными доводами.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                INSERT INTO problem_scale (topic_root_id, region, figure,
+                    source_url, source_excerpt, retrieved_at, author_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *
+                """, topic_root_id, region, figure, source_url, source_excerpt,
+                retrieved_at, author_id)
+            await _log(conn, "scale_add",
+                       {"topic_root_id": topic_root_id, "region": region,
+                        "figure": figure, "source_url": source_url}, author_id)
+    return _scale_dict(row)
+
+
+async def list_scale(topic_root_id):
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM problem_scale WHERE topic_root_id = $1 "
+            "AND deleted_at IS NULL ORDER BY id", topic_root_id)
+    return [_scale_dict(r) for r in rows]
+
+
+async def delete_scale_row(row_id, author_id=None):
+    """Мягкое снятие строки масштаба — как у узлов: строка остаётся в базе,
+    из выдач исчезает, event log не рвётся."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "UPDATE problem_scale SET deleted_at = now() WHERE id = $1 "
+                "AND deleted_at IS NULL RETURNING *", row_id)
+            if row is None:
+                return None
+            await _log(conn, "scale_delete", {"id": row_id}, author_id)
+    return _scale_dict(row)
 
 
 async def suggest_problems(query, limit=5, exclude_id=None):
@@ -3300,7 +3411,11 @@ async def soft_delete_intervention(intervention_id, author_id):
 
 async def intervention_attributions(intervention_id):
     """Атрибуции об этой записи реестра — узлы-претензии «сработало благодаря X»
-    с числом ответов (плотность спора по каждой). По ним бьют обычными рёбрами."""
+    с числом ответов (плотность спора по каждой). По ним бьют обычными рёбрами.
+
+    Порядок по времени, как и у детей узла: конкурирующие объяснения одного
+    исхода — набор альтернатив, и сортировка по PoI читалась бы как ответ.
+    """
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -3312,7 +3427,7 @@ async def intervention_attributions(intervention_id):
             FROM nodes n
             LEFT JOIN authors a ON a.id = n.author_id
             WHERE n.intervention_id = $1 AND n.deleted_at IS NULL
-            ORDER BY n.poi_score DESC NULLS LAST, n.id
+            ORDER BY n.created_at, n.id
             """, intervention_id)
     out = []
     for r in rows:

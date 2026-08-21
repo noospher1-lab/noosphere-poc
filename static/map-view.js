@@ -9,6 +9,15 @@
 // нужны тому, кто зашёл почитать одну ветку.
 
 const MapView = (() => {
+  // «4 тем» читалось как недоделка ещё и грамматически: слово меняем на
+  // «проблема», а раз меняем — сразу со склонением, иначе выйдет «4 проблем».
+  const plural = (n) => {
+    const d = n % 100, u = n % 10;
+    if (d > 10 && d < 20) return n + " проблем";
+    if (u === 1) return n + " проблема";
+    if (u >= 2 && u <= 4) return n + " проблемы";
+    return n + " проблем";
+  };
   let host = null, loaded = false, facets = null, hooks = {};
   let WS = new Set();                       // что уже в рабочем дереве
   let mode = localStorage.getItem("mapMode") || "catalog";
@@ -25,7 +34,7 @@ const MapView = (() => {
           <b class="seg-i" data-m="catalog">каталог</b>
         </span>
         <span class="btn mv-fx">☰ фильтры<span class="badge mv-fxn" style="display:none"></span></span>
-        <input type="search" class="mv-q" placeholder="Поиск по темам, тегам и странам…" />
+        <input type="search" class="mv-q" placeholder="Поиск по проблемам, тегам и странам…" />
         <select class="mv-sort">
           <option value="nodes">сначала активные</option>
           <option value="people">больше участников</option>
@@ -116,8 +125,8 @@ const MapView = (() => {
     ctx.clearRect(0, 0, cv.clientWidth, cv.clientHeight);
     const zoomedOut = view.k < 0.55;
     host.querySelector(".mv-level").innerHTML = zoomedOut
-      ? "уровень: <b>направления</b> · приблизь, чтобы увидеть темы"
-      : "уровень: <b>темы</b>";
+      ? "уровень: <b>направления</b> · приблизь, чтобы увидеть проблемы"
+      : "уровень: <b>проблемы</b>";
 
     for (const d of (host._ring || DOMAINS)) {
       const p = toScreen({ x: d.cx, y: d.cy });
@@ -138,7 +147,7 @@ const MapView = (() => {
         ctx.fillText(d.name, p.x, p.y - 4);
         ctx.font = "500 12px 'JetBrains Mono', monospace";
         ctx.fillStyle = "#6f7688";
-        ctx.fillText(`${n} тем`, p.x, p.y + 15);
+        ctx.fillText(plural(n), p.x, p.y + 15);
       }
       return;
     }
@@ -238,11 +247,11 @@ const MapView = (() => {
       ? a.title.localeCompare(b.title, "ru") : b[sortBy] - a[sortBy]);
 
     if (!MAP_TOPICS.length) {
-      box.innerHTML = `<div class="mv-none">Тем пока нет. Создай первую — кнопка «Новая тема» сверху.</div>`;
+      box.innerHTML = `<div class="mv-none">Проблем пока нет. Заведи первую — кнопка «+ Новая проблема» сверху.</div>`;
       return;
     }
     if (!out.length) {
-      box.innerHTML = `<div class="mv-none">Ничего не нашлось. Сними часть фильтров или создай тему здесь.</div>`;
+      box.innerHTML = `<div class="mv-none">Ничего не нашлось. Сними часть фильтров или заведи проблему здесь.</div>`;
       return;
     }
     box.innerHTML = out.map(t => {
@@ -292,7 +301,7 @@ const MapView = (() => {
     const n = MAP_TOPICS.filter(t => matchTopic(t)).length;
     const filtered = QUERY || selectionCount();
     host.querySelector(".mv-hits").textContent =
-      filtered ? `${n} из ${MAP_TOPICS.length}` : `${MAP_TOPICS.length} тем`;
+      filtered ? `${n} из ${MAP_TOPICS.length}` : plural(MAP_TOPICS.length);
     const badge = host.querySelector(".mv-fxn"), c = selectionCount();
     badge.style.display = c ? "" : "none";
     badge.textContent = c;

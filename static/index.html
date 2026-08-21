@@ -119,10 +119,15 @@
     vertical-align: middle; }
 
   /* onboarding legend under the tree header */
-  .legend { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 8px 12px;
-    color: var(--dim2); font-size: 12px; border-bottom: 1px solid var(--line);
-    margin-bottom: 8px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 8px 4px;
+    color: var(--dim2); font-size: 12px; }
   .legend .rel { cursor: default; }
+  /* черта отделяет легенду от дерева, поэтому идёт под ВТОРОЙ строкой, а не
+     между двумя строками самой легенды */
+  .legend + .legend { padding-bottom: 12px; margin-bottom: 8px;
+    border-bottom: 1px solid var(--line); }
+  .legend-key { color: var(--dim2); font-size: 11px; align-self: center;
+    flex: 0 0 auto; }
 
   /* contextual hints (toggle in header) */
   .hint { background: rgba(224,184,120,.08); border: 1px solid rgba(224,184,120,.32);
@@ -222,6 +227,17 @@
   .scale-src { margin-top: 8px; font-size: 12.5px; color: var(--dim);
     border-left: 2px solid var(--line2); padding: 4px 0 4px 10px; }
   .scale-src .q { color: var(--ivory); }
+  /* строка масштаба: регион слева, цифра справа — чтобы числа читались столбцом
+     и были сравнимы между регионами, а не тонули в сплошном абзаце */
+  .scale-row { padding: 7px 0; border-bottom: 1px solid var(--line); }
+  .scale-row:last-child { border-bottom: none; }
+  .sr-head { display: flex; align-items: baseline; gap: 10px; }
+  .sr-region { color: var(--dim); font-size: 12.5px; flex: 0 0 auto;
+    min-width: 120px; }
+  .sr-figure { flex: 1 1 auto; }
+  .sr-x { flex: none; color: var(--dim2); cursor: pointer; font-size: 13px; }
+  .sr-x:hover { color: var(--red); }
+  .scale-row .scale-src { margin-top: 4px; }
   .iv { border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px;
     margin-bottom: 9px; background: var(--panel2); }
   .iv-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -312,7 +328,7 @@
   @media (max-width: 860px) {
     html, body { font-size: 14px; }
     header { padding: 9px 12px; gap: 7px 10px; }
-    header .tagline { display: none; }   /* «дерево обсуждений» и так видно */
+    header .tagline { display: none; }   /* «дерево проблем» и так видно */
     header .spacer { display: none; }    /* распорка только мешает переносу */
     .header-word { font-size: 13px; letter-spacing: .18em; }
     #logoCanvas { width: 26px; height: 26px; }
@@ -347,7 +363,7 @@
     <canvas id="logoCanvas" width="88" height="88" aria-hidden="true"></canvas>
     <span class="header-word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span>
   </a>
-  <span class="tagline" id="tagline">дерево обсуждений</span>
+  <span class="tagline" id="tagline">дерево проблем</span>
   <span class="seg" id="viewSeg">
     <b class="seg-i on" data-view="tree">дерево</b>
     <a class="seg-i" data-view="map">карта</a>
@@ -363,7 +379,7 @@
   <button id="logoutBtn" class="mini" style="display:none">Выйти</button>
   <button id="hintsBtn" class="mini">💡 Подсказки: вкл</button>
   <button id="refresh" class="mini">↻ Обновить</button>
-  <button id="newTopic" class="primary mini">+ Новая тема</button>
+  <button id="newTopic" class="primary mini">+ Новая проблема</button>
   <a href="/dialogue.html" title="Разговор с ИИ по одному вопросу — покажет сильные и слабые стороны твоего рассуждения">Тренажёр ▸</a>
   <a href="/profile.html" title="Мой кабинет — вклад в граф и остаток на счёте для работы с ИИ">Кабинет ▸</a>
   <a href="/graph.html" title="Силовой граф — дополнительный режим просмотра">Граф ▸</a>
@@ -425,9 +441,9 @@
   <div id="detail">
     <div class="empty">
       <h3>Выбери обсуждение слева</h3>
-      <p>Каждая ветка — тема. Разворачивай её, чтобы читать аргументы за и против,
+      <p>Каждая ветка — проблема. Разворачивай её, чтобы читать доводы за и против,
          задавать вопросы и добавлять свои.</p>
-      <p class="muted">Или начни своё — кнопка «Новая тема» сверху.</p>
+      <p class="muted">Или начни своё — кнопка «Новая проблема» сверху.</p>
     </div>
   </div>
 </div>

@@ -244,7 +244,7 @@ function mountComposer(host, { onCreated } = {}) {
   host.innerHTML = `
     <div class="cmp-back"></div>
     <div class="cmp">
-      <div class="cmp-head"><b>Новая тема</b><span class="cmp-x">×</span></div>
+      <div class="cmp-head"><b>Новая проблема</b><span class="cmp-x">×</span></div>
       <div class="cmp-body">
         <label>Заголовок <span class="req">обязательно</span></label>
         <input class="cmp-title" maxlength="120" placeholder="Коротко, одной строкой" />
@@ -276,7 +276,7 @@ function mountComposer(host, { onCreated } = {}) {
       </div>
       <div class="cmp-foot">
         <button class="cmp-cancel">Отмена</button>
-        <button class="cmp-send">Создать тему</button>
+        <button class="cmp-send">Создать проблему</button>
       </div>
     </div>`;
 
