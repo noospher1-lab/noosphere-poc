@@ -2028,18 +2028,40 @@ async def _render_material(topic_root_id, question):
                            m["atoms"], m["dissents"])
 
 
+# Анти-спам: не больше стольких голосований с одного автора в час. Дёшево
+# считается по created_at; UI-поток (создал-открыл-проголосовал) в лимит не
+# упирается, а массовое забивание графа и трат на диалоги — да.
+DECISIONS_PER_HOUR = 10
+
+
 @app.post("/api/decisions")
 async def create_decision(body: DecisionIn, author=Depends(verified_author)):
-    return await db.create_decision(body.topic_root_id, body.question.strip(),
-                                    created_by=author["id"])
+    q = body.question.strip()
+    if not q:
+        raise HTTPException(400, "пустой вопрос голосования")
+    node = await db.get_node(body.topic_root_id)
+    if node is None or node.get("topic_root_id") != body.topic_root_id:
+        raise HTTPException(400, "голосование привязывается к теме (корню дерева)")
+    if await db.count_recent_decisions(author["id"], hours=1) >= DECISIONS_PER_HOUR:
+        raise HTTPException(429, "слишком много голосований за час — подожди")
+    return await db.create_decision(body.topic_root_id, q, created_by=author["id"])
 
 
 @app.post("/api/decisions/{decision_id}/options")
 async def add_decision_option(decision_id: int, body: OptionIn,
                               author=Depends(verified_author)):
-    await _decision_or_404(decision_id)
+    d = await _decision_or_404(decision_id)
     if body.origin not in ("initial", "proposed", "reframe"):
         raise HTTPException(400, "origin must be initial|proposed|reframe")
+    # Целостность бюллетеня: варианты добавляет только автор и только пока
+    # голосование в черновике. Иначе посторонний мог бы напихать вариантов в
+    # чужой уже открытый бюллетень во время голосования. Чужие «proposed/reframe»
+    # — отдельная будущая механика, сознательно отложена (см. vault:
+    # user-created-decisions).
+    if d.get("created_by") and d["created_by"] != author["id"]:
+        raise HTTPException(403, "варианты добавляет только автор голосования")
+    if d["status"] != "draft":
+        raise HTTPException(409, "варианты можно добавлять только в черновик")
     rev = await db.current_revision(decision_id)
     return await db.add_option(decision_id, body.position_id, body.label,
                                origin=body.origin, proposed_by=author["id"],
@@ -2070,15 +2092,19 @@ async def open_decision(decision_id: int, author=Depends(verified_author)):
 
 
 @app.get("/api/decisions")
-async def get_decisions_list(status: str = "open"):
+async def get_decisions_list(request: Request, status: str = "open"):
     """Список голосований (по умолчанию открытые) — для экрана участника.
 
-    Открыто на чтение всем: голосования прозрачны, их видно и наблюдателю.
+    open/closed открыты всем (голосования прозрачны). Черновики видны только
+    своему автору: viewer берём из сессии, если она есть.
     """
     allowed = {"open", "draft", "closed", "all"}
     if status not in allowed:
         raise HTTPException(400, f"status ∈ {sorted(allowed)}")
-    return await db.list_decisions(None if status == "all" else status)
+    token = request.cookies.get(SESSION_COOKIE)
+    viewer = await db.session_author(token) if token else None
+    return await db.list_decisions(None if status == "all" else status,
+                                   viewer_id=viewer["id"] if viewer else None)
 
 
 @app.get("/api/decisions/{decision_id}")
@@ -2087,6 +2113,30 @@ async def read_decision(decision_id: int):
     return {"decision": d,
             "options": await db.list_options(decision_id),
             "tally": await db.tally(decision_id)}
+
+
+@app.post("/api/decisions/{decision_id}/close")
+async def close_decision(decision_id: int, author=Depends(verified_author)):
+    """Автор закрывает своё открытое голосование — приём голосов прекращается."""
+    d = await _decision_or_404(decision_id)
+    if d.get("created_by") and d["created_by"] != author["id"]:
+        raise HTTPException(403, "закрыть голосование может только его автор")
+    row = await db.close_decision(decision_id)
+    if row is None:
+        raise HTTPException(409, "закрыть можно только открытое голосование")
+    return row
+
+
+@app.delete("/api/decisions/{decision_id}")
+async def delete_decision(decision_id: int, author=Depends(verified_author)):
+    """Автор удаляет свой черновик. Открытые/закрытые не удаляются (у них
+    материал и, возможно, голоса) — их только закрывают."""
+    d = await _decision_or_404(decision_id)
+    if d.get("created_by") and d["created_by"] != author["id"]:
+        raise HTTPException(403, "удалить голосование может только его автор")
+    if not await db.delete_draft_decision(decision_id):
+        raise HTTPException(409, "удалить можно только черновик (открытое — закрывают)")
+    return {"ok": True}
 
 
 @app.post("/api/decisions/{decision_id}/dialogue/start",

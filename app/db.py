@@ -1934,20 +1934,29 @@ async def get_decision(decision_id):
     return dict(row) if row else None
 
 
-async def list_decisions(status=None):
+async def list_decisions(status=None, viewer_id=None):
     """Список голосований для экрана участника: вопрос, тема, счётчики.
 
     Голоса и варианты считаем подзапросами, чтобы одно голосование давало одну
-    строку (JOIN по votes/options раздул бы её). Открыто на чтение всем.
+    строку. Приватность черновиков: open/closed видны всем, а draft — только
+    своему автору (viewer_id). status=None ('all') = не-черновики + свои черновики.
+    topic_text обрезан — списку нужен только заголовок, полный текст лишний вес.
     """
     pool = _pool_or_raise()
-    where = "WHERE d.status = $1" if status else ""
-    args = [status] if status else []
+    if status == "draft":
+        if viewer_id is None:
+            return []
+        where, args = "WHERE d.status = 'draft' AND d.created_by = $1", [viewer_id]
+    elif status in ("open", "closed"):
+        where, args = "WHERE d.status = $1", [status]
+    else:  # all
+        where = "WHERE (d.status <> 'draft' OR d.created_by = $1)"
+        args = [viewer_id if viewer_id is not None else -1]
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT d.id, d.topic_root_id, d.question, d.status, "
-            "       d.opens_at, d.closes_at, d.created_at, "
-            "       t.title AS topic_title, t.text AS topic_text, "
+            "       d.opens_at, d.closes_at, d.created_at, d.created_by, "
+            "       t.title AS topic_title, left(t.text, 200) AS topic_text, "
             "       (SELECT COUNT(*) FROM decision_options o "
             "          WHERE o.decision_id = d.id) AS options, "
             "       (SELECT COUNT(DISTINCT v.author_id) FROM votes v "
@@ -1958,6 +1967,37 @@ async def list_decisions(status=None):
             "ORDER BY d.opens_at DESC NULLS LAST, d.created_at DESC",
             *args)
     return [dict(r) for r in rows]
+
+
+async def count_recent_decisions(author_id, hours=1):
+    """Сколько голосований автор создал за последние N часов — для анти-спама."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT COUNT(*) FROM decisions "
+            "WHERE created_by = $1 AND created_at > now() - ($2 || ' hours')::interval",
+            author_id, str(hours))
+
+
+async def close_decision(decision_id):
+    """Автор закрывает открытое голосование — приём голосов прекращается."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE decisions SET status = 'closed', closes_at = now() "
+            "WHERE id = $1 AND status = 'open' RETURNING *", decision_id)
+    return dict(row) if row else None
+
+
+async def delete_draft_decision(decision_id):
+    """Удалить черновик (ещё не открытый). Открытые/закрытые не трогаем —
+    у них уже есть материал и, возможно, голоса; их только закрывают."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "DELETE FROM decisions WHERE id = $1 AND status = 'draft' "
+            "RETURNING id", decision_id)
+    return row is not None
 
 
 async def current_revision(decision_id):

@@ -128,6 +128,7 @@
     <a href="/vote.html" class="muted" style="font-size:13px">← ко всем голосованиям</a>
     <h1 id="dq" style="margin-top:8px"></h1>
     <div id="dtopic" class="vc-topic"></div>
+    <div id="dctl" class="row" style="margin:4px 0 2px"></div>
 
     <div class="sec-h">Расклад сейчас</div>
     <div id="tally" class="card"></div>
@@ -195,9 +196,28 @@ async function loadDetail(id) {
   const view = await api(`/api/decisions/${id}`);
   D = view;
   $("#dq").textContent = view.decision.question;
+  renderControls(view);
   renderTally(view.tally);
   renderVote(view);
   renderPrepare();
+}
+
+function renderControls(view) {
+  const d = view.decision;
+  const ctl = $("#dctl");
+  const st = { open: "открыто", closed: "закрыто", draft: "черновик" }[d.status] || d.status;
+  const isCreator = ME && d.created_by === ME.id;
+  ctl.innerHTML = `<span class="badge ${d.status === "open" ? "open" : ""}">${st}</span>`;
+  if (isCreator && d.status === "open") {
+    const b = document.createElement("button");
+    b.className = "btn ghost"; b.textContent = "Закрыть голосование";
+    b.onclick = async () => {
+      b.disabled = true;
+      try { await api(`/api/decisions/${d.id}/close`, {}); location.reload(); }
+      catch (e) { err("Не удалось закрыть: " + e.message); b.disabled = false; }
+    };
+    ctl.appendChild(b);
+  }
 }
 
 function renderTally(t) {
@@ -218,13 +238,19 @@ function renderTally(t) {
 
 function renderVote(view) {
   const box = $("#vote");
+  if (view.decision.status !== "open") {
+    box.innerHTML = '<div class="note">Голосование закрыто — приём голосов завершён. Итог выше.</div>';
+    return;
+  }
   if (!ME) { box.innerHTML = '<div class="note">Чтобы проголосовать, <a href="/">войди</a> и подтверди адрес.</div>'; return; }
   const w = (DLG && DLG.finished) ? DLG.weight : 1;
+  // reframe — не ответ на вопрос, а его отклонение; за него не голосуют.
+  const votable = view.options.filter((o) => o.origin !== "reframe");
   box.innerHTML = `
     <div class="muted" style="font-size:13px;margin-bottom:8px">
       Твой вес: <span class="weight-badge">${w}</span>
       ${(DLG && DLG.finished) ? "" : "— пройди подготовку с ИИ, чтобы поднять вес (без неё голос весит 1)"}</div>
-    ${view.options.map((o) => `
+    ${votable.map((o) => `
       <label class="opt-top" style="margin:6px 0">
         <input type="checkbox" name="opt" value="${o.id}" />
         <span class="opt-label">${esc(o.label || o.headline || "—")}</span>
@@ -250,6 +276,9 @@ async function castVote() {
 // ---------- ПОДГОТОВКА (диалог) ----------
 function renderPrepare() {
   const box = $("#prepare");
+  if (D && D.decision.status !== "open") {
+    box.innerHTML = '<div class="note">Голосование закрыто — подготовка больше не нужна.</div>'; return;
+  }
   if (!ME) { box.innerHTML = '<div class="note">Подготовка доступна после входа.</div>'; return; }
   if (!DLG) {
     box.innerHTML = `
