@@ -16,7 +16,22 @@ const el = (tag, cls, txt) => {
 };
 async function api(path, opts) {
   const r = await fetch(path, opts);
-  if (!r.ok) throw new Error((await r.text()) || r.status);
+  if (!r.ok) {
+    // FastAPI отдаёт ошибку как {"detail": "..."} — и до сих пор это тело
+    // уезжало в тост целиком, вместе со скобками и кавычками. Человек читал
+    // «не вышло: {"detail":"требуется вход"}» и справедливо считал, что
+    // сломалось что-то другое, а не что ему просто надо войти.
+    const body = await r.text();
+    let msg = body || String(r.status);
+    try {
+      const j = JSON.parse(body);
+      if (typeof j.detail === "string") msg = j.detail;
+      else if (Array.isArray(j.detail) && j.detail[0]?.msg) msg = j.detail[0].msg;
+    } catch (_) { /* не JSON — показываем как есть */ }
+    const err = new Error(msg);
+    err.status = r.status;
+    throw err;
+  }
   return r.status === 204 ? null : r.json();
 }
 function toast(msg) {
@@ -200,11 +215,15 @@ async function loadMe() {
 }
 
 function openAuth(msg) {
-  $("#authErr").textContent = msg || "";
   $("#authModal").style.display = "flex";
   const ce = $("#checkEmailBox");
   if (ce) { ce.style.display = "none"; ce.innerHTML = ""; }
   showForgot(false);
+  // ПОСЛЕ showForgot, а не до: он чистит строку ошибки, и написанная раньше
+  // причина стиралась молча. Форма открывалась без единого слова о том, зачем
+  // её открыли, — «нажал добавить, а мне показали вход» вместо «войди, чтобы
+  // собирать своё дерево».
+  $("#authErr").textContent = msg || "";
   $("#authUser").focus();
 }
 function closeAuth() { $("#authModal").style.display = "none"; }
@@ -393,15 +412,34 @@ async function loadTopics() {
 }
 
 async function workspaceToggle(id, want) {
+  // Рабочее дерево — у аккаунта, поэтому без входа кнопка работать не может.
+  // Говорим это прямо и открываем форму входа, а не сообщаем об ошибке.
+  if (!ME) {
+    openAuth("рабочее дерево — у аккаунта: войди, чтобы собирать своё");
+    return;
+  }
+  const title = (MAP_TOPICS_TITLE && MAP_TOPICS_TITLE(id)) || "проблема";
   try {
     await api(`/api/workspace/${id}`, { method: want ? "POST" : "DELETE" });
     if (want) { WS_IDS.add(id); if (PREVIEW && PREVIEW.id === id) PREVIEW = null; }
     else WS_IDS.delete(id);
     await loadTopics();
     if (typeof MapView !== "undefined") MapView.syncWorkspace(WS_IDS);
-    toast(want ? "проблема в рабочем дереве"
-               : "убрал из своего дерева — в графе проблема осталась");
+    // Название в тосте, а не безличное «проблема»: когда добавляешь подряд
+    // несколько карточек, только оно и отвечает на вопрос «а эту добавил?».
+    toast(want ? `добавлено в дерево: ${title}`
+               : `убрано из дерева: ${title} — в графе проблема осталась`);
   } catch (e) { toast("не вышло: " + e.message); }
+}
+
+// Название проблемы по id — для сообщений о действии. Живёт здесь, а не в
+// MapView: тост показывает дерево, и оно же знает, что вообще открыто.
+function MAP_TOPICS_TITLE(id) {
+  const t = (typeof MapView !== "undefined" && MapView.titleOf)
+    ? MapView.titleOf(id) : null;
+  if (t) return t;
+  const local = TOPICS.find(x => x.id === id);
+  return local ? (local.title || shortLabel(local.text, 40)) : null;
 }
 
 // ?topic=N и ?view=map — вход по ссылке извне. Внутри приложения виды

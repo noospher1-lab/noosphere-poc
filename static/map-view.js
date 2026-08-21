@@ -345,5 +345,8 @@ const MapView = (() => {
   }
 
   return { open, reload, syncWorkspace,
+           // название по id — чтобы сообщение о действии называло проблему,
+           // а не говорило безлично «добавлено»
+           titleOf: (id) => (MAP_TOPICS.find(t => t.id === id) || {}).title || null,
            close: () => { if (host) host.style.display = "none"; } };
 })();
