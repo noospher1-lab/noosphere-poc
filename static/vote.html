@@ -114,13 +114,14 @@
   <!-- СПИСОК -->
   <section id="list" class="hidden">
     <div class="row">
-      <h1>Открытые голосования</h1>
+      <h1>Голосования</h1>
       <span class="spacer"></span>
       <a class="btn ghost" href="/create-vote.html">+ создать</a>
     </div>
     <p class="lead">Голосование — совещательная карта мнений: результат виден и по головам,
       и по весу (кто насколько разобрался). Вес даёт разбор темы с ИИ перед голосом.</p>
     <div id="list-body"></div>
+    <div id="list-closed"></div>
   </section>
 
   <!-- ДЕТАЛЬ -->
@@ -168,26 +169,37 @@ function topicName(t) {
 }
 
 // ---------- СПИСОК ----------
-async function renderList() {
-  $("#list").classList.remove("hidden");
-  let rows = [];
-  try { rows = await api("/api/decisions?status=open"); }
-  catch (e) { err("Список не загрузился: " + e.message); }
-  const box = $("#list-body");
-  if (!rows.length) {
-    box.innerHTML = '<div class="note">Пока нет открытых голосований. '
-      + '<a href="/create-vote.html">Создай первое</a>.</div>';
-    return;
-  }
-  box.innerHTML = rows.map((d) => `
+function voteCard(d) {
+  const isOpen = d.status === "open";
+  const badge = isOpen ? '<span class="badge open">открыто</span>'
+                       : '<span class="badge">завершено</span>';
+  return `
     <a class="card vote-card" href="/vote.html?id=${d.id}">
       <div class="vc-q">${esc(d.question)}</div>
       <div class="vc-topic">Тема: ${esc(topicName(d))}</div>
-      <div class="vc-meta">
-        <span class="badge open">открыто</span>
+      <div class="vc-meta">${badge}
         &nbsp;· голосов: ${d.voters} · вариантов: ${d.options}
       </div>
-    </a>`).join("");
+    </a>`;
+}
+
+async function renderList() {
+  $("#list").classList.remove("hidden");
+  let rows = [];
+  try { rows = await api("/api/decisions?status=all"); }
+  catch (e) { err("Список не загрузился: " + e.message); }
+  const open = rows.filter((d) => d.status === "open");
+  const closed = rows.filter((d) => d.status === "closed");
+
+  $("#list-body").innerHTML = open.length
+    ? open.map(voteCard).join("")
+    : '<div class="note">Пока нет открытых голосований. '
+      + '<a href="/create-vote.html">Создай первое</a>.</div>';
+
+  $("#list-closed").innerHTML = closed.length
+    ? '<div class="sec-h" style="margin-top:26px">Завершённые</div>'
+      + closed.map(voteCard).join("")
+    : "";
 }
 
 // ---------- ДЕТАЛЬ ----------
