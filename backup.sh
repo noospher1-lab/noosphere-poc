@@ -8,7 +8,7 @@
 #
 # Install (runs at 04:17 daily, staggered off the hour):
 #   crontab -e
-#   17 4 * * * /path/to/noosphere-poc/backup.sh >> $HOME/noosphere-backups/cron.log 2>&1
+#   17 4 * * * /path/to/noosphere-poc/backup.sh >> $HOME/backups/db/cron.log 2>&1
 #
 # Restore:
 #   gunzip -c noosphere-2026-07-21.sql.gz | psql "$DATABASE_URL"
@@ -18,7 +18,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 [ -f .env ] && set -a && . ./.env && set +a
 
-DEST="${BACKUP_DIR:-$HOME/noosphere-backups}"
+DEST="${BACKUP_DIR:-$HOME/backups/db}"
 KEEP_DAYS="${BACKUP_KEEP_DAYS:-30}"
 STAMP="$(date +%Y-%m-%d-%H%M)"
 OUT="$DEST/noosphere-$STAMP.sql.gz"

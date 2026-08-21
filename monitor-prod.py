@@ -17,7 +17,7 @@
 
 Установка (каждые 5 минут):
   crontab -e
-  */5 * * * * /path/to/noosphere-poc/monitor-prod.py >> $HOME/noosphere-backups/monitor.log 2>&1
+  */5 * * * * /path/to/noosphere-poc/monitor-prod.py >> $HOME/backups/db/monitor.log 2>&1
 """
 
 import json
@@ -42,6 +42,17 @@ GAP = 5               # секунд между попытками
 # но потерял Postgres, для читателя мёртв ровно так же.
 CHECKS = (("/healthz", "ok"), ("/api/topics", None))
 
+# Контрольные адреса — «а есть ли интернет у самого наблюдателя».
+# Монитор живёт на ноутбуке, и ноутбук уезжает в офлайн чаще, чем падает прод:
+# закрыли крышку, вышли из дома, отвалился wi-fi. Без этой проверки любой такой
+# случай выглядел как авария и слал письмо «прод не отвечает», а по возвращении
+# сети — «прод восстановился». Ровно это и случилось 14–16 августа 2026: ноут
+# был офлайн, прод всё это время работал.
+#
+# Два независимых адреса и не наши: если недоступны оба, дело почти наверняка в
+# нашей сети, а не в том, что полмира легло.
+CONTROL = ("https://one.one.one.one/", "https://www.google.com/generate_204")
+
 
 def probe():
     """(живой?, что именно сломалось)"""
@@ -60,6 +71,21 @@ def probe():
         except Exception as e:
             return False, f"{path} → {type(e).__name__}: {e}"
     return True, ""
+
+
+def internet_up():
+    """Есть ли сеть у самого наблюдателя. False — молчим, что бы ни показал прод."""
+    for url in CONTROL:
+        req = urllib.request.Request(
+            url, headers={"user-agent": "noosphere-monitor/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=10):
+                return True
+        except urllib.error.HTTPError:
+            return True          # ответил хоть чем-то — сеть есть
+        except Exception:
+            continue
+    return False
 
 
 def load_state():
@@ -97,9 +123,17 @@ def main():
             if alive:
                 break
 
-    state = load_state()
     now = datetime.now(timezone.utc)
     stamp = now.strftime("%Y-%m-%d %H:%M UTC")
+
+    # Прод «не отвечает» и интернета нет — это не авария, а закрытая крышка.
+    # Состояние не трогаем: вернётся сеть — вернётся и наблюдение, без письма
+    # о падении, которого не было.
+    if not alive and not internet_up():
+        print(f"{stamp} нет сети у наблюдателя — проверку пропускаем", flush=True)
+        return
+
+    state = load_state()
 
     if alive == state.get("alive"):
         print(f"{stamp} {'жив' if alive else 'лежит'} — без изменений", flush=True)
