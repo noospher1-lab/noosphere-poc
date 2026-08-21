@@ -41,6 +41,15 @@ CRITERIA = {
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 MODEL = "claude-sonnet-4-6"
 
+# У Opus 4.7/4.8 и семейства 5 (Opus/Sonnet/Fable 5) параметры сэмплирования
+# (temperature/top_p/top_k) удалены — их отправка возвращает 400. Sonnet 4.6 и
+# Haiku 4.5 их ещё принимают. Голосовальный диалог и судья идут на opus-4-8,
+# поэтому temperature туда слать нельзя (иначе «собеседник недоступен: 400»).
+_NO_SAMPLING_MODELS = {
+    "claude-opus-4-8", "claude-opus-4-7", "claude-opus-5",
+    "claude-sonnet-5", "claude-fable-5", "claude-mythos-5",
+}
+
 # USD per 1M tokens, per model. Needed because the balance in a participant's
 # cabinet has to be denominated in something they recognise — "you have $1.80
 # left" is legible, "you have 600k tokens left" is not.
@@ -158,13 +167,15 @@ def complete_messages(system, messages, max_tokens=1024, timeout=120,
             "never hard-code the key (constitution Part II)."
         )
 
+    use_model = model or MODEL
     payload = {
-        "model": model or MODEL,
+        "model": use_model,
         "max_tokens": max_tokens,
         "system": system,
         "messages": messages,
     }
-    if temperature is not None:
+    # temperature шлём только моделям, которые его принимают (см. _NO_SAMPLING_MODELS).
+    if temperature is not None and use_model not in _NO_SAMPLING_MODELS:
         payload["temperature"] = temperature
     req = urllib.request.Request(
         ANTHROPIC_URL,
