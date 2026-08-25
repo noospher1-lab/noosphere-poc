@@ -20,8 +20,20 @@ TEST_DB = os.environ.get("TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not TEST_DB, reason="TEST_DATABASE_URL not set")
 
 
-def _run(coro):
-    return asyncio.run(coro)
+def _run(coro_fn):
+    """Каждый тест живёт в своём event loop, поэтому пул обязан закрыться внутри
+    того же цикла, в котором открылся: пережив asyncio.run, он потянет за собой
+    закрытый loop и уронит следующий тест — что и случилось 2026-08-25, когда
+    один упавший ассерт увёл за собой соседний тест с «Event loop is closed».
+    Закрытие в finally, а не в конце тела теста: падение — как раз тот случай,
+    когда пул закрыть некому."""
+    async def wrapper():
+        from app import db
+        try:
+            await coro_fn()
+        finally:
+            await db.close_pool()
+    asyncio.run(wrapper())
 
 
 async def _fresh_db():
@@ -55,7 +67,7 @@ def test_shared_key_spend_ignores_own_key_accounts():
 
         assert await db.shared_key_spend() == pytest.approx(0.25)
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_own_key_later_does_not_erase_past_shared_spend():
@@ -75,7 +87,7 @@ def test_own_key_later_does_not_erase_past_shared_spend():
         # Прошлые $0.40 остаются на общем ключе, новые $5 — уже нет.
         assert await db.shared_key_spend() == pytest.approx(0.40)
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_spend_accumulates_across_calls():
@@ -86,4 +98,4 @@ def test_spend_accumulates_across_calls():
         await db.record_usage(a, [_usage(0.05)], "/api/y")
         assert await db.shared_key_spend() == pytest.approx(0.35)
         await db.close_pool()
-    _run(go())
+    _run(go)

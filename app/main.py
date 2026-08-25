@@ -862,6 +862,26 @@ class AuthorIn(BaseModel):
     color: str | None = None
 
 
+# Статика отдаётся StaticFiles с ETag и Last-Modified, но БЕЗ Cache-Control —
+# и браузер тогда кэширует эвристически, на своё усмотрение. 2026-08-25 это
+# стоило часа: после деплоя прод отдавал новый tree.js, а в окне висел старый,
+# и правка выглядела «не доехавшей». no-cache кэш не отключает — файл остаётся
+# в браузере, но каждый раз перепроверяется: совпал ETag — пустой 304, не
+# совпал — новый файл сразу, без «почисти кэш».
+_REVALIDATE = (".html", ".js", ".css", ".json", ".svg")
+
+
+@app.middleware("http")
+async def revalidate_static(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.endswith(_REVALIDATE):
+        # setdefault, а не присвоение: если маршрут сам решил, как его кэшировать
+        # (или это API со своим заголовком), его выбор сильнее умолчания.
+        response.headers.setdefault("cache-control", "no-cache")
+    return response
+
+
 @app.middleware("http")
 async def meter_llm_usage(request: Request, call_next):
     """Bill every LLM call made while handling this request to its author.

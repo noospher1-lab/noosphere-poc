@@ -20,8 +20,20 @@ TEST_DB = os.environ.get("TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not TEST_DB, reason="TEST_DATABASE_URL not set")
 
 
-def _run(coro):
-    return asyncio.run(coro)
+def _run(coro_fn):
+    """Каждый тест живёт в своём event loop, поэтому пул обязан закрыться внутри
+    того же цикла, в котором открылся: пережив asyncio.run, он потянет за собой
+    закрытый loop и уронит следующий тест — что и случилось 2026-08-25, когда
+    один упавший ассерт увёл за собой соседний тест с «Event loop is closed».
+    Закрытие в finally, а не в конце тела теста: падение — как раз тот случай,
+    когда пул закрыть некому."""
+    async def wrapper():
+        from app import db
+        try:
+            await coro_fn()
+        finally:
+            await db.close_pool()
+    asyncio.run(wrapper())
 
 
 async def _fresh_db():
@@ -68,7 +80,7 @@ def test_registered_counts_people_not_rows():
         assert s["registered"] == 1
         assert s["online"] == 0
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_online_is_activity_inside_the_window():
@@ -90,7 +102,7 @@ def test_online_is_activity_inside_the_window():
         assert adm["presence"]["active_24h"] == 2
         assert [o["username"] for o in adm["online_now"]] == ["fresh"]
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_two_devices_are_one_person_online():
@@ -106,7 +118,7 @@ def test_two_devices_are_one_person_online():
         adm = await db.stats_admin()
         assert adm["presence"]["live_sessions"] == 2      # сессий всё-таки две
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_session_author_stamps_last_seen():
@@ -121,7 +133,7 @@ def test_session_author_stamps_last_seen():
         assert (await db.session_author(token))["username"] == "walker"
         assert (await db.stats_public())["online"] == 1
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_profile_row_carries_money_and_activity():
@@ -148,7 +160,7 @@ def test_profile_row_carries_money_and_activity():
         assert adm["spend_total"]["spent_usd"] == 0.25
         assert adm["spend_total"]["granted_usd"] == 5
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_profiles_lists_everyone_including_the_idle():
@@ -165,4 +177,4 @@ def test_profiles_lists_everyone_including_the_idle():
         assert idle["last_seen"] is None
         assert adm["users"]["registered"] == 5
         await db.close_pool()
-    _run(go())
+    _run(go)

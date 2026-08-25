@@ -22,8 +22,20 @@ TEST_DB = os.environ.get("TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not TEST_DB, reason="TEST_DATABASE_URL not set")
 
 
-def _run(coro):
-    return asyncio.run(coro)
+def _run(coro_fn):
+    """Каждый тест живёт в своём event loop, поэтому пул обязан закрыться внутри
+    того же цикла, в котором открылся: пережив asyncio.run, он потянет за собой
+    закрытый loop и уронит следующий тест — что и случилось 2026-08-25, когда
+    один упавший ассерт увёл за собой соседний тест с «Event loop is closed».
+    Закрытие в finally, а не в конце тела теста: падение — как раз тот случай,
+    когда пул закрыть некому."""
+    async def wrapper():
+        from app import db
+        try:
+            await coro_fn()
+        finally:
+            await db.close_pool()
+    asyncio.run(wrapper())
 
 
 async def _fresh_db():
@@ -46,7 +58,7 @@ def test_author_crud():
         assert "reputation" not in a          # the rudiment is gone
         assert [x["id"] for x in await db.list_authors()] == [aid]
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_node_carries_author_into_graph():
@@ -59,7 +71,7 @@ def test_node_carries_author_into_graph():
         assert node["author"] == "Тролль"
         assert node["author_color"] == "#e25b56"
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_node_without_author_is_anonymous():
@@ -70,7 +82,7 @@ def test_node_without_author_is_anonymous():
         assert node["author"] is None
         assert node["author_color"] is None
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_children_ranked_and_paginated():
@@ -85,15 +97,19 @@ def test_children_ranked_and_paginated():
             ids[label] = nid
         page = await db.get_children(root, limit=10, offset=0)
         assert page["total"] == 4
-        # ranked by PoI desc, NULL (unscored) last
-        assert [c["text"] for c in page["children"]] == ["top", "mid", "low", "unscored"]
-        # pagination slices the same ranking
+        # Порядок — ВРЕМЯ появления, а не PoI (871438a, 2026-08-21): внутри
+        # одного родителя ранжирование по баллу читалось бы как «вот главный
+        # ответ», хотя PoI говорит о проработанности, а не о правоте. Тест
+        # держит именно это: балл на порядок не влияет, неоценённый ответ не
+        # уезжает в конец.
+        assert [c["text"] for c in page["children"]] == ["mid", "top", "unscored", "low"]
+        # пагинация режет тот же порядок
         p1 = await db.get_children(root, limit=2, offset=0)
         p2 = await db.get_children(root, limit=2, offset=2)
-        assert [c["text"] for c in p1["children"]] == ["top", "mid"]
-        assert [c["text"] for c in p2["children"]] == ["low", "unscored"]
+        assert [c["text"] for c in p1["children"]] == ["mid", "top"]
+        assert [c["text"] for c in p2["children"]] == ["unscored", "low"]
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_event_log_and_replay():
@@ -119,7 +135,7 @@ def test_event_log_and_replay():
         assert replayed["reactions"][(aid, root)] == "disagree"     # last write wins
         assert replayed["nodes"][child]["poi_score"] == 55.0
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_topics_lists_roots_only():
@@ -133,7 +149,7 @@ def test_topics_lists_roots_only():
         assert root in ids
         assert reply not in ids       # a reply is not a top-level topic
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_topic_root_of_walks_to_root():
@@ -148,7 +164,7 @@ def test_topic_root_of_walks_to_root():
         assert await db.topic_root_of(mid) == root
         assert await db.topic_root_of(root) == root   # a root is its own root
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_reaction_weight_is_frozen_at_cast_time():
@@ -182,7 +198,7 @@ def test_reaction_weight_is_frozen_at_cast_time():
         problems, _ = await replay.verify()
         assert problems == []
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_atomize_is_idempotent():
@@ -209,7 +225,7 @@ def test_atomize_is_idempotent():
         for aid in first:
             assert (await db.get_node(aid))["poi_score"] is None
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_dissent_pins_argument_as_own_verbatim_position():
@@ -247,7 +263,7 @@ def test_dissent_pins_argument_as_own_verbatim_position():
         assert positions[0]["stance"] == "dissent"
         assert positions[0]["composed"] == "мой аргумент дословно"
         await db.close_pool()
-    _run(go())
+    _run(go)
 
 
 def test_conclusion_is_authored_and_backed_by_a_scored_node():
@@ -281,4 +297,4 @@ def test_conclusion_is_authored_and_backed_by_a_scored_node():
         node = await db.get_node(concl)                    # a normal scorable argument
         assert node["author_id"] == author and node["kind"] == "argument"
         await db.close_pool()
-    _run(go())
+    _run(go)

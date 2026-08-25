@@ -79,8 +79,22 @@ python -m app.seed                       # wipes + seeds ~11 typed nodes / 2 top
 ## Tests
 
 ```bash
-python -m pytest tests/ -q
+./run-tests.sh              # everything, including the Postgres-backed tests
+./run-tests.sh tests/test_auth.py   # or a single file
+./run-tests.sh --clean      # throw the test cluster away
 ```
+
+The database tests wipe the database they run against, so they need one of
+their own. `run-tests.sh` creates a **separate Postgres cluster in your home
+directory** (`~/.local/share/noosphere-pgtest`, port 5433) and points
+`TEST_DATABASE_URL` at it: no root, no CREATE DATABASE grant in the system
+Postgres, and nothing shared with your dev database. Override with
+`NOOSPHERE_TEST_PGDIR` / `NOOSPHERE_TEST_PGPORT`.
+
+Plain `python -m pytest tests/ -q` still works, but without
+`TEST_DATABASE_URL` every database test SKIPS — which is how 45 of them sat
+unnoticed until 2026-08-25. If you see a skip count, you are not running the
+full suite.
 
 The vote-weight formula is covered by isolated tests that run without an LLM or
 a database, so its correctness is independently verifiable.
