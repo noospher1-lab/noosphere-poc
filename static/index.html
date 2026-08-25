@@ -396,26 +396,28 @@
 
 <div id="authModal" class="modal" style="display:none">
   <div class="card modal-card">
-    <div class="section-title" id="authTitle">Вход или регистрация</div>
+    <div class="section-title" id="authTitle">Вход</div>
     <input id="authUser" placeholder="Логин — латиница, 3–32 символа" autocomplete="username">
-    <input id="authPass" type="password" placeholder="Пароль — минимум 6 символов" autocomplete="current-password">
-    <input id="authName" placeholder="Имя для отображения — при регистрации">
-    <input id="authEmail" type="email" placeholder="Почта — при регистрации, для восстановления доступа" autocomplete="email">
-    <input id="authInvite" placeholder="Код приглашения — при регистрации">
+    <input id="authPass" type="password" placeholder="Пароль — минимум 8 символов" autocomplete="current-password">
+    <!-- Поля регистрации. Пришедший войти видит два поля, а не пять: показывает
+         их setAuthMode("register"), она же меняет заголовок и кнопки. -->
+    <input id="authName" placeholder="Имя для отображения" style="display:none">
+    <input id="authEmail" type="email" placeholder="Почта — для восстановления доступа" autocomplete="email" style="display:none">
+    <input id="authInvite" placeholder="Код приглашения" style="display:none">
     <!-- Согласие фиксируется, а не подразумевается: регистрация открыта
          незнакомым людям, и лицензию на вклады с политикой данных принимает
          тот, кому их показали. Сервер требует этот флаг — без чекбокса
          регистрация просто падала с 400. -->
-    <label id="authTermsLine" style="display:flex;gap:7px;align-items:flex-start;
+    <label id="authTermsLine" style="display:none;gap:7px;align-items:flex-start;
            margin-top:8px;font-size:12.5px;color:var(--dim)">
       <input type="checkbox" id="authTerms" style="width:auto;margin-top:3px">
-      <span>При регистрации — принимаю
+      <span>Принимаю
         <a href="/tos.html" target="_blank" rel="noopener">условия и политику данных</a>:
         опубликованный текст неизменен и остаётся в общем корпусе.</span>
     </label>
     <div class="actions">
       <button id="doLogin" class="primary">Войти</button>
-      <button id="doRegister">Создать аккаунт</button>
+      <button id="doRegister" class="primary" style="display:none">Создать аккаунт</button>
       <button id="authCancel">Отмена</button>
     </div>
     <!-- Восстановление доступа. Серверная часть была с самого начала, а входа
@@ -423,6 +425,16 @@
          писал Alex руками. -->
     <div id="forgotLine" style="margin-top:10px">
       <a href="#" id="forgotLink" class="muted" style="font-size:12.5px">Забыли пароль?</a>
+    </div>
+    <!-- Отдельная строка под «выслать письмо ещё раз»: раньше её писали прямо
+         в #forgotLine, затирая «Забыли пароль?» вместе с обработчиком — ссылка
+         не возвращалась до перезагрузки страницы. -->
+    <div id="resendLine" style="display:none;margin-top:6px"></div>
+    <!-- Переход между двумя режимами. Одна форма, но человек всегда видит
+         только тот набор полей, за которым пришёл. -->
+    <div id="authSwitchLine" style="margin-top:10px;font-size:12.5px">
+      <a href="#" id="toRegister" class="muted">Нет аккаунта? Создать →</a>
+      <a href="#" id="toLogin" class="muted" style="display:none">← Уже есть аккаунт? Войти</a>
     </div>
     <div id="forgotBox" style="display:none;margin-top:10px">
       <div class="muted" style="font-size:12.5px;margin-bottom:6px">

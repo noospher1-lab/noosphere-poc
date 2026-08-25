@@ -214,10 +214,42 @@ async function loadMe() {
   renderAuthUI();
 }
 
-function openAuth(msg) {
+// Вход и регистрация — два режима одной формы, а не одна форма с полями
+// «при регистрации». Пришедший войти видит два поля и кнопку «Войти»;
+// пришедший заводить аккаунт — пять полей, согласие и «Создать аккаунт».
+let AUTH_MODE = "login";
+
+function setAuthMode(mode) {
+  AUTH_MODE = mode === "register" ? "register" : "login";
+  const reg = AUTH_MODE === "register";
+  for (const id of ["authName", "authEmail", "authInvite"]) {
+    $("#" + id).style.display = reg ? "" : "none";
+  }
+  // у строки согласия свой display (flex) — его нельзя затирать пустой строкой
+  $("#authTermsLine").style.display = reg ? "flex" : "none";
+  $("#doLogin").style.display = reg ? "none" : "";
+  $("#doRegister").style.display = reg ? "" : "none";
+  $("#forgotLine").style.display = reg ? "none" : "";
+  $("#toRegister").style.display = reg ? "none" : "";
+  $("#toLogin").style.display = reg ? "" : "none";
+  $("#authTitle").textContent = reg ? "Регистрация" : "Вход";
+  // Браузеру важно, какое это поле: во входе он подставляет сохранённый пароль,
+  // в регистрации — предлагает новый вместо чужого сохранённого.
+  $("#authPass").setAttribute("autocomplete", reg ? "new-password" : "current-password");
+  $("#authErr").textContent = "";
+  hideResend();
+}
+
+function hideResend() {
+  const line = $("#resendLine");
+  if (line) { line.style.display = "none"; line.innerHTML = ""; }
+}
+
+function openAuth(msg, mode) {
   $("#authModal").style.display = "flex";
   const ce = $("#checkEmailBox");
   if (ce) { ce.style.display = "none"; ce.innerHTML = ""; }
+  AUTH_MODE = mode === "register" ? "register" : "login";
   showForgot(false);
   // ПОСЛЕ showForgot, а не до: он чистит строку ошибки, и написанная раньше
   // причина стиралась молча. Форма открывалась без единого слова о том, зачем
@@ -232,25 +264,33 @@ function closeAuth() { $("#authModal").style.display = "none"; }
 // Серверная часть (/api/auth/forgot + reset.html) была с самого начала, а входа
 // в неё из интерфейса не было: забывший пароль упирался в тупик.
 function showForgot(on) {
-  const login = ["authUser", "authPass", "authName", "authEmail", "authInvite",
-                 "authTermsLine"];
-  for (const id of login) {
+  for (const id of ["authUser", "authPass", "authName", "authEmail",
+                    "authInvite", "authTermsLine"]) {
     const el = $("#" + id);
-    if (el) el.style.display = on ? "none" : "";
+    if (el && on) el.style.display = "none";
   }
   $("#authModal .actions").style.display = on ? "none" : "";
-  $("#authTitle").textContent = on ? "Восстановление доступа" : "Вход или регистрация";
-  const ce = $("#checkEmailBox");
-  if (ce && !on) { ce.style.display = "none"; ce.innerHTML = ""; }
-  $("#forgotLine").style.display = on ? "none" : "";
+  $("#authSwitchLine").style.display = on ? "none" : "";
   $("#forgotBox").style.display = on ? "" : "none";
-  $("#authErr").textContent = "";
   if (on) {
+    $("#authTitle").textContent = "Восстановление доступа";
+    $("#forgotLine").style.display = "none";
+    $("#authErr").textContent = "";
+    hideResend();
     // перенести уже введённую почту, чтобы не набирать заново
     const typed = ($("#authEmail").value || "").trim();
     if (typed) $("#forgotEmail").value = typed;
     $("#forgotEmail").focus();
+  } else {
+    // Что показать обратно — решает режим, а не список «всё, что пряталось»:
+    // иначе возврат со страницы восстановления выкладывал поля регистрации
+    // тому, кто просто входит.
+    $("#authUser").style.display = "";
+    $("#authPass").style.display = "";
+    setAuthMode(AUTH_MODE);
   }
+  const ce = $("#checkEmailBox");
+  if (ce && !on) { ce.style.display = "none"; ce.innerHTML = ""; }
 }
 
 async function requestReset() {
@@ -330,7 +370,8 @@ function showCheckEmail(username, password) {
   // прячем и вход, и восстановление — на этом шаге они только мешают
   showForgot(false);
   for (const id of ["authUser", "authPass", "authName", "authEmail",
-                    "authInvite", "authTermsLine", "forgotLine"]) {
+                    "authInvite", "authTermsLine", "forgotLine",
+                    "authSwitchLine"]) {
     const el = $("#" + id);
     if (el) el.style.display = "none";
   }
@@ -356,7 +397,8 @@ function showCheckEmail(username, password) {
 }
 
 function offerResend(username, password) {
-  const line = $("#forgotLine");
+  const line = $("#resendLine");
+  line.style.display = "";
   line.innerHTML = "";
   const b = el("a", "muted", "выслать письмо с подтверждением ещё раз");
   b.href = "#";
@@ -2387,24 +2429,35 @@ async function openTopic(id, topic) {
 $("#loginBtn").onclick = () => openAuth();
 $("#logoutBtn").onclick = () => doLogout();
 
-// Приход с лендинга по кнопке «Войти»: ?login открывает форму сразу. Без этого
+// Приход с лендинга: ?login открывает вход, ?register — регистрацию. Без этого
 // человек, уже нажавший «Войти» на noosphere.live, попадал на дерево и должен
 // был нажать «Войти» второй раз — шаг, которого он не просил.
-if (new URLSearchParams(location.search).has("login")) {
-  openAuth();
-  // Параметр убирается из адреса, чтобы «назад» и обновление страницы не
-  // открывали форму снова у того, кто её закрыл или уже вошёл.
-  history.replaceState(null, "", location.pathname);
-}
+const AUTH_INTENT = (() => {
+  const p = new URLSearchParams(location.search);
+  return p.has("register") ? "register" : p.has("login") ? "login" : null;
+})();
+// Параметр убирается из адреса сразу, чтобы «назад» и обновление страницы не
+// открывали форму снова у того, кто её закрыл. САМО открытие — в boot(), после
+// loadMe(): здесь, на верхнем уровне, ME ещё null, и вошедшему показывали
+// форму входа поверх его же дерева.
+if (AUTH_INTENT) history.replaceState(null, "", location.pathname);
+
 $("#doLogin").onclick = () => doAuth("/api/auth/login");
 $("#doRegister").onclick = () => doAuth("/api/auth/register");
+$("#toRegister").onclick = (e) => {
+  e.preventDefault(); setAuthMode("register"); $("#authUser").focus();
+};
+$("#toLogin").onclick = (e) => {
+  e.preventDefault(); setAuthMode("login"); $("#authUser").focus();
+};
 $("#authCancel").onclick = () => closeAuth();
 $("#forgotLink").onclick = (e) => { e.preventDefault(); showForgot(true); };
 $("#forgotBack").onclick = () => showForgot(false);
 $("#doForgot").onclick = () => requestReset();
 $("#forgotEmail").onkeydown = (e) => { if (e.key === "Enter") requestReset(); };
 $("#authPass").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") doAuth("/api/auth/login");
+  if (e.key !== "Enter") return;
+  doAuth(AUTH_MODE === "register" ? "/api/auth/register" : "/api/auth/login");
 });
 (async function boot() {
   try {
@@ -2420,6 +2473,9 @@ $("#authPass").addEventListener("keydown", (e) => {
     // отвечает «вот что здесь есть» — это лучший первый экран.
     // Явная ссылка (?topic= / ?view=) сильнее умолчания и уже отработала.
     if (!ME && !location.search) showView("map");
+    // Форма — только гостю: у вошедшего сессия уже есть, и модалка поверх его
+    // дерева читается как «тебя разлогинили».
+    if (AUTH_INTENT && !ME) openAuth(null, AUTH_INTENT);
   } catch (e) {
     $("#tree").innerHTML = '<div class="muted" style="padding:10px">' +
       "не удалось загрузить: " + e.message + "<br>Postgres запущен? seed выполнен?</div>";
