@@ -134,14 +134,25 @@ _REVIEW_TYPES = ("support (за: supports the parent claim), refute (проти�
                  "position)")
 
 
-_ROOT_KINDS_DESC = ("argument (standalone claim opening a topic), question "
-                    "(вопрос), proposal (предложение), exploration "
-                    "(исследование/разбор: a LARGE unsettled investigation "
-                    "mixing за, против and open questions, the author has NOT "
-                    "taken a position)")
+# Наверху графа стоит ПРОБЛЕМА и только она (vault: problem-as-unit): у неё
+# есть состояние — причины, что пробовали и с каким исходом, где идёт спор,
+# какие решения на столе. Поэтому корень не классифицируется по видам (тезис /
+# вопрос / предложение) — он проходит ОДИН тест: заявлен ли вред. Вопрос,
+# тезис и предложение никуда не делись, но живут ответами ВНУТРИ проблемы.
+_ROOT_KINDS_DESC = ("problem (проблема: a stated HARM — it says who is hurt, "
+                    "at what scale, and admits conceivable solutions, so the "
+                    "discussion can carry state: causes, what has been tried "
+                    "and with what outcome, where the dispute runs) or "
+                    "not_problem (a theme, a bare question, a thesis or a "
+                    "proposal: nothing is claimed to be harmed, so there is "
+                    "nothing to accumulate attempted solutions for. Test: if "
+                    "you cannot say «this is solved this way or that way», it "
+                    "is NOT a problem — «политика» is a theme, «пытки в "
+                    "полиции остаются безнаказанными» is a problem)")
 
 
-def review_draft(text, parent, branch, positions, neighbours=None):
+def review_draft(text, parent, branch, positions, neighbours=None,
+                 is_root=None):
     """
     The pre-publication draft review (vault: ai-navigator-draft-review) — one
     LLM call that determines the draft's ACTUAL type, suggests ONE quality
@@ -157,13 +168,18 @@ def review_draft(text, parent, branch, positions, neighbours=None):
     has selected, so the comparison — not the classification — is what
     changes when the author flips the dropdown.
 
-    parent: {id, text}|None (None = drafting a new topic root).
+    parent: {id, text}|None (None = no parent node to compare against).
+    is_root: whether the draft OPENS a discussion. Defaults to `parent is
+    None`, but the two are not the same thing: precheck compares an in-topic
+    draft against the topic's positions and passes no parent node, and telling
+    the model «this is a new topic root» there made it judge a reply in the
+    wrong frame entirely.
     branch: rows from db.topic_subtree(). positions: [{id, headline, composed}].
     Returns {"actual_type", "type_note", "quality_note",
              "verdict": "new|similar|covered|answered|countered",
              "node_id", "position_id", "note", "split"}
     """
-    is_root = parent is None
+    is_root = (parent is None) if is_root is None else bool(is_root)
     type_vocab = _ROOT_KINDS_DESC if is_root else _REVIEW_TYPES
     parts = []
     if parent is not None:
@@ -193,24 +209,45 @@ def review_draft(text, parent, branch, positions, neighbours=None):
             "OTHER PROBLEMS in the graph that look related to the draft, as "
             "[id] title: text. The draft is NOT currently filed under these:\n\n"
             + poi.wrap_user_text(nlist))
+    if is_root:
+        # Корень не выбирает вид — он проходит один тест. Автор уже нажал
+        # «новая проблема», так что вопрос не «чем это является», а «держит ли
+        # это состояние»: без заявленного вреда копить попытки решения не для
+        # чего, и наверху снова заводится тема, от которой ушли.
+        step_type = (
+            "1. TYPE: does the draft pass the PROBLEM test? actual_type is "
+            "'problem' or 'not_problem'. In type_note, ONE sentence: for a "
+            "problem — nothing to fix, leave it empty; for not_problem — what "
+            "is missing (whose harm, at what scale) and how the author could "
+            "restate it as a harm, or that it belongs as a question or "
+            "proposal INSIDE an existing problem. Never scold: a person who "
+            "cannot yet name the harm is not doing anything wrong.\n")
+    else:
+        step_type = (
+            "1. TYPE: which type does the text's own form actually fit? Write "
+            "actual_type and, in type_note, ONE sentence describing what the "
+            "text reads as and why (e.g. it opens with partial agreement "
+            "before asking something, so it reads as a conditioned "
+            "qualification rather than a plain question). Never phrase the "
+            "note as a correction of a specific wrong type — you don't know "
+            "which one the author picked.\n"
+            "GENRE RULE: a LONG text (several paragraphs) that mixes claims, "
+            "questions, additions and proposals in an unsettled, "
+            "investigative way is an EXPLORATION — actual_type 'exploration', "
+            "do NOT split it; atomization happens later with the author's "
+            "consent. Never use 'exploration' for a short reply or for a text "
+            "that clearly argues one side at length.\n")
     parts.append(
-        f"The draft (this is a {'new topic root' if is_root else 'reply'}), "
-        f"types available: {type_vocab}:\n\n{poi.wrap_user_text(text)}\n\n"
-        "Review it. You are NOT told what type the author declared — judge "
-        "the text purely on its own form:\n"
-        "1. TYPE: which type does the text's own form actually fit? Write "
-        "actual_type and, in type_note, ONE sentence describing what the "
-        "text reads as and why (e.g. it opens with partial agreement before "
-        "asking something, so it reads as a conditioned qualification rather "
-        "than a plain question). Never phrase the note as a correction of a "
-        "specific wrong type — you don't know which one the author picked.\n"
-        "GENRE RULE: a LONG text (several paragraphs) that mixes claims, "
-        "questions, additions and proposals in an unsettled, investigative "
-        "way is an EXPLORATION — actual_type 'exploration', do NOT split it; "
-        "atomization happens later with the author's consent. Never use "
-        "'exploration' for a short reply or for a text that clearly argues "
-        "one side at length.\n"
-        "2. QUALITY: ONE concrete, actionable suggestion — but ONLY if the "
+        (f"The draft OPENS a new discussion. At the top of this graph stands "
+         f"a PROBLEM and nothing else: {type_vocab}"
+         if is_root else
+         f"The draft is a reply, types available: {type_vocab}")
+        + f":\n\n{poi.wrap_user_text(text)}\n\n"
+        + ("Review it, judging the text on its own form:\n" if is_root else
+           "Review it. You are NOT told what type the author declared — judge "
+           "the text purely on its own form:\n")
+        + step_type
+        + "2. QUALITY: ONE concrete, actionable suggestion — but ONLY if the "
         "draft has a genuinely important gap (a missing causal mechanism, a "
         "bare unsupported claim, an obvious unaddressed counter). A solid "
         "draft gets an empty string; most reasonable drafts should. Never "
@@ -226,35 +263,49 @@ def review_draft(text, parent, branch, positions, neighbours=None):
         "   - 'similar': a POSITION overlaps but the draft may add something "
         "(set position_id);\n"
         "   - 'new': none of the above.\n"
-        "4. SPLIT: this is a property of the text, independent of steps 1-3 — "
-        "always check it. ONLY when the draft is SHORT and glues together "
-        "exactly TWO contributions of DIFFERENT types (e.g. a question plus "
-        "a claim), provide 'split': the two parts, each with its own type. "
-        "CUT, do not rewrite — reuse the author's own words with minimal "
-        "glue; invent nothing. A long single-type text, however many points "
-        "it makes, is NOT a split candidate. When you provide split, "
-        "actual_type must be the type of the dominant part — NEVER "
-        "'exploration' for a short draft.\n"
-        "5. PLACEMENT: is this the right place for the draft at all? Default "
-        "is 'here' — say otherwise ONLY on a clear mismatch:\n"
-        "   - 'elsewhere': the draft is really about one of the OTHER PROBLEMS "
-        "listed above (set place_id to that problem's id);\n"
-        "   - 'own_problem': the draft states a distinct PROBLEM of its own "
-        "rather than arguing inside this one, and deserves its own root;\n"
-        "   - 'here': anything else. Never nudge a person out of a discussion "
-        "merely because their point is uncomfortable or tangential.\n"
-        "In place_note, one sentence saying why — empty when 'here'.\n"
-        "6. THINK: at most ONE genuine question TO THE AUTHOR — something you "
+        + ("" if is_root else
+           "4. SPLIT: this is a property of the text, independent of steps "
+           "1-3 — always check it. ONLY when the draft is SHORT and glues "
+           "together exactly TWO contributions of DIFFERENT types (e.g. a "
+           "question plus a claim), provide 'split': the two parts, each with "
+           "its own type. CUT, do not rewrite — reuse the author's own words "
+           "with minimal glue; invent nothing. A long single-type text, "
+           "however many points it makes, is NOT a split candidate. When you "
+           "provide split, actual_type must be the type of the dominant part "
+           "— NEVER 'exploration' for a short draft.\n")
+        + ("4. PLACEMENT: is this problem already on the board? Default is "
+           "'here' — opening your own problem is normal and expected. Say "
+           "'elsewhere' ONLY when one of the OTHER PROBLEMS listed above "
+           "already states the SAME harm (set place_id to its id): then the "
+           "draft belongs INSIDE it as a question, thesis or proposal, not as "
+           "a second copy of the same problem. Never answer 'own_problem' "
+           "here — the draft already is a root.\n"
+           "In place_note, one sentence saying why — empty when 'here'.\n"
+           if is_root else
+           "5. PLACEMENT: is this the right place for the draft at all? "
+           "Default is 'here' — say otherwise ONLY on a clear mismatch:\n"
+           "   - 'elsewhere': the draft is really about one of the OTHER "
+           "PROBLEMS listed above (set place_id to that problem's id);\n"
+           "   - 'own_problem': the draft states a distinct PROBLEM of its "
+           "own rather than arguing inside this one, and deserves its own "
+           "root;\n"
+           "   - 'here': anything else. Never nudge a person out of a "
+           "discussion merely because their point is uncomfortable or "
+           "tangential.\n"
+           "In place_note, one sentence saying why — empty when 'here'.\n")
+        + ("5" if is_root else "6")
+        + ". THINK: at most ONE genuine question TO THE AUTHOR — something you "
         "would actually need answered to judge the claim, which the author "
         "can answer and then strengthen the draft themselves (e.g. «через "
         "какой механизм это происходит?», «а что с городами, где сделали "
         "наоборот?»). Not a rhetorical prompt, not a restatement of the "
         "quality note, not homework. Empty string when the draft leaves no "
         "such gap.\n"
-        "Respond with ONLY JSON:\n"
-        '{"actual_type": "support|refute|qualify|question|proposal|exploration" '
-        '(or "argument|question|proposal|exploration" for a topic root), '
-        '"type_note": "one sentence, see above", '
+        + "Respond with ONLY JSON:\n"
+        + ('{"actual_type": "problem|not_problem", ' if is_root else
+           '{"actual_type": "support|refute|qualify|question|proposal|'
+           'exploration", ')
+        + '"type_note": "one sentence, see above", '
         '"quality_note": "one concrete suggestion or empty", '
         '"verdict": "new|similar|covered|answered|countered", '
         '"node_id": <id or null>, "position_id": <id or null>, '

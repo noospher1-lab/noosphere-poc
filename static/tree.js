@@ -1353,7 +1353,8 @@ const TYPE_LABEL = { support: "за", refute: "против", qualify: "уточ
 // callbacks wire "switch type", "go to the node", "support the position",
 // "post as is" and "cancel"; editing the draft and resending re-reviews it.
 function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
-                                   switchLabel, getText, setText, connectTo }) {
+                                   switchLabel, getText, setText, connectTo,
+                                   rootTest }) {
   hint.innerHTML = "";
   hint.style.display = "";
   hint.className = "card";
@@ -1364,7 +1365,15 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
 
   const actions = el("div", "actions");
 
-  if (!rev.type_ok && rev.suggested_type) {
+  if (rootTest && !rev.type_ok) {
+    // Корень не выбирает тип — он проходит тест на вред. Поэтому здесь нет
+    // кнопки «отправить как …»: переключать не на что, можно только дописать
+    // постановку или уйти к существующей проблеме (кнопки ниже).
+    const t = el("div");
+    t.appendChild(el("b", null, "похоже, это пока не проблема. "));
+    t.appendChild(document.createTextNode(rev.type_note || ""));
+    hint.appendChild(t);
+  } else if (!rootTest && !rev.type_ok && rev.suggested_type) {
     const t = el("div");
     t.appendChild(el("b", null, "похоже, тип не совпадает. "));
     t.appendChild(document.createTextNode(rev.type_note || ""));
@@ -2031,7 +2040,7 @@ function newTopicForm(prefill) {
   };
   titleIn.addEventListener("input", () => { clearTimeout(dupT); dupT = setTimeout(checkDupes, 350); });
   const ta = el("textarea");
-  ta.placeholder = "тезис, вопрос, предложение или разбор, открывающий обсуждение…";
+  ta.placeholder = "Постановка: в чём вред, кого касается, каков масштаб…";
   if (prefill) ta.value = prefill;
   card.appendChild(ta);
   // Рубрика спрашивается ЗДЕСЬ, в единственной форме создания темы. Пока их
@@ -2106,27 +2115,15 @@ function newTopicForm(prefill) {
   fillSubs();
 
   const act = el("div", "actions");
-  const kindSel = el("select");
-  kindSel.appendChild(new Option("проблема", "problem"));
-  kindSel.appendChild(new Option("тезис", "argument"));
-  kindSel.appendChild(new Option("вопрос", "question"));
-  kindSel.appendChild(new Option("предложение", "proposal"));
-  kindSel.appendChild(new Option("разбор", "exploration"));
   const send = el("button", "primary", "опубликовать");
-  // проблема — единица по умолчанию: форма открывается в режиме проблемы
-  const syncKind = () => {
-    const isProb = kindSel.value === "problem";
-    send.textContent = "опубликовать";
-    titleIn.placeholder = isProb ? "Проблема — заявленный вред, коротко"
-      : "Название — коротко, одним предложением";
-    ta.placeholder = isProb ? "Постановка: в чём вред, кого касается, каков масштаб…"
-      : "тезис, вопрос, предложение или разбор, открывающий обсуждение…";
-  };
-  kindSel.onchange = syncKind;
-  syncKind();
+  // Наверху может быть только проблема. Выбор вида здесь был, и он создавал
+  // корни-вопросы: в списке они выглядели проблемами, а внутри пустовали —
+  // ни состояния, ни реестра попыток, ради которых проблема и стоит сверху.
+  // Вопрос, тезис, предложение и разбор никуда не делись — они живут ОТВЕТАМИ
+  // внутри проблемы, где у них есть, к чему относиться.
   const cancel = el("button", "mini", "отмена");
   cancel.onclick = () => { renderEmptyDetail(); };
-  const hint = el("div");                       // the navigator's suggestion box
+  const hint = el("div");                       // карточка разбора компаньона
   hint.style.display = "none";
 
   const doCreate = async (text) => {
@@ -2140,17 +2137,16 @@ function newTopicForm(prefill) {
       const node = await api("/api/argument", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          text, kind: kindSel.value, title,
+          text, kind: "problem", title,
           domain: domSel.value || null,
           sub: subSel.value || null,
           geo: [...chosen],
           tags: tagsIn.value.split(",").map(s => s.trim()).filter(Boolean),
         }),
       });
-      const noun = kindSel.value === "problem" ? "проблема создана" : "опубликовано";
-      toast(kindSel.value === "problem" ? noun + " — заполни состояние ниже"
-        : domSel.value ? noun + " — PoI оценивается в фоне…"
-        : noun + ", но без рубрики — на карте её найдут только поиском");
+      toast(domSel.value
+        ? "проблема создана — заполни состояние ниже"
+        : "проблема создана, но без рубрики — на карте её найдут только поиском");
       ROOT.set(node.id, node.id);
       await loadTopics();
       MapView.reload();                 // карта должна увидеть проблему сразу
@@ -2161,41 +2157,49 @@ function newTopicForm(prefill) {
     }
   };
 
-  const runReview = async () => {
+  const submit = async () => {
     const text = ta.value.trim();
     // Молчаливый return читался как «кнопка не работает»: название заполнено,
     // жмёшь — ничего. Пустой текст объясняем так же, как пустое название.
     if (!text) { toast("напиши постановку — одним-двумя абзацами"); ta.focus(); return; }
     if (!titleIn.value.trim()) { toast("укажи название"); titleIn.focus(); return; }
     if (!requireAuth()) return;
-    // проблема — не черновик, который навигатор классифицирует по типам
-    // (тезис/вопрос/…): создаём сразу, состояние заполняется на её странице.
-    if (kindSel.value === "problem") { await doCreate(text); return; }
+    // Навигатор проверяет корень ОДНИМ тестом: заявлен ли вред и не стоит ли
+    // такая проблема уже на доске. Тип он больше не угадывает — наверху может
+    // быть только проблема. Как и везде, это предложение, а не запрет:
+    // «отправить как есть» остаётся на карточке.
     send.disabled = true; send.textContent = "ИИ читает черновик…";
-    const rev = await reviewDraft({ text, kind: kindSel.value });
+    const rev = await reviewDraft({ text, kind: "problem" });
     send.disabled = false; send.textContent = "опубликовать";
     if (!reviewHasNotes(rev)) { hint.style.display = "none"; await doCreate(text); return; }
-
-    // a root is a thesis, question, proposal or exploration — map onto kinds
-    const rootKind = KIND_CHIP[rev.suggested_type] ? rev.suggested_type : "argument";
     renderReview(hint, rev, {
       root: null,
+      rootTest: true,
       getText: () => ta.value.trim(),
       setText: (t) => { ta.value = t; },
       connectTo: null,
-      switchLabel: KIND_CHIP[rootKind] || "тезис",
       onSend: async () => { await doCreate(ta.value.trim()); },
-      // advice on the card already applies to the suggested kind — publish
-      onSwitch: async () => {
-        kindSel.value = rootKind;
-        await doCreate(ta.value.trim());
-      },
     });
   };
-  send.onclick = runReview;
-  act.append(kindSel, send, cancel);
+  send.onclick = submit;
+  act.append(send, cancel);
   card.appendChild(act);
   card.appendChild(irreversibleNote());
+  // Выход для того, кто пришёл не с проблемой: вопрос и предложение живут
+  // ответами внутри проблемы, и найти её — работа карты.
+  const other = el("div", "muted");
+  other.style.marginTop = "10px";
+  other.style.fontSize = "12.5px";
+  other.appendChild(document.createTextNode("Это не проблема, а вопрос или предложение? "));
+  const toMap = el("a", "", "Найти проблему, к которой приложить →");
+  toMap.href = "#";
+  toMap.onclick = (e) => {
+    e.preventDefault();
+    showView("map");
+    toast("выбери проблему и ответь внутри неё — вопросом, тезисом или предложением");
+  };
+  other.appendChild(toMap);
+  card.appendChild(other);
   card.appendChild(hint);
   d.appendChild(card);
   ta.focus();

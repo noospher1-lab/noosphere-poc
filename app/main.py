@@ -2677,7 +2677,11 @@ async def precheck_draft(topic_root_id: int, body: PrecheckIn,
         result = await asyncio.to_thread(
             pools_mod.review_draft, body.text, None, [],
             [{"id": p["id"], "headline": p["headline"], "composed": p["composed"]}
-             for p in positions])
+             for p in positions],
+            # is_root=False: родительского узла тут нет, но черновик пишется
+            # ВНУТРИ темы. Без этого флага навигатору говорили «это новый
+            # корень», и он судил ответ в чужой рамке.
+            None, False)
     except Exception:
         return _PRECHECK_NEW              # fail-open: never stand in the way
     pid = result.get("position_id")
@@ -2721,7 +2725,9 @@ _REVIEW_CLEAN = {
 _PLACEMENTS = {"here", "elsewhere", "own_problem"}
 _REVIEW_TYPES = {"support", "refute", "qualify", "question",
                  "proposal", "exploration"}
-_ROOT_KINDS = {"argument", "question", "proposal", "exploration"}
+# Корень не выбирает вид: наверху стоит проблема (vault: problem-as-unit).
+# Навигатор отвечает по корню одним из двух вердиктов теста на вред.
+_ROOT_VERDICTS = {"problem", "not_problem"}
 _SPLIT_TYPES = {"support", "refute", "qualify", "question", "proposal"}
 
 # The LLM classifies the draft's actual_type from the TEXT alone (vault:
@@ -2770,7 +2776,7 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         positions = await db.list_positions(root_id)
         declared = body.edge_type or "support"
     else:
-        declared = body.kind or "argument"
+        declared = None                   # у корня вида нет — только тест
     # Соседние проблемы — то, без чего компаньон не может сказать «ты пишешь не
     # туда»: иначе он видит только ту тему, в которой автор уже стоит. Поиск
     # триграммный (suggest_problems), без LLM, поэтому дёшев; "map" лишь берёт
@@ -2797,10 +2803,14 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         _review_cache_set(cache_key, result)
     out = dict(_REVIEW_CLEAN)
     actual = result.get("actual_type")
-    # a topic root has kinds, not reply types — fold the reply types back
-    if body.connect_to is None and actual in _REVIEW_TYPES:
-        actual = actual if actual in _ROOT_KINDS else "argument"
-    if actual in (_REVIEW_TYPES | _ROOT_KINDS) and actual != declared:
+    if body.connect_to is None:
+        # У корня один вопрос: заявлен ли вред. «not_problem» — не отказ, а
+        # предложение: дальше UI показывает, к какой проблеме это приложить,
+        # и всё равно даёт опубликовать.
+        if actual in _ROOT_VERDICTS and actual != "problem":
+            out.update(type_ok=False, suggested_type="not_problem",
+                       type_note=str(result.get("type_note") or ""))
+    elif actual in _REVIEW_TYPES and actual != declared:
         out.update(type_ok=False, suggested_type=actual,
                    type_note=str(result.get("type_note") or ""))
     out["quality_note"] = str(result.get("quality_note") or "")
