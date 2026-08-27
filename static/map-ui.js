@@ -342,29 +342,19 @@ function mountComposer(host, { onCreated } = {}) {
     const tags = $(".cmp-tags").value.split(",").map(s => s.trim()).filter(Boolean);
     const btn = $(".cmp-send");
     btn.disabled = true; err.textContent = "";
+    // Отсюда проблема больше не публикуется напрямую: корень проходит разбор
+    // (тест на вред) и разговор с компаньоном, а они живут в дереве. Черновик
+    // не теряется — он уезжает вместе с человеком и подставляется в форму там.
     try {
-      const r = await fetch("/api/argument", {
-        method:"POST", headers:{ "content-type":"application/json" },
-        body: JSON.stringify({ text, title, connect_to:null, kind:"argument",
-                               domain: domSel.value, sub: subSel.value || null,
-                               geo:[...geoChosen], tags }),
-      });
-      if (!r.ok) {
-        const body = await r.text();
-        // 401 здесь — самая частая причина, и «ошибка сервера» тут бесполезна:
-        // человек должен понять, что нужно просто войти.
-        err.textContent = r.status === 401
-          ? "нужно войти — открой обсуждения и залогинься"
-          : (body || "не получилось");
-        btn.disabled = false; return;
-      }
-      const node = await r.json();
-      close();
-      onCreated && onCreated(node);
+      sessionStorage.setItem("noo_draft_problem", JSON.stringify({
+        title, text, domain: domSel.value, sub: subSel.value || null,
+        geo: [...geoChosen], tags }));
+      location.href = "/?newproblem=1";
+      return;
     } catch (e) {
-      err.textContent = String(e && e.message || e);
+      err.textContent = "не получилось перенести черновик: " + e.message;
+      btn.disabled = false; return;
     }
-    btn.disabled = false;
   };
 
   return { open: () => { host.classList.add("open"); $(".cmp-title").focus(); } };

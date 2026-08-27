@@ -9,3 +9,9 @@ noosphere.db
 .pytest_cache/
 uvicorn.log
 dialogue_*_turns.json
+# стенд агентов: логи прогонов и разговоры с компаньоном — рабочие данные,
+# а не код (в них черновики людей, которым не место в истории репозитория)
+uvicorn-agents.log
+companion-log.jsonl
+tools/agents/runs/
+tools/agents/*.log

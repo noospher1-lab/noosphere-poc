@@ -44,7 +44,9 @@ const scene = new THREE.Scene();
 // No distance fog: zooming out must NOT dim the graph. (FogExp2 faded everything
 // to the background colour as the camera pulled back.)
 
-const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 2000);
+// far-plane 6000, а не 2000: при отъезде дальше двух тысяч единиц дальний край
+// графа начинал обрезаться плоскостью отсечения — узлы просто исчезали
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 6000);
 camera.position.set(0, 18, 122); // pulled back so the full time axis fits in frame
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -56,8 +58,10 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.rotateSpeed = 0.6;
-controls.minDistance = 30;
-controls.maxDistance = 220;
+controls.minDistance = 12;
+// 1200 вместо 220: обсуждение растёт в ширину, и на прежнем пределе ветки
+// уходили за экран — отъехать, чтобы увидеть форму спора целиком, было нельзя.
+controls.maxDistance = 1200;
 controls.enablePan = true;
 controls.screenSpacePanning = true; // pan moves along screen plane (incl. the time axis)
 
@@ -1111,12 +1115,21 @@ function setFormChrome(c) {
   document.getElementById('arg-submit').textContent = c.btn;
 }
 
-function _openActionForm(note, chrome) {
-  setFormChrome(chrome || DEFAULT_CHROME);
-  document.getElementById('addpanel').classList.add('open');
-  setArgStatus(note, 'busy');
+// Писать отсюда больше нельзя — и это не упрощение интерфейса, а правило.
+// Опубликованный текст не правится (vault: decisions/edit-delete-window),
+// поэтому черновик проходит через разбор и разговор с ИИ-компаньоном, а тот
+// живёт только в дереве. Пока форма письма стояла и здесь, любой мог
+// опубликовать мимо компаньона — не нарушив ни одной серверной проверки.
+// Граф остаётся тем, для чего он хорош: посмотреть форму спора.
+function goWriteInTree(note) {
   hud.classList.remove('open');
-  document.getElementById('arg-text').focus();
+  const root = currentTopicId;
+  setArgStatus(note || '', 'busy');
+  location.href = root ? ('/?topic=' + root) : '/';
+}
+
+function _openActionForm(note, chrome) {
+  goWriteInTree(note);
 }
 
 function poolAction(n, action) {
@@ -1367,14 +1380,9 @@ function initPanels() {
 
   document.getElementById('hud-reply').onclick = () => {
     if (selectedId == null) return;
-    const target = nodeById.get(selectedId);
-    pendingAction = { kind: 'reply', nodeId: selectedId };
-    document.getElementById('addpanel').classList.add('open');
-    document.getElementById('arg-h2').textContent = 'Ответ на узел';
-    document.getElementById('arg-reply-opts').style.display = 'block';
-    setArgStatus('Отвечаешь на: «' + truncate(nodeLabelText(target) || '', 34) + '»', 'busy');
-    hud.classList.remove('open');
-    document.getElementById('arg-text').focus();
+    // Ответ пишется в дереве: там виден родитель, там разбор черновика и
+    // разговор с компаньоном до отправки.
+    goWriteInTree('');
   };
 
   loadAuthorsForForm();

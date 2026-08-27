@@ -324,6 +324,10 @@ def review_draft(text, parent, branch, positions, neighbours=None,
     return json.loads(cleaned)
 
 
+# Потолок ответа компаньона. Держит целый переписанный черновик, а не только
+# реплику: см. companion_reply().
+COMPANION_MAX_TOKENS = 3000
+
 COMPANION_SYSTEM = (
     "You are the AI companion of an argument-graph platform, talking with an "
     "author who is still WRITING — nothing has been published yet, and on this "
@@ -343,12 +347,36 @@ COMPANION_SYSTEM = (
     "- You may offer a REWORDING when asked or when the phrasing genuinely "
     "buries the point, but it is always an offer, and the author's own voice "
     "wins over your polish.\n"
+    "- NEVER ask twice for the same thing. If you have already said a point is "
+    "missing from the draft and the author answered you in conversation "
+    "instead of editing, the asking is over: write the rewording yourself, "
+    "with their answer folded into their text, and hand it over as "
+    "'suggestion'. Repeating 'but the draft still does not say this' is the "
+    "single most useless thing you can do — the author has told you what they "
+    "mean; carrying it into the text is your job, not another request.\n"
+    "- Offer one WITHOUT BEING ASKED in two cases: the author has accepted a "
+    "point of yours and the draft does not yet carry it, or the conversation "
+    "is running out of turns (you are told how many are left). At that moment "
+    "a concrete rewording is the most useful thing you can hand over — the "
+    "author is about to publish, and 'you could tighten this' helps nobody. "
+    "Write it in THEIR voice, keeping their words and their argument: it is "
+    "their draft made to say what they already meant, not your version of "
+    "their claim.\n"
+    "- This conversation is INVISIBLE. It dies when the draft is published; "
+    "readers see only the text itself, next to the node it answers. So the "
+    "draft has to stand on its own, and an opening that leans on something the "
+    "reader cannot see reads as a reply to nobody. Watch for it and say so "
+    "plainly: a draft that answers YOU ('point taken', 'fair', 'you are right "
+    "that'), or that concedes an objection which is nowhere in the branch. The "
+    "concession itself is fine — what it answers has to be visible in the text "
+    "or in the node being replied to.\n"
     "- You never decide whether something gets published. The author does.\n"
     "Write in the SAME LANGUAGE as the draft." + DATA_GUARD
 )
 
 
-def companion_reply(text, history, parent=None, branch=None, neighbours=None):
+def companion_reply(text, history, parent=None, branch=None, neighbours=None,
+                    turns_left=None):
     """
     Один ход разговора с автором о ещё не опубликованном черновике.
 
@@ -382,6 +410,12 @@ def companion_reply(text, history, parent=None, branch=None, neighbours=None):
             f'{"АВТОР" if h.get("role") == "author" else "ТЫ"}: {h.get("text", "")}'
             for h in history)
         parts.append("Your conversation so far:\n\n" + poi.wrap_user_text(convo))
+    if turns_left is not None:
+        parts.append(
+            f"Turns left in this conversation: {turns_left}. When few remain, "
+            f"say so plainly and hand over a concrete rewording if the draft "
+            f"still needs one — after that the author publishes and nothing "
+            f"can be changed.")
     parts.append(
         "Reply to the author's last message — one short turn, at most a few "
         "sentences. If a concrete rewording would genuinely help, put it in "
@@ -389,10 +423,23 @@ def companion_reply(text, history, parent=None, branch=None, neighbours=None):
         "own register); otherwise leave 'suggestion' empty. Never put the "
         "rewording inside 'reply' as well.\n"
         'Respond with ONLY JSON: {"reply": "...", "suggestion": "..." }')
-    raw = poi.complete(COMPANION_SYSTEM, "\n\n---\n\n".join(parts),
-                       max_tokens=900, temperature=0.3)
-    cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    out = json.loads(cleaned)
+    # 3000, а не 900: с тех пор как компаньон обязан не просить дважды, а
+    # вписывать сказанное в текст сам, его 'suggestion' — это ЦЕЛЫЙ черновик
+    # автора. В 900 токенов он не влезал, ответ обрывался на полуслове, JSON
+    # не парсился, и человек видел «компаньон не ответил» ровно в тот момент,
+    # когда попросил сделать вариант. Повтор с двойным запасом — на хвост
+    # случаев, где и 3000 мало.
+    def _ask(max_tokens):
+        raw = poi.complete(COMPANION_SYSTEM, "\n\n---\n\n".join(parts),
+                           max_tokens=max_tokens, temperature=0.3)
+        cleaned = (raw.strip().removeprefix("```json").removeprefix("```")
+                      .removesuffix("```").strip())
+        return json.loads(cleaned)
+
+    try:
+        out = _ask(COMPANION_MAX_TOKENS)
+    except json.JSONDecodeError:
+        out = _ask(COMPANION_MAX_TOKENS * 2)
     return {"reply": str(out.get("reply") or "").strip(),
             "suggestion": str(out.get("suggestion") or "").strip() or None}
 

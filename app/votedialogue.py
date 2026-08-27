@@ -31,6 +31,10 @@ DEFAULT_JUDGE_MODEL = "claude-opus-4-8"
 NAVIGATOR_MODEL = "claude-haiku-4-5"
 
 MIN_TURNS_TO_FINALIZE = 8
+# Потолок ответа судьи. Разбор по шести критериям с обоснованиями на русском
+# в 2048 токенов помещался не всегда — а обрыв здесь стоит человеку веса
+# голоса, заработанного восемью ходами разговора.
+JUDGE_MAX_TOKENS = 4096
 MAX_TURNS = 30
 
 # The person decides when they are ready — never the AI. "Readiness" IS the
@@ -299,15 +303,27 @@ def judge(material, transcript, model=None, timeout=180):
         f"<transcript>\n" + "\n\n".join(lines) + "\n</transcript>\n\n"
         "Score this person's understanding against the six criteria."
     )
-    raw = poi.complete_messages(
-        poi.cached_system(JUDGE_SYSTEM, material),
-        [{"role": "user", "content": user}],
-        max_tokens=2048, timeout=timeout, temperature=0,
-        model=model or DEFAULT_JUDGE_MODEL)
+    def _ask(max_tokens):
+        return poi.complete_messages(
+            poi.cached_system(JUDGE_SYSTEM, material),
+            [{"role": "user", "content": user}],
+            max_tokens=max_tokens, timeout=timeout, temperature=0,
+            model=model or DEFAULT_JUDGE_MODEL)
 
-    cleaned = raw.strip().removeprefix("```json").removeprefix("```") \
-                 .removesuffix("```").strip()
-    data = json.loads(cleaned)
+    def _parse(raw):
+        cleaned = raw.strip().removeprefix("```json").removeprefix("```") \
+                     .removesuffix("```").strip()
+        return json.loads(cleaned)
+
+    # 4096, а не 2048: на длинном разборе судья упирался в потолок, ответ
+    # обрывался на полуслове и json.loads падал — человек проходил весь диалог
+    # и получал 502 вместо веса. Второй заход с двойным запасом закрывает
+    # хвост случаев, где и 4096 мало: лучше заплатить за повтор, чем обнулить
+    # чужую работу до MIN_WEIGHT.
+    try:
+        data = _parse(_ask(JUDGE_MAX_TOKENS))
+    except json.JSONDecodeError:
+        data = _parse(_ask(JUDGE_MAX_TOKENS * 2))
     criteria = data.get("criteria", {})
     total = data.get("total")
     if total is None:

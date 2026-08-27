@@ -487,12 +487,50 @@ function MAP_TOPICS_TITLE(id) {
 // ?topic=N и ?view=map — вход по ссылке извне. Внутри приложения виды
 // переключаются без перезагрузки, но ссылкой поделиться всё равно должно быть
 // можно, поэтому адрес читается один раз на старте.
+// Раскрыть путь до узла и показать его. Родителей ищем по ROOT/дереву: узел
+// может лежать глубоко, и без раскрытия предков ссылка приводила бы в
+// свёрнутую ветку, где его не видно.
+async function revealNode(id) {
+  try {
+    // Родителя карточка узла не отдаёт, поэтому цепочку предков строим по
+    // рёбрам графа: без раскрытия предков ссылка приводила бы в свёрнутую
+    // ветку, где нужного узла попросту не видно.
+    const g = await api("/api/graph");
+    const parentOf = new Map();
+    (g.links || []).forEach((l) => parentOf.set(l.source, l.target));
+    let cur = id;
+    for (let i = 0; i < 50 && parentOf.has(cur); i++) {
+      cur = parentOf.get(cur);
+      expanded.add(cur);
+    }
+    expanded.add(id);
+    await fetchChildren(cur);
+    renderTree();
+  } catch (e) { /* не смогли раскрыть — узел всё равно откроем в панели */ }
+  await selectNode(id);
+  const row = document.querySelector(`[data-id="${id}"]`);
+  if (row) row.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
 let deepLinkDone = false;
 async function openDeepLink() {
   if (deepLinkDone) return;
   deepLinkDone = true;
   const p = new URLSearchParams(location.search);
   if (p.get("view") === "map") { showView("map"); return; }
+  if (p.get("newproblem")) { newTopicForm(); return; }
+  // ?node=N — прямая ссылка на узел: сами находим его проблему и открываем
+  // ветку. Без этого номер, на который ссылаются в текстах, никуда не ведёт.
+  const wantNode = Number(p.get("node"));
+  if (wantNode) {
+    try {
+      const n = await api(`/api/nodes/${wantNode}`);
+      const root = n.topic_root_id || wantNode;
+      await openTopic(root);
+      await revealNode(wantNode);
+      return;
+    } catch (e) { toast("узел #" + wantNode + " не найден"); }
+  }
   const want = Number(p.get("topic"));
   if (!want || !TOPICS.some(t => t.id === want)) return;
   await openTopic(want);
@@ -560,6 +598,8 @@ const CRIT_RU = {
   concreteness: "конкретность",
   problem_fit: "отвечает проблеме",
   feasibility: "выполнимость",
+  mechanism: "механизм держится",
+  path: "есть путь отсюда",
   consequences: "продуманы последствия",
   evenhandedness: "честность к обеим сторонам",
   question_quality: "качество вопросов",
@@ -895,8 +935,21 @@ async function selectNode(id) {
     "  ·  тип: " + (KIND_RU[node.kind] || node.kind || "тезис"),
     ...(node.atom_group ? ["  ·  из разбора · " + node.atom_group] : []),
     "  ·  ответов: " + (node.reply_count ?? 0),
-    "  ·  #" + node.id
+    "  ·  "
   );
+  // Номер — не украшение: агенты и люди ссылаются друг на друга номерами
+  // ([91], [92]), и без ссылки по такому номеру не перейти. Клик копирует
+  // прямую ссылку на узел, сам номер ведёт на него же.
+  const idLink = el("a", null, "#" + node.id);
+  idLink.href = "/?node=" + node.id;
+  idLink.title = "ссылка на этот узел — клик копирует её";
+  idLink.onclick = (e) => {
+    e.preventDefault();
+    const url = location.origin + "/?node=" + node.id;
+    if (navigator.clipboard) navigator.clipboard.writeText(url).then(
+      () => toast("ссылка скопирована: " + url), () => {});
+  };
+  meta.appendChild(idLink);
   card.appendChild(meta);
   appendHint(card, "<b>PoI</b> — насколько довод проработан, а не «правота». " +
     "На порядок в дереве он не влияет: внутри одного родителя доводы идут по " +
@@ -943,8 +996,13 @@ async function selectNode(id) {
   loadReactions(id, root, rbody);
 
   // страница проблемы: причины, масштаб, реестр решений, атрибуции
-  if (isRoot && node.kind === "problem")
+  if (isRoot && node.kind === "problem") {
     d.appendChild(await problemCard(id));
+    // Голосование знает свою проблему, а проблема о голосовании молчала:
+    // войти в него можно было только через отдельный раздел, зная, что оно
+    // вообще есть. Показываем открытые голосования прямо здесь.
+    votesForProblem(id).then((card) => card && d.appendChild(card));
+  }
 
   // atomization: the author of an exploration can cut it into atoms
   if (node.kind === "exploration" && ME && node.author_id === ME.id)
@@ -1255,6 +1313,51 @@ function reviewHasNotes(rev) {
                    || (rev.placement && rev.placement !== "here") || !!rev.think);
 }
 
+// ---- Черновик переживает обновление страницы.
+//
+// Опубликованное не правится (vault: decisions/edit-delete-window), поэтому вся
+// работа над текстом происходит ДО отправки — и раньше она держалась в памяти
+// вкладки: случайный F5 уносил и черновик, и весь разговор с компаньоном.
+// Храним у себя, в браузере автора: на сервере черновиков по-прежнему нет
+// (vault: decisions/ai-navigator-draft-review), запись видна только ему и
+// стирается публикацией.
+const DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function draftKey(id) {
+  return `noo_draft_${(ME && ME.id) || "anon"}_${id ?? "root"}`;
+}
+
+function draftRead(id) {
+  try {
+    const raw = localStorage.getItem(draftKey(id));
+    if (!raw) return null;
+    const d = JSON.parse(raw);
+    if (!d || Date.now() - (d.ts || 0) > DRAFT_TTL_MS) { draftDrop(id); return null; }
+    return d;
+  } catch (e) { return null; }
+}
+
+function draftWrite(id, patch) {
+  try {
+    const cur = draftRead(id) || {};
+    localStorage.setItem(draftKey(id),
+                         JSON.stringify({ ...cur, ...patch, ts: Date.now() }));
+  } catch (e) { /* приватный режим или переполнение — молча живём дальше */ }
+}
+
+function draftDrop(id) {
+  try { localStorage.removeItem(draftKey(id)); } catch (e) {}
+}
+
+function draftAge(ts) {
+  const m = Math.round((Date.now() - ts) / 60000);
+  if (m < 1) return "только что";
+  if (m < 60) return `${m} мин назад`;
+  const h = Math.round(m / 60);
+  return h < 24 ? `${h} ч назад` : `${Math.round(h / 24)} дн назад`;
+}
+
+
 // ---- ИИ-компаньон: разговор о ЧЕРНОВИКЕ, пока он ещё черновик.
 //
 // Разбор выше — один ход: ИИ сказал, автор послушался или нет. Здесь автор может
@@ -1271,7 +1374,7 @@ async function companionTurn(payload) {
   });
 }
 
-function companionThread(hint, { getText, setText, connectTo, opening }) {
+function companionThread(hint, { getText, setText, connectTo, opening, restore }) {
   const history = [];
   const box = el("div", "companion-box");
   const log = el("div", "companion-log");
@@ -1284,7 +1387,18 @@ function companionThread(hint, { getText, setText, connectTo, opening }) {
     log.appendChild(line);
     log.scrollTop = log.scrollHeight;
   }
-  if (opening) { history.push({ role: "companion", text: opening }); say("companion", opening); }
+  // Сначала поднимаем сохранённое, потом — вступительную реплику, и только
+  // если говорить ещё не начинали: иначе разговор открывался бы вопросом
+  // компаньона поверх уже состоявшегося обсуждения.
+  if (restore && restore.length) {
+    restore.forEach((h) => {
+      history.push(h);
+      say(h.role === "author" ? "author" : "companion", h.text);
+    });
+  } else if (opening) {
+    history.push({ role: "companion", text: opening });
+    say("companion", opening);
+  }
 
   const ta = el("textarea");
   ta.rows = 2;
@@ -1301,6 +1415,7 @@ function companionThread(hint, { getText, setText, connectTo, opening }) {
     if (!msg) return;
     say("author", msg);
     history.push({ role: "author", text: msg });
+    draftWrite(connectTo, { text: getText(), history });
     ta.value = "";
     send.disabled = true; send.textContent = "думает…";
     try {
@@ -1309,6 +1424,17 @@ function companionThread(hint, { getText, setText, connectTo, opening }) {
       });
       say("companion", out.reply);
       history.push({ role: "companion", text: out.reply });
+      draftWrite(connectTo, { text: getText(), history });
+      // Потолок разговора существует (он платный), но упираться в него молча —
+      // значит получить ошибку вместо предупреждения. Считаем вслух с трёх.
+      if (typeof out.turns_left === "number" && out.turns_left <= 3) {
+        const left = el("div", "muted");
+        left.style.fontSize = "12.5px";
+        left.textContent = out.turns_left > 0
+          ? `осталось ходов: ${out.turns_left} — дальше только публиковать`
+          : "ходы кончились — публикуй или начни разговор заново";
+        log.appendChild(left);
+      }
       if (out.suggestion) {
         const s = el("div", "csuggest");
         s.appendChild(el("div", "muted", "предлагает формулировку:"));
@@ -1478,11 +1604,19 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
   // РАЗГОВОР. Открывается вопросом компаньона, если он его задал; иначе автор
   // начинает сам. Ниже кнопок — чтобы «отправить как есть» оставалось на виду
   // и разговор не выглядел обязательным этапом.
-  if (getText)
+  // Разговор НЕ начинается заново на каждом «отправить». Раньше панель
+  // перерисовывалась, companionThread получал пустую историю, и компаньон
+  // заходил на новый круг замечаний, не помня, что уже разобрано с автором.
+  // История лежит в черновике и поднимается вместе с ним.
+  if (getText) {
+    const kept = (draftRead(connectTo) || {}).history || [];
     companionThread(hint, {
       getText, setText, connectTo,
-      opening: rev.think || null,
+      restore: kept,
+      // вступительный вопрос — только когда говорить ещё не начинали
+      opening: kept.length ? null : (rev.think || null),
     });
+  }
 }
 
 // ---- ответ на фрагмент: выделение текста → типизированное действие с якорем
@@ -1904,6 +2038,55 @@ function replyForm(parentId) {
   const hint = el("div");                       // the navigator's suggestion box
   hint.style.display = "none";
 
+  // Черновик, переживший обновление страницы. Подставляется молча, но с
+  // видимой пометкой: человек должен понимать, откуда в поле текст.
+  const restored = draftRead(parentId);
+  if (restored && (restored.text || (restored.history || []).length)) {
+    ta.value = restored.text || "";
+    if (restored.type) typeSel.value = restored.type;
+    const bar = el("div", "muted");
+    bar.style.fontSize = "12.5px";
+    bar.style.margin = "6px 0";
+    bar.append(`черновик восстановлен · ${draftAge(restored.ts)} `);
+    const hist = restored.history || [];
+    if (hist.length) {
+      const back = el("button", "mini", `вернуть разговор с компаньоном (${hist.length})`);
+      back.onclick = () => {
+        hint.style.display = "";
+        hint.innerHTML = "";
+        hint.className = "card";
+        hint.appendChild(el("div", "section-title", "ИИ-компаньон — разговор продолжается"));
+        companionThread(hint, {
+          getText: () => ta.value.trim(),
+          setText: (t) => { ta.value = t; reviewedText = t.trim(); draftWrite(parentId, { text: t }); },
+          connectTo: parentId, restore: hist,
+        });
+        back.remove();
+      };
+      bar.appendChild(back);
+    }
+    const fresh = el("button", "mini", "начать заново");
+    fresh.onclick = () => {
+      draftDrop(parentId);
+      ta.value = "";
+      hint.style.display = "none";
+      bar.remove();
+    };
+    bar.appendChild(fresh);
+    card.appendChild(bar);
+  }
+
+  // Пишем на каждый ввод: единственный момент, когда терять нечего, — это
+  // когда ещё ничего не написано.
+  let saveTimer = null;
+  const rememberDraft = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(
+      () => draftWrite(parentId, { text: ta.value, type: typeSel.value }), 400);
+  };
+  ta.addEventListener("input", rememberDraft);
+  typeSel.addEventListener("change", rememberDraft);
+
   // форма показывает якорь и, для «подорвать», требует его
   const showAnchor = (a, type) => {
     anchor = a;
@@ -1934,6 +2117,7 @@ function replyForm(parentId) {
         }),
       });
       clearAnchor();
+      draftDrop(parentId);            // опубликовано — хранить больше нечего
       toast("добавлено — PoI оценивается в фоне…");
       expanded.add(parentId);
       await fetchChildren(parentId);   // refresh just this branch
@@ -1942,13 +2126,22 @@ function replyForm(parentId) {
     } catch (e) { toast("ошибка: " + e.message); }
   };
 
+  // Текст, который ИИ уже разобрал. Второй прогон того же текста стоит вызова
+  // из гранта автора и не даёт ничего — а когда текст ЦЕЛИКОМ написан
+  // компаньоном, разбор и вовсе превращается в проверку ИИ самого себя:
+  // находится новое замечание, автор правит, круг повторяется. Разбирается
+  // только то, что изменилось.
+  let reviewedText = null;
+
   const runReview = async () => {
     const text = ta.value.trim();
     if (!text) { toast("напиши ответ"); ta.focus(); return; }
     if (!requireAuth()) return;
+    if (text === reviewedText) { hint.style.display = "none"; await doSend(text); return; }
     send.disabled = true; send.textContent = "ИИ читает черновик…";
     const root = ROOT.get(parentId) ?? parentId;
     const rev = await reviewDraft({ text, connect_to: parentId, edge_type: typeSel.value });
+    reviewedText = text;
     send.disabled = false; send.textContent = "отправить";
     // nothing to suggest (or the navigator is down) → publish silently
     if (!reviewHasNotes(rev)) { hint.style.display = "none"; await doSend(text); return; }
@@ -1958,7 +2151,9 @@ function replyForm(parentId) {
       // компаньону нужен ЖИВОЙ текст: автор правит черновик прямо во время
       // разговора, и следующий ход должен читать то, что в поле сейчас
       getText: () => ta.value.trim(),
-      setText: (t) => { ta.value = t; },
+      // формулировку писал тот же ИИ и с полным контекстом ветки — гонять её
+      // через разбор значит спрашивать его же мнение о собственном тексте
+      setText: (t) => { ta.value = t; reviewedText = t.trim(); draftWrite(parentId, { text: t }); },
       connectTo: parentId,
       onSend: async () => { await doSend(ta.value.trim()); },
       // advice on the card already applies to the suggested type — publish
@@ -2003,6 +2198,33 @@ function replyForm(parentId) {
 // ---- new topic: a root node, opened straight from the header
 // prefill — черновик, принесённый из другой формы: компаньон сказал «это тянет
 // на отдельную проблему», и терять уже написанное на переходе нельзя.
+// Открытые голосования по этой проблеме — строкой со входом.
+async function votesForProblem(rootId) {
+  let list;
+  try { list = await api("/api/decisions?status=open"); }
+  catch (e) { return null; }
+  const mine = (list || []).filter((d) => d.topic_root_id === rootId);
+  if (!mine.length) return null;
+  const card = el("div", "card");
+  card.appendChild(el("div", "section-title",
+                      mine.length > 1 ? "Голосования по этой проблеме"
+                                      : "Голосование по этой проблеме"));
+  mine.forEach((d) => {
+    const row = el("div");
+    row.style.margin = "6px 0";
+    const a = el("a", null, d.question);
+    a.href = "/vote.html?id=" + d.id;
+    row.appendChild(a);
+    const meta = el("div", "muted");
+    meta.style.fontSize = "12.5px";
+    meta.textContent = `голосов: ${d.voters ?? 0} · вариантов: ${d.options ?? 0}`
+      + " — можно проголосовать или предложить свой вариант";
+    row.appendChild(meta);
+    card.appendChild(row);
+  });
+  return card;
+}
+
 function newTopicForm(prefill) {
   selectedId = null;
   renderTree();
@@ -2042,6 +2264,46 @@ function newTopicForm(prefill) {
   const ta = el("textarea");
   ta.placeholder = "Постановка: в чём вред, кого касается, каков масштаб…";
   if (prefill) ta.value = prefill;
+
+  // Новая проблема пишется дольше ответа — терять её при обновлении страницы
+  // тем более нечего. Ключ "root": черновиков проблем одновременно один.
+  const savedRoot = draftRead("root");
+  if (!prefill && savedRoot && (savedRoot.text || savedRoot.title)) {
+    if (savedRoot.title) titleIn.value = savedRoot.title;
+    if (savedRoot.text) ta.value = savedRoot.text;
+    const bar = el("div", "muted");
+    bar.style.fontSize = "12.5px";
+    bar.append(`черновик проблемы восстановлен · ${draftAge(savedRoot.ts)} `);
+    const fresh = el("button", "mini", "начать заново");
+    fresh.onclick = () => { draftDrop("root"); titleIn.value = ""; ta.value = ""; bar.remove(); };
+    bar.appendChild(fresh);
+    card.appendChild(bar);
+  }
+  // как и в форме ответа: один и тот же текст не разбирается дважды
+  let reviewedRoot = null;
+  let rootTimer = null;
+  const rememberRoot = () => {
+    clearTimeout(rootTimer);
+    rootTimer = setTimeout(
+      () => draftWrite("root", { title: titleIn.value, text: ta.value }), 400);
+  };
+  ta.addEventListener("input", rememberRoot);
+  titleIn.addEventListener("input", rememberRoot);
+
+  // Черновик, принесённый с карты: там форма проблемы есть, а разбора и
+  // компаньона нет, поэтому она отдаёт написанное сюда. Ключ снимается сразу
+  // — второй раз тот же текст подставляться не должен.
+  try {
+    const carried = sessionStorage.getItem("noo_draft_problem");
+    if (carried) {
+      sessionStorage.removeItem("noo_draft_problem");
+      const dr = JSON.parse(carried);
+      if (dr.title) titleIn.value = dr.title;
+      if (dr.text) ta.value = dr.text;
+      if (dr.domain) { domSel.value = dr.domain; domSel.dispatchEvent(new Event("change")); }
+      if (dr.sub) setTimeout(() => { subSel.value = dr.sub; }, 0);
+    }
+  } catch (e) { /* черновик не пережил перенос — форма просто пустая */ }
   card.appendChild(ta);
   // Рубрика спрашивается ЗДЕСЬ, в единственной форме создания темы. Пока их
   // было две — на карте и тут, — эта не спрашивала ничего, и всё созданное
@@ -2147,6 +2409,7 @@ function newTopicForm(prefill) {
       toast(domSel.value
         ? "проблема создана — заполни состояние ниже"
         : "проблема создана, но без рубрики — на карте её найдут только поиском");
+      draftDrop("root");                // проблема создана — черновик не нужен
       ROOT.set(node.id, node.id);
       await loadTopics();
       MapView.reload();                 // карта должна увидеть проблему сразу
@@ -2169,14 +2432,16 @@ function newTopicForm(prefill) {
     // быть только проблема. Как и везде, это предложение, а не запрет:
     // «отправить как есть» остаётся на карточке.
     send.disabled = true; send.textContent = "ИИ читает черновик…";
+    if (text === reviewedRoot) { hint.style.display = "none"; await doCreate(text); return; }
     const rev = await reviewDraft({ text, kind: "problem" });
+    reviewedRoot = text;
     send.disabled = false; send.textContent = "опубликовать";
     if (!reviewHasNotes(rev)) { hint.style.display = "none"; await doCreate(text); return; }
     renderReview(hint, rev, {
       root: null,
       rootTest: true,
       getText: () => ta.value.trim(),
-      setText: (t) => { ta.value = t; },
+      setText: (t) => { ta.value = t; reviewedRoot = t.trim(); draftWrite("root", { text: t }); },
       connectTo: null,
       onSend: async () => { await doCreate(ta.value.trim()); },
     });

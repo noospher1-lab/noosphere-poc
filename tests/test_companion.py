@@ -159,9 +159,11 @@ def test_companion_turn_returns_reply_and_suggestion(client, monkeypatch):
     from app import pools as pools_mod
     seen = {}
 
-    def fake(text, history, parent=None, branch=None, neighbours=None):
+    def fake(text, history, parent=None, branch=None, neighbours=None,
+             turns_left=None):
         seen["text"] = text
         seen["history"] = history
+        seen["turns_left"] = turns_left
         return {"reply": "а что с городами, где полосы убрали?",
                 "suggestion": "Расширение дорог не снижает пробки: свободная "
                               "полоса немедленно заполняется отложенными поездками."}
@@ -179,6 +181,11 @@ def test_companion_turn_returns_reply_and_suggestion(client, monkeypatch):
     # компаньон читает ЖИВОЙ черновик и весь разговор, а не только последний ход
     assert seen["text"] == "Расширение дорог не снижает пробки"
     assert len(seen["history"]) == 2
+    # и знает, сколько ходов осталось — чтобы успеть отдать формулировку до
+    # того, как разговор упрётся в потолок (в истории один ход автора + этот)
+    from app.main import COMPANION_MAX_TURNS
+    assert seen["turns_left"] == COMPANION_MAX_TURNS - 2
+    assert out["turns_left"] == COMPANION_MAX_TURNS - 2
 
 
 @needs_db
@@ -189,11 +196,23 @@ def test_companion_refuses_empty_draft_and_endless_talk(client, monkeypatch):
 
     assert client.post("/api/draft/companion", json={"text": "   "}).status_code == 400
 
-    long_talk = [{"role": "author", "text": "ещё"} for _ in range(50)]
+    from app.main import COMPANION_MAX_TURNS
+
+    # ровно на потолке разговор ещё живой, и остаток честно равен нулю
+    at_cap = [{"role": "author", "text": "ещё"}
+              for _ in range(COMPANION_MAX_TURNS - 1)]
     r = client.post("/api/draft/companion",
-                    json={"text": "черновик", "history": long_talk})
+                    json={"text": "черновик", "history": at_cap})
+    assert r.status_code == 200, r.text
+    assert r.json()["turns_left"] == 0
+
+    # а следующий ход — отказ, и он называет потолок вместо глухого «нельзя»
+    over = [{"role": "author", "text": "ещё"}
+            for _ in range(COMPANION_MAX_TURNS)]
+    r = client.post("/api/draft/companion",
+                    json={"text": "черновик", "history": over})
     assert r.status_code == 400
-    assert "затянулся" in r.json()["detail"]
+    assert str(COMPANION_MAX_TURNS) in r.json()["detail"]
 
 
 @needs_db

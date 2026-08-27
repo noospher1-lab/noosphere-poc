@@ -112,6 +112,14 @@ SYSTEM_PROMPT = (
     "agree with its conclusion, and not the identity of its author. "
     "Score each criterion from 0 to 100. Be calibrated: 50 is an average "
     "argument, 80+ is genuinely strong, 90+ is rare. "
+    "On 'evidence': grounding is not the same as precedent. An argument about "
+    "something that does not exist yet — a mechanism, an arrangement, a rule "
+    "nobody has tried — cannot cite cases, and scoring it low for that would "
+    "mean the rubric rewards only claims about the world as it already is. "
+    "Ground such a claim on what can still be checked: does the mechanism "
+    "follow from stated premises, are its consequences derivable, does the "
+    "author name what would falsify it. Score low for asserted numbers, "
+    "invented facts and unnamed sources — not for the absence of a precedent. "
     "Also extract a 'topic': a 2-4 word noun phrase naming the specific theme "
     "this argument raises, in the SAME LANGUAGE as the argument. It should name "
     "the angle the argument adds, not restate its relation to other claims. "
@@ -385,10 +393,18 @@ def score_detail(detail_text, parent_text=None):
 
 # A PROPOSAL constructs rather than reacts (vault: exploration-atomization):
 # "let's do X" is judged on whether it could actually become a decision.
+# «Выполнимость» была ОДНИМ критерием — и это систематически хоронило
+# предложения, меняющие само устройство: средства и действующие лица берутся из
+# сегодняшнего мира, а предложение о новом мире их по определению не имеет. Так
+# шкала, задуманная поднимать проработанную мысль, премировала совместимость со
+# статус-кво. Развели надвое (Alex, 2026-08-27): работает ли механизм, если его
+# построить, — и описан ли путь отсюда туда. Второе весит вдвое меньше: не
+# описанный переход это незаконченная работа, а не порок замысла.
 PROPOSAL_CRITERIA = {
-    "concreteness":       0.25,  # is the proposed action specific enough to act on?
-    "problem_fit":        0.25,  # does it address problems actually raised in the topic?
-    "feasibility":        0.20,  # could it plausibly be implemented (means, actors)?
+    "concreteness":       0.20,  # is the proposed action specific enough to act on?
+    "problem_fit":        0.20,  # does it address problems actually raised in the topic?
+    "mechanism":          0.20,  # does the machinery hold together on its own terms?
+    "path":               0.10,  # is there a route from here to there?
     "consequences":       0.15,  # are effects and side-effects thought through?
     "awareness_of_limits":0.15,  # does it acknowledge costs, risks, open points?
 }
@@ -398,10 +414,25 @@ PROPOSAL_SYSTEM_PROMPT = (
     "'let's do X', judged on whether it could mature into a decision, not on "
     "whether you agree with it. Score each criterion 0 to 100. Be calibrated: "
     "50 is an average proposal, 80+ genuinely actionable and well-grounded, "
-    "90+ rare. Also extract a 'topic': a 2-4 word noun phrase naming what the "
+    "90+ rare.\n"
+    "TWO SEPARATE THINGS, and keeping them apart is the point:\n"
+    "- 'mechanism': does the machinery hold together ON ITS OWN TERMS? Is it "
+    "described concretely enough that one could say how it behaves — who acts, "
+    "what follows from what, where it breaks? Judge the design, not its "
+    "compatibility with the world as it is now.\n"
+    "- 'path': is there any route from here to there — a first step, a case "
+    "where it could be tried, a condition under which it becomes possible? A "
+    "missing route is unfinished work, not a fatal flaw.\n"
+    "NEVER lower a score because the proposal needs institutions, laws, actors "
+    "or technology that do not exist yet. Proposals to change how things are "
+    "decided cannot be scored by their fit with the current arrangement — that "
+    "would reward only proposals that change nothing. Lower 'mechanism' for "
+    "vagueness, hand-waving and internal contradiction; lower 'path' for the "
+    "absence of any imaginable first step.\n"
+    "Also extract a 'topic': a 2-4 word noun phrase naming what the "
     "proposal is about, in the SAME LANGUAGE as the proposal. "
     "Respond with ONLY a JSON object, no markdown, of the form: "
-    '{"concreteness": int, "problem_fit": int, "feasibility": int, '
+    '{"concreteness": int, "problem_fit": int, "mechanism": int, "path": int, '
     '"consequences": int, "awareness_of_limits": int, "topic": "short theme", '
     '"comment": "one sentence"}'
 )

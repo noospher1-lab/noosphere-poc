@@ -288,10 +288,45 @@ function renderVote(view) {
       <label class="opt-top" style="margin:6px 0">
         <input type="checkbox" name="opt" value="${o.id}" />
         <span class="opt-label">${esc(o.label || o.headline || "—")}</span>
+        ${o.origin === "proposed"
+          ? `<span class="muted" style="font-size:12px"> — свой вариант${
+               o.proposed_by_name ? ", " + esc(o.proposed_by_name) : ""}</span>`
+          : ""}
       </label>`).join("")}
+    <details style="margin-top:10px">
+      <summary class="muted" style="font-size:13px;cursor:pointer">
+        ни один вариант не выражает твою позицию? предложи свой</summary>
+      <div style="margin-top:8px">
+        <input id="own-opt" type="text" maxlength="300" style="width:100%"
+               placeholder="свой ответ на вопрос — одной формулировкой" />
+        <div class="muted" style="font-size:12px;margin:6px 0">
+          Он встанет в бюллетень рядом с остальными, помеченный твоим именем,
+          и за него смогут голосовать другие. Не больше двух с человека.</div>
+        <button class="btn ghost" id="add-own">Добавить в бюллетень</button>
+      </div>
+    </details>
     <button class="btn primary" id="cast" style="margin-top:12px">Проголосовать</button>
     <div id="cast-done" class="note hidden" style="margin-top:10px"></div>`;
   $("#cast").onclick = castVote;
+  $("#add-own").onclick = addOwnOption;
+}
+
+// Свой вариант: бюллетень, собранный одним человеком, задаёт рамку ответа —
+// а расхождение чаще всего в том, что вопрос поставлен не так. Поэтому
+// предложить свою формулировку может любой участник открытого голосования.
+async function addOwnOption() {
+  const input = $("#own-opt");
+  const label = (input.value || "").trim();
+  if (!label) return err("Напиши свой вариант.");
+  const btn = $("#add-own"); btn.disabled = true;
+  try {
+    await api(`/api/decisions/${D.decision.id}/options`,
+              { label, origin: "proposed" });
+    await loadDetail(D.decision.id);
+  } catch (e) {
+    err("Не удалось добавить вариант: " + e.message);
+    btn.disabled = false;
+  }
 }
 
 async function castVote() {

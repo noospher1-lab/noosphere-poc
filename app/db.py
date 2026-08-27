@@ -2020,8 +2020,14 @@ async def list_options(decision_id):
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT o.*, p.headline, p.composed, p.stance FROM decision_options o "
+            # имя предложившего — чтобы чужой вариант в бюллетене был
+            # подписан: он стоит рядом с вариантами автора и не должен
+            # выглядеть как один из них
+            "SELECT o.*, p.headline, p.composed, p.stance, "
+            "       a.name AS proposed_by_name "
+            "FROM decision_options o "
             "LEFT JOIN positions p ON p.id = o.position_id "
+            "LEFT JOIN authors a ON a.id = o.proposed_by "
             "WHERE o.decision_id = $1 ORDER BY o.sort, o.id", decision_id)
     return [dict(r) for r in rows]
 

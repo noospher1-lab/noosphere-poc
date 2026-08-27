@@ -2086,18 +2086,48 @@ async def add_decision_option(decision_id: int, body: OptionIn,
     d = await _decision_or_404(decision_id)
     if body.origin not in ("initial", "proposed", "reframe"):
         raise HTTPException(400, "origin must be initial|proposed|reframe")
-    # Целостность бюллетеня: варианты добавляет только автор и только пока
-    # голосование в черновике. Иначе посторонний мог бы напихать вариантов в
-    # чужой уже открытый бюллетень во время голосования. Чужие «proposed/reframe»
-    # — отдельная будущая механика, сознательно отложена (см. vault:
-    # user-created-decisions).
-    if d.get("created_by") and d["created_by"] != author["id"]:
-        raise HTTPException(403, "варианты добавляет только автор голосования")
-    if d["status"] != "draft":
-        raise HTTPException(409, "варианты можно добавлять только в черновик")
+    own = not d.get("created_by") or d["created_by"] == author["id"]
+
+    # Автор собирает бюллетень в черновике — это его initial-варианты.
+    if own and d["status"] == "draft":
+        rev = await db.current_revision(decision_id)
+        return await db.add_option(decision_id, body.position_id, body.label,
+                                   origin=body.origin,
+                                   proposed_by=author["id"],
+                                   revision=rev["revision"] if rev else 1)
+
+    # Участник голосования вправе предложить СВОЙ ответ, когда ни один из
+    # заготовленных не выражает его позиции. Иначе бюллетень — это вопрос, на
+    # который отвечает тот, кто его задал: голосующему остаётся выбрать из
+    # чужих рамок либо промолчать, и расхождение, которое голосование должно
+    # показывать, теряется именно там, где оно настоящее.
+    #
+    # Целостность при этом держится тремя вещами: чужой вариант всегда
+    # помечен origin=proposed и именем предложившего (initial-варианты автора
+    # им не подменяются), предлагать можно только в ОТКРЫТОМ голосовании и
+    # только словами (position_id — рамка автора, её чужой не подставляет), и
+    # больше двух предложений с человека на одно голосование не принимается.
+    if d["status"] != "open":
+        raise HTTPException(
+            409, "предложить свой вариант можно в открытом голосовании")
+    label = (body.label or "").strip()
+    if not label:
+        raise HTTPException(400, "нужен текст своего варианта")
+    if len(label) > 300:
+        raise HTTPException(400, "вариант — одна формулировка, до 300 символов")
+    mine = [o for o in await db.list_options(decision_id)
+            if o.get("proposed_by") == author["id"]
+            and o.get("origin") == "proposed"]
+    if len(mine) >= 2:
+        raise HTTPException(
+            429, "не больше двух своих вариантов на одно голосование")
     rev = await db.current_revision(decision_id)
-    return await db.add_option(decision_id, body.position_id, body.label,
-                               origin=body.origin, proposed_by=author["id"],
+    # Ревизию НЕ поднимаем: уже поданные голоса помнят свою и не переезжают,
+    # а новый вариант виден всем, кто голосует после. Полноценный пересбор
+    # материала под каждый чужой вариант — отдельная механика, здесь она была
+    # бы дороже пользы (vault: user-created-decisions).
+    return await db.add_option(decision_id, None, label, origin="proposed",
+                               proposed_by=author["id"],
                                revision=rev["revision"] if rev else 1)
 
 
@@ -2899,7 +2929,37 @@ class CompanionIn(BaseModel):
 # Потолок разговора: каждый ход — вызов LLM из гранта автора, а компаньон,
 # который готов болтать бесконечно, превращается из помощи в способ прожечь
 # бюджет. Десять ходов — заведомо больше, чем нужно, чтобы додумать один довод.
-COMPANION_MAX_TURNS = 10
+COMPANION_MAX_TURNS = int(os.environ.get("COMPANION_MAX_TURNS", "25"))
+
+
+# Разговор с компаньоном платформа НЕ хранит (vault: ai-navigator-draft-review):
+# он умирает вместе с публикацией. На время закрытых тестов этого мало — понять,
+# что именно правил компаньон и послушался ли автор, постфактум нечем. Поэтому
+# необязательный лог: путь в COMPANION_LOG, пусто — ничего не пишется. Это файл
+# рядом с сервером, а не таблица: модель данных и решение об эфемерности
+# остаются в силе, а выключается лог одной строкой перед открытой регистрацией.
+COMPANION_LOG = os.environ.get("COMPANION_LOG")
+
+
+def _log_companion(author, body, out):
+    if not COMPANION_LOG:
+        return
+    try:
+        with open(COMPANION_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "author_id": author["id"],
+                "author": author.get("username") or author.get("name"),
+                "connect_to": body.connect_to,
+                "scope": body.scope,
+                "draft": body.text,
+                "history": [h.model_dump() for h in body.history],
+                "reply": out.get("reply"),
+                "suggestion": out.get("suggestion"),
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        # лог наблюдения не должен ронять разговор, ради которого он ведётся
+        log.warning("не удалось записать лог компаньона", exc_info=True)
 
 
 @app.post("/api/draft/companion", dependencies=[Depends(verified_author)])
@@ -2907,8 +2967,14 @@ async def draft_companion(body: CompanionIn, author=Depends(verified_author)):
     text = body.text.strip()
     if not text:
         raise HTTPException(400, "пустой черновик")
-    if len(body.history) > COMPANION_MAX_TURNS * 2:
-        raise HTTPException(400, "разговор затянулся — публикуй или начни заново")
+    # Ходы автора — половина истории (вторая половина ответы компаньона). Счёт
+    # по ним, а не по длине списка: автор считает СВОИ реплики, и «осталось
+    # два» должно значить два его хода, а не два элемента массива.
+    turns_used = sum(1 for h in body.history if h.role == "author") + 1
+    if turns_used > COMPANION_MAX_TURNS:
+        raise HTTPException(
+            400, f"разговор дошёл до потолка в {COMPANION_MAX_TURNS} ходов — "
+                 f"публикуй или начни заново")
     parent, branch = None, []
     if body.connect_to is not None:
         parent = await db.get_node(body.connect_to)
@@ -2923,11 +2989,16 @@ async def draft_companion(body: CompanionIn, author=Depends(verified_author)):
     try:
         out = await asyncio.to_thread(
             pools_mod.companion_reply, text,
-            [h.model_dump() for h in body.history], parent, branch, neighbours)
+            [h.model_dump() for h in body.history], parent, branch, neighbours,
+            turns_left=max(0, COMPANION_MAX_TURNS - turns_used))
     except Exception as e:
         # молчаливого компаньона автор принял бы за «всё в порядке» — а это не
         # проверка, это разговор, и его обрыв надо назвать вслух
         raise HTTPException(502, f"компаньон не ответил, попробуй ещё раз: {e}")
+    _log_companion(author, body, out)
+    # Остаток ходов виден и автору, и самому компаньону: внезапный отказ на
+    # одиннадцатом ходу читается как поломка, а не как правило.
+    out["turns_left"] = max(0, COMPANION_MAX_TURNS - turns_used)
     return out
 
 
