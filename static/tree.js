@@ -88,9 +88,10 @@ function shortEmpty() {
   const e = el("div", "empty");
   e.innerHTML =
     "<h3>Выбери обсуждение слева</h3>" +
-    "<p>Каждая ветка — проблема. Разворачивай её, чтобы читать доводы за и " +
-    "против, задавать вопросы и добавлять свои.</p>" +
-    "<p class='muted'>Или начни своё — кнопка «Новая проблема» сверху. " +
+    "<p>Верхняя ветка — проблема, вопрос, предложение, тезис или разбор. " +
+    "Разворачивай её, чтобы читать доводы за и против, задавать вопросы и " +
+    "добавлять свои.</p>" +
+    "<p class='muted'>Или начни своё — кнопка «Создать» сверху. " +
     "Подсказки можно выключить кнопкой «💡 Подсказки» вверху.</p>";
   return e;
 }
@@ -102,8 +103,12 @@ function guidePanel() {
     "каждый довод виден отдельно и связан с тем, к чему относится."));
   const steps = [
     ["1", "Читай дерево слева",
-      "Верхние ветки — проблемы, вложенные — ответы. Цветная метка показывает " +
-      "связь с родителем: <b>за</b>, <b>против</b>, <b>уточнение</b>, <b>вопрос</b>."],
+      "Верхние ветки открывают обсуждение — чаще всего это <b>проблема</b>, но " +
+      "наверху может стоять и вопрос, предложение, тезис или разбор. Вложенные " +
+      "— ответы, и цветная метка показывает связь с родителем: <b>за</b>, " +
+      "<b>против</b>, <b>уточнение</b>, <b>вопрос</b>, <b>предложение</b>, " +
+      "<b>разбор</b>. У проблемы вдобавок есть состояние: причины, масштаб и " +
+      "накопитель попыток решения — у остальных видов его нет."],
     ["2", "PoI — это качество довода",
       "PoI оценивает, насколько довод проработан: логика, полнота, работа с " +
       "неопределённостью и с возражениями. Высокий PoI не значит «прав», значит " +
@@ -115,11 +120,13 @@ function guidePanel() {
       "Так ты показываешь своё отношение к доводу. Согласие и несогласие — это " +
       "не оценка качества: сильный довод остаётся сильным, даже когда с ним " +
       "не согласны."],
-    ["4", "Отвечай или заводи проблему",
-      "Выбери тип ответа (за/против/уточнение/вопрос) и напиши. Перед отправкой " +
-      "ИИ-компаньон разберёт черновик и с ним можно поспорить — а опубликованный " +
-      "текст уже неизменен, поэтому думать стоит здесь. Решаешь всё равно ты."],
-    ["5", "Позиции — общая карта по проблеме",
+    ["4", "Отвечай или заводи своё",
+      "Выбери тип ответа (за/против/уточнение/вопрос/предложение/разбор) и " +
+      "напиши. Своё сверху заводится кнопкой «Создать», там же выбирается вид. " +
+      "Перед отправкой ИИ-компаньон разберёт черновик и с ним можно поспорить " +
+      "— а опубликованный текст уже неизменен, поэтому думать стоит здесь. " +
+      "Решаешь всё равно ты."],
+    ["5", "Позиции — общая карта по обсуждению",
       "ИИ группирует близкие доводы в позиции. Их можно поддержать, оспорить, " +
       "развить или сделать вывод. Если тебя свели не туда — можно выйти в свою " +
       "отдельную позицию (дословно твоими словами)."],
@@ -140,7 +147,7 @@ function guidePanel() {
   }
   const foot = el("p", "muted");
   foot.style.marginTop = "16px";
-  foot.innerHTML = "Выбери проблему слева, чтобы начать. Эти подсказки можно " +
+  foot.innerHTML = "Выбери обсуждение слева, чтобы начать. Эти подсказки можно " +
     "выключить кнопкой «💡 Подсказки» вверху.";
   g.appendChild(foot);
   return g;
@@ -623,11 +630,13 @@ function nodeRow(node, type) {
   const tw = el("span", "tw", hasKids ? (expanded.has(node.id) ? "▾" : "▸") : "·");
   tw.onclick = (e) => { e.stopPropagation(); toggleExpand(node.id); };
   row.appendChild(tw);
-  // Корень несёт ОДИН бейдж — свой тип (проблема / предложение / вопрос / …).
-  // Раньше их было два: «тема» + тип, и первый ничего не сообщал — корень и так
-  // виден отступом, а слово «тема» противоречило единице «проблема».
+  // Корень несёт ОДИН бейдж — свой вид (проблема / вопрос / предложение /
+  // тезис / разбор). Раньше их было два: «тема» + вид, и первый ничего не
+  // сообщал — корень и так виден отступом.
+  // Класс = сам вид: у проблемы, вопроса, предложения и разбора разные цвета,
+  // иначе корни разной природы выглядят на одно лицо.
   row.appendChild(type === "root"
-    ? el("span", "rel " + (node.kind === "problem" ? "root" : "question"),
+    ? el("span", "rel " + (node.kind || "argument"),
          KIND_RU[node.kind] || "обсуждение")
     : el("span", "rel " + type, relLabel(type)));
   // a topic root shows its own short title; replies fall back to a text excerpt
@@ -725,10 +734,11 @@ function renderTree() {
     const kinds = el("div", "legend");
     kinds.append(
       el("span", "legend-key", "что это:"),
-      el("span", "rel root", "проблема"),
-      el("span", "rel question", "предложение"),
-      el("span", "rel question", "уточнение"),
+      el("span", "rel problem", "проблема"),
       el("span", "rel question", "вопрос"),
+      el("span", "rel proposal", "предложение"),
+      el("span", "rel argument", "тезис"),
+      el("span", "rel exploration", "разбор"),
     );
     const rels = el("div", "legend");
     rels.append(
@@ -737,13 +747,16 @@ function renderTree() {
       el("span", "rel refute", "против"),
       el("span", "rel qualify", "уточн."),
       el("span", "rel question", "вопрос"),
+      el("span", "rel proposal", "предл."),
+      el("span", "rel exploration", "разбор"),
       el("span", "rel undercut", "подрыв"),
     );
     tree.append(kinds, rels);
   }
   if (!TOPICS.length) {
     tree.appendChild(el("div", "muted",
-      "Пока нет проблем. Заведи первую кнопкой «+ Новая проблема» сверху."));
+      "Пока пусто. Заведи первое кнопкой «+ Создать» сверху — проблему, "
+      + "вопрос, предложение, тезис или разбор."));
     return;
   }
   for (const t of TOPICS) renderSubtree(tree, t, "root");
@@ -881,7 +894,14 @@ function errText(e) {
 }
 
 // ---- detail panel
+// Поколение отрисовки панели. Панель собирается из нескольких запросов, и
+// часть блоков дописывается ПОЗЖЕ, когда их ответ пришёл. Без этого счётчика
+// запоздавший ответ от прошлого узла дописывался в панель, которую собрали уже
+// для другого — на экране появлялось два блока «Голосование по этой проблеме».
+let detailGen = 0;
+
 async function selectNode(id) {
+  const gen = ++detailGen;
   selectedId = id;
   renderTree();
   if (!expanded.has(id)) toggleExpand(id);
@@ -889,6 +909,7 @@ async function selectNode(id) {
   let node;
   try { node = await api(`/api/nodes/${id}`); }
   catch (e) { toast("ошибка: " + e.message); return; }
+  if (gen !== detailGen) return;      // панель уже пересобрали под другой узел
   const root = ROOT.get(id) ?? id;
   const isRoot = root === id;
   const d = $("#detail");
@@ -995,14 +1016,26 @@ async function selectNode(id) {
     renderMarginMarkers(tw, textEl, node.fragment_replies);
   loadReactions(id, root, rbody);
 
-  // страница проблемы: причины, масштаб, реестр решений, атрибуции
-  if (isRoot && node.kind === "problem") {
-    d.appendChild(await problemCard(id));
-    // Голосование знает свою проблему, а проблема о голосовании молчала:
-    // войти в него можно было только через отдельный раздел, зная, что оно
-    // вообще есть. Показываем открытые голосования прямо здесь.
-    votesForProblem(id).then((card) => card && d.appendChild(card));
+  // страница состояния — только у проблемы: причины, масштаб, накопитель
+  // решений, атрибуции. У вопроса, предложения, тезиса и разбора состояния
+  // нет по устройству — они живут деревом доводов и позициями.
+  if (isRoot && node.kind === "problem") d.appendChild(await problemCard(id));
+  // Голосование знает свой корень, а корень о голосовании молчал: войти в
+  // него можно было только через отдельный раздел, зная, что оно вообще есть.
+  // Привязывается голосование к ЛЮБОМУ корню (см. /api/decisions), поэтому и
+  // показывается у любого — не только у проблемы.
+  if (isRoot) {
+    // Место под голосования занимается СРАЗУ, наполняется по приходе ответа —
+    // иначе блок приезжал в самый низ панели, ниже позиций, куда его никто не
+    // клал: он просто дописывался последним, когда запрос успевал вернуться.
+    const vw = el("div");
+    d.appendChild(vw);
+    votesForProblem(id, node.kind).then((card) => card && vw.appendChild(card));
   }
+  // Доска: решения на столе и открытые вопросы. Читается ПОСЛЕ состояния (у
+  // проблемы) и ДО формы ответа — сначала видно, что уже предложено и что
+  // осталось без ответа, потом пишешь своё.
+  if (isRoot) d.appendChild(boardCards(id, node.kind));
 
   // atomization: the author of an exploration can cut it into atoms
   if (node.kind === "exploration" && ME && node.author_id === ME.id)
@@ -1019,10 +1052,13 @@ async function selectNode(id) {
 
   // positions (only for the discussion root)
   if (isRoot) {
+    // «по проблеме» — только когда наверху действительно проблема: у корня-
+    // вопроса или предложения этот заголовок обещал бы страницу, которой нет
+    const where = node.kind === "problem" ? "проблеме" : "обсуждению";
     const pc = el("div", "card");
-    pc.appendChild(el("div", "section-title", "Позиции по проблеме"));
+    pc.appendChild(el("div", "section-title", "Позиции по " + where));
     appendHint(pc, "ИИ сводит близкие доводы в <b>позиции</b> — общую карту " +
-      "мнений по проблеме. Позицию можно поддержать, оспорить, развить или выйти из " +
+      "мнений по " + where + ". Позицию можно поддержать, оспорить, развить или выйти из " +
       "неё в свою, если тебя свели не туда.");
     const pbody = el("div"); pbody.textContent = "сборка позиций…";
     pc.appendChild(pbody);
@@ -1492,13 +1528,18 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
   const actions = el("div", "actions");
 
   if (rootTest && !rev.type_ok) {
-    // Корень не выбирает тип — он проходит тест на вред. Поэтому здесь нет
-    // кнопки «отправить как …»: переключать не на что, можно только дописать
-    // постановку или уйти к существующей проблеме (кнопки ниже).
+    // Проблема проходит ТЕСТ на заявленный вред, а не классификацию по видам,
+    // — поэтому кнопки «отправить как …» здесь нет: навигатор не называет
+    // вид, он говорит только «вреда не видно». Переключить вид автор может
+    // сам, списком слева от «опубликовать»; «отправить как есть» ниже.
     const t = el("div");
     t.appendChild(el("b", null, "похоже, это пока не проблема. "));
     t.appendChild(document.createTextNode(rev.type_note || ""));
     hint.appendChild(t);
+    hint.appendChild(el("div", "muted",
+      "Это не запрет: можно дописать постановку, сменить вид в списке слева "
+      + "от «опубликовать» — вопрос, предложение, тезис, разбор — или "
+      + "отправить как есть."));
   } else if (!rootTest && !rev.type_ok && rev.suggested_type) {
     const t = el("div");
     t.appendChild(el("b", null, "похоже, тип не совпадает. "));
@@ -1719,6 +1760,119 @@ function belongingBar(belongings) {
   }
   return bar;
 }
+
+// ---- доска обсуждения: решения на столе и открытые вопросы
+//
+// Предложения и вопросы лежали в графе с самого начала, но увидеть их можно
+// было только развернув нужную ветку дерева — то есть уже зная, что они там
+// есть. Накопитель на странице проблемы отвечает на другой вопрос: что УЖЕ
+// пробовали в реальности и чем кончилось. Это факты; предложение — то, что
+// ещё только предлагают сделать, и места у него не было вовсе.
+//
+// Порядок — по времени, как приходит с сервера. Предложения по одной проблеме
+// взаимоисключающи, и сортировка по PoI читалась бы как «вот правильное»
+// (то же решение, что и для детей узла).
+function boardCards(rootId, rootKind) {
+  // Контейнер возвращается СРАЗУ и наполняется по приходе ответа: иначе форма
+  // ответа и позиции ниже ждали бы этот запрос, а он тут не главный.
+  const wrap = el("div");
+  api(`/api/topics/${rootId}/board`)
+    .then((data) => fillBoard(wrap, rootId, rootKind, data))
+    .catch(() => { /* доска не пришла — панель просто без неё */ });
+  return wrap;
+}
+
+function fillBoard(frag, rootId, rootKind, data) {
+  const props = data.proposals || [];
+  const qs = data.questions || [];
+  const openQs = qs.filter((q) => !q.reply_count);
+  const answered = qs.filter((q) => q.reply_count);
+
+  // строка доски: текст, автор, PoI и счётчики. Клик ведёт к самому узлу —
+  // спорить с предложением надо там, где оно живёт, а не в списке.
+  const row = (n, extra) => {
+    const b = el("div", "b" + (n.retracted_at ? " retr" : ""));
+    b.appendChild(el("div", "b-txt", shortLabel(n.text, 240)));
+    const m = el("div", "b-meta");
+    m.appendChild(el("span", null, n.author || "—"));
+    const unscored = n.author_is_service || n.author_is_seed;
+    if (n.poi_score != null) m.appendChild(el("span", null, "PoI " + n.poi_score));
+    else if (!unscored) m.appendChild(el("span", null, "PoI …"));
+    for (const x of extra(n)) m.appendChild(el("span", null, x));
+    if (n.retracted_at) {
+      const t = el("span", "rtag", "отозвано");
+      t.title = n.retract_note || "Автор больше не настаивает";
+      m.appendChild(t);
+    }
+    b.appendChild(m);
+    b.onclick = () => { ROOT.set(n.id, rootId); selectNode(n.id); };
+    return b;
+  };
+
+  // кнопка «предложить решение» / «задать вопрос»: форма ответа на этой же
+  // странице, тип в ней уже выбран — иначе совет «ответь предложением»
+  // требует найти форму и вспомнить, какой пункт в списке нужен
+  const jump = (type, label) => {
+    const btn = el("button", "mini", label);
+    btn.onclick = () => {
+      if (!requireAuth()) return;
+      if (replyHandle && replyHandle.parentId === rootId && replyHandle.setType)
+        replyHandle.setType(type);
+    };
+    return btn;
+  };
+
+  const pc = el("div", "card board");
+  pc.appendChild(el("div", "section-title",
+    (rootKind === "problem" ? "Решения на столе · " : "Предложения · ") + props.length));
+  appendHint(pc, rootKind === "problem"
+    ? "Это <b>предложения</b> — что сделать. Не путать с накопителем выше: там "
+      + "то, что уже пробовали, с исходом. Здесь то, что ещё только предлагают, "
+      + "и по каждому можно спорить внутри."
+    : "Предложения, высказанные в этом обсуждении. По каждому можно спорить "
+      + "внутри — клик открывает сам довод.");
+  if (!props.length)
+    pc.appendChild(el("div", "muted", rootKind === "problem"
+      ? "пока ни одного — и это приглашение, а не недоделка"
+      : "пока ни одного"));
+  for (const n of props)
+    pc.appendChild(row(n, (x) => [`за ${x.agree} · против ${x.disagree}`,
+                                  `возражений: ${x.reply_count}`]));
+  const pa = el("div", "actions");
+  pa.appendChild(jump("proposal", "+ предложить решение"));
+  pc.appendChild(pa);
+  frag.appendChild(pc);
+
+  const qc = el("div", "card board");
+  qc.appendChild(el("div", "section-title", "Открытые вопросы · " + openQs.length));
+  appendHint(qc, "Вопросы, на которые в обсуждении ещё <b>никто не ответил</b>. "
+    + "Ответить — значит написать ответ этому вопросу: клик открывает его.");
+  if (!openQs.length)
+    qc.appendChild(el("div", "muted", "без ответа не осталось ни одного"));
+  for (const n of openQs) qc.appendChild(row(n, () => []));
+  if (answered.length) {
+    const more = el("button", "mini", `показать отвечённые (${answered.length})`);
+    const box = el("div");
+    box.style.display = "none";
+    for (const n of answered)
+      box.appendChild(row(n, (x) => [`ответов: ${x.reply_count}`]));
+    more.onclick = () => {
+      const open = box.style.display === "none";
+      box.style.display = open ? "" : "none";
+      more.textContent = open ? "скрыть отвечённые"
+                              : `показать отвечённые (${answered.length})`;
+    };
+    const qa = el("div", "actions");
+    qa.appendChild(more);
+    qc.appendChild(qa);
+    qc.appendChild(box);
+  }
+  const qact = el("div", "actions");
+  qact.appendChild(jump("question", "+ задать вопрос"));
+  qc.appendChild(qact);
+  frag.appendChild(qc);
+}
+
 
 // ---- страница проблемы: причины, масштаб, реестр решений, атрибуции
 const OC_LABEL = { success: "успех", partial: "частично", mixed: "смешанно",
@@ -2015,7 +2169,8 @@ function replyForm(parentId) {
   const card = el("div", "card");
   card.appendChild(el("div", "section-title", "Ответить"));
   appendHint(card, "Выбери, как твой довод относится к этому доводу " +
-    "(за / против / уточнение / вопрос), и напиши её. Перед отправкой " +
+    "(за / против / уточнение / вопрос / предложение / разбор), и напиши его. " +
+    "Перед отправкой " +
     "ИИ-компаньон разберёт черновик — с ним можно спорить и переспрашивать. " +
     "<b>После публикации текст изменить нельзя</b>: на нём строят ответы.");
   const ta = el("textarea");
@@ -2100,8 +2255,19 @@ function replyForm(parentId) {
     ta.focus();
     card.scrollIntoView({ behavior: "smooth", block: "nearest" });
   };
-  // хэндл для всплывающего меню выделения
-  replyHandle = { parentId, setFragment: showAnchor };
+  // хэндл для всплывающего меню выделения и для кнопок доски («предложить
+  // решение», «задать вопрос»): они выбирают тип прямо здесь, чтобы совет
+  // «ответь предложением» не превращался в поиск формы и нужного пункта
+  replyHandle = {
+    parentId,
+    setFragment: showAnchor,
+    setType: (t) => {
+      typeSel.value = t;
+      rememberDraft();
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      ta.focus();
+    },
+  };
 
   const doSend = async (text) => {
     if (typeSel.value === "undercut" && !anchor) {
@@ -2198,17 +2364,18 @@ function replyForm(parentId) {
 // ---- new topic: a root node, opened straight from the header
 // prefill — черновик, принесённый из другой формы: компаньон сказал «это тянет
 // на отдельную проблему», и терять уже написанное на переходе нельзя.
-// Открытые голосования по этой проблеме — строкой со входом.
-async function votesForProblem(rootId) {
+// Открытые голосования по этому корню — строкой со входом. Голосование
+// привязывается к ЛЮБОМУ корню, поэтому слово в заголовке зависит от вида.
+async function votesForProblem(rootId, rootKind) {
   let list;
   try { list = await api("/api/decisions?status=open"); }
   catch (e) { return null; }
   const mine = (list || []).filter((d) => d.topic_root_id === rootId);
   if (!mine.length) return null;
   const card = el("div", "card");
+  const what = rootKind === "problem" ? "этой проблеме" : "этому обсуждению";
   card.appendChild(el("div", "section-title",
-                      mine.length > 1 ? "Голосования по этой проблеме"
-                                      : "Голосование по этой проблеме"));
+                      (mine.length > 1 ? "Голосования по " : "Голосование по ") + what));
   mine.forEach((d) => {
     const row = el("div");
     row.style.margin = "6px 0";
@@ -2231,10 +2398,10 @@ function newTopicForm(prefill) {
   const d = $("#detail");
   d.innerHTML = "";
   const card = el("div", "card");
-  card.appendChild(el("div", "section-title", "Новая проблема"));
+  card.appendChild(el("div", "section-title", "Создать"));
   const titleIn = el("input");
   titleIn.type = "text";
-  titleIn.placeholder = "Проблема — заявленный вред, коротко";
+  titleIn.placeholder = "Проблема — заявленный вред, коротко";   // см. syncKind
   titleIn.style.width = "100%";
   titleIn.style.marginBottom = "8px";
   card.appendChild(titleIn);
@@ -2251,7 +2418,9 @@ function newTopicForm(prefill) {
     catch (_) { return; }
     dupes.innerHTML = "";
     if (!hits || !hits.length) return;
-    dupes.appendChild(el("div", "section-title", "похожие уже есть — может, сюда?"));
+    dupes.appendChild(el("div", "section-title",
+      kindSel.value === "problem" ? "похожие проблемы уже есть — может, сюда?"
+                                  : "есть проблемы про то же — может, ответить внутри?"));
     for (const h of hits) {
       const row = el("div", "d");
       row.appendChild(el("span", "t", h.title || shortLabel(h.text, 60)));
@@ -2263,12 +2432,16 @@ function newTopicForm(prefill) {
   titleIn.addEventListener("input", () => { clearTimeout(dupT); dupT = setTimeout(checkDupes, 350); });
   const ta = el("textarea");
   ta.placeholder = "Постановка: в чём вред, кого касается, каков масштаб…";
-  if (prefill) ta.value = prefill;
+  if (prefill) ta.value = prefill;                                // см. syncKind
 
   // Новая проблема пишется дольше ответа — терять её при обновлении страницы
   // тем более нечего. Ключ "root": черновиков проблем одновременно один.
   const savedRoot = draftRead("root");
+  // Вид применяется НЕ здесь: kindSel объявлен ниже, и обращение к нему до
+  // объявления упало бы ReferenceError. Держим до syncKind().
+  let savedKind = null;
   if (!prefill && savedRoot && (savedRoot.text || savedRoot.title)) {
+    savedKind = savedRoot.kind || null;
     if (savedRoot.title) titleIn.value = savedRoot.title;
     if (savedRoot.text) ta.value = savedRoot.text;
     const bar = el("div", "muted");
@@ -2279,13 +2452,16 @@ function newTopicForm(prefill) {
     bar.appendChild(fresh);
     card.appendChild(bar);
   }
-  // как и в форме ответа: один и тот же текст не разбирается дважды
+  // как и в форме ответа: один и тот же текст не разбирается дважды. У корня
+  // к тексту добавлен вид: у проблемы рамка разбора другая, чем у остальных.
   let reviewedRoot = null;
+  let reviewedKind = null;
   let rootTimer = null;
   const rememberRoot = () => {
     clearTimeout(rootTimer);
     rootTimer = setTimeout(
-      () => draftWrite("root", { title: titleIn.value, text: ta.value }), 400);
+      () => draftWrite("root", { title: titleIn.value, text: ta.value,
+                                 kind: kindSel.value }), 400);
   };
   ta.addEventListener("input", rememberRoot);
   titleIn.addEventListener("input", rememberRoot);
@@ -2293,6 +2469,13 @@ function newTopicForm(prefill) {
   // Черновик, принесённый с карты: там форма проблемы есть, а разбора и
   // компаньона нет, поэтому она отдаёт написанное сюда. Ключ снимается сразу
   // — второй раз тот же текст подставляться не должен.
+  //
+  // Рубрика применяется НЕ здесь: domSel/subSel объявлены ниже, и обращение к
+  // ним отсюда уходило в TDZ — ReferenceError молча съедался catch'ем, и
+  // принесённая с карты рубрика терялась КАЖДЫЙ раз. А по своей же логике
+  // (см. ниже) проблема без рубрики не находится ни одним фильтром карты —
+  // то есть переносом с карты человек ровно её и лишался.
+  let carriedFacets = null;
   try {
     const carried = sessionStorage.getItem("noo_draft_problem");
     if (carried) {
@@ -2300,8 +2483,7 @@ function newTopicForm(prefill) {
       const dr = JSON.parse(carried);
       if (dr.title) titleIn.value = dr.title;
       if (dr.text) ta.value = dr.text;
-      if (dr.domain) { domSel.value = dr.domain; domSel.dispatchEvent(new Event("change")); }
-      if (dr.sub) setTimeout(() => { subSel.value = dr.sub; }, 0);
+      carriedFacets = dr;
     }
   } catch (e) { /* черновик не пережил перенос — форма просто пустая */ }
   card.appendChild(ta);
@@ -2373,16 +2555,56 @@ function newTopicForm(prefill) {
     TAX = t;
     t.domains.forEach(d => domSel.appendChild(new Option(d.name, d.id)));
     fillSubs();
+    // Рубрика принесённого черновика — только теперь: до загрузки справочника
+    // в domSel нет ни одного варианта, и присваивание не удержалось бы.
+    if (carriedFacets) {
+      if (carriedFacets.domain) { domSel.value = carriedFacets.domain; fillSubs(); }
+      if (carriedFacets.sub) subSel.value = carriedFacets.sub;
+      for (const g of carriedFacets.geo || []) chosen.add(g);
+      renderChosen();
+      if (carriedFacets.tags && carriedFacets.tags.length)
+        tagsIn.value = carriedFacets.tags.join(", ");
+    }
   }).catch(() => { rub.style.display = "none"; });
   fillSubs();
 
   const act = el("div", "actions");
+  // ВИД КОРНЯ. Вернулся 2026-09-09: убрать просили слово «тема», а ушла вместе
+  // с ним и возможность завести наверху что-либо, кроме проблемы — человек с
+  // вопросом на руках упирался в тупик. Слово «тема» не вернулось ни в одном
+  // пункте: виды называются проблема / вопрос / предложение / тезис / разбор.
+  //
+  // Проблема остаётся первой и по умолчанию — она одна несёт состояние
+  // (причины, масштаб, накопитель попыток). Остальные виды живут деревом
+  // доводов и позициями; страницы состояния у них нет, и бейдж в дереве
+  // честно называет вид, чтобы два сорта корней не выглядели одинаково.
+  const kindSel = el("select");
+  for (const [v, l] of [["problem", "проблема"], ["question", "вопрос"],
+                        ["proposal", "предложение"], ["argument", "тезис"],
+                        ["exploration", "разбор"]])
+    kindSel.appendChild(new Option(l, v));
   const send = el("button", "primary", "опубликовать");
-  // Наверху может быть только проблема. Выбор вида здесь был, и он создавал
-  // корни-вопросы: в списке они выглядели проблемами, а внутри пустовали —
-  // ни состояния, ни реестра попыток, ради которых проблема и стоит сверху.
-  // Вопрос, тезис, предложение и разбор никуда не делись — они живут ОТВЕТАМИ
-  // внутри проблемы, где у них есть, к чему относиться.
+  const PLACEHOLDER = {
+    problem:     ["Проблема — заявленный вред, коротко",
+                  "Постановка: в чём вред, кого касается, каков масштаб…"],
+    question:    ["Вопрос — коротко, одним предложением",
+                  "Что именно непонятно и почему это важно выяснить…"],
+    proposal:    ["Предложение — что сделать, коротко",
+                  "Что предлагается, зачем и что должно измениться…"],
+    argument:    ["Тезис — утверждение, коротко",
+                  "Утверждение и на чём оно держится…"],
+    exploration: ["Разбор — о чём он, коротко",
+                  "Разбор: что известно, что спорно, что осталось открытым…"],
+  };
+  const syncKind = () => {
+    const [t, b] = PLACEHOLDER[kindSel.value] || PLACEHOLDER.problem;
+    titleIn.placeholder = t;
+    ta.placeholder = b;
+    // подсказка дублей ищет ПРОБЛЕМЫ, и её заголовок читается по-разному в
+    // зависимости от вида — перерисовываем, если она уже на экране
+    if (dupes.childNodes.length) checkDupes();
+  };
+  kindSel.onchange = () => { syncKind(); rememberRoot(); };
   const cancel = el("button", "mini", "отмена");
   cancel.onclick = () => { renderEmptyDetail(); };
   const hint = el("div");                       // карточка разбора компаньона
@@ -2399,17 +2621,23 @@ function newTopicForm(prefill) {
       const node = await api("/api/argument", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          text, kind: "problem", title,
+          text, kind: kindSel.value, title,
           domain: domSel.value || null,
           sub: subSel.value || null,
           geo: [...chosen],
           tags: tagsIn.value.split(",").map(s => s.trim()).filter(Boolean),
         }),
       });
-      toast(domSel.value
+      // Состояние (причины, масштаб, накопитель) есть ТОЛЬКО у проблемы —
+      // звать заполнять его у вопроса или предложения означало бы обещать
+      // страницу, которой там нет.
+      const noun = KIND_RU[kindSel.value] || "узел";
+      toast(!domSel.value
+        ? noun + " создан(а), но без рубрики — на карте найдут только поиском"
+        : kindSel.value === "problem"
         ? "проблема создана — заполни состояние ниже"
-        : "проблема создана, но без рубрики — на карте её найдут только поиском");
-      draftDrop("root");                // проблема создана — черновик не нужен
+        : noun + " создан(а) — PoI оценивается в фоне…");
+      draftDrop("root");                // создано — черновик не нужен
       ROOT.set(node.id, node.id);
       await loadTopics();
       MapView.reload();                 // карта должна увидеть проблему сразу
@@ -2427,36 +2655,55 @@ function newTopicForm(prefill) {
     if (!text) { toast("напиши постановку — одним-двумя абзацами"); ta.focus(); return; }
     if (!titleIn.value.trim()) { toast("укажи название"); titleIn.focus(); return; }
     if (!requireAuth()) return;
-    // Навигатор проверяет корень ОДНИМ тестом: заявлен ли вред и не стоит ли
-    // такая проблема уже на доске. Тип он больше не угадывает — наверху может
-    // быть только проблема. Как и везде, это предложение, а не запрет:
-    // «отправить как есть» остаётся на карточке.
+    // Проблему навигатор проверяет ОДНИМ тестом (заявлен ли вред и не стоит
+    // ли такая уже на доске), остальные виды — как ответы, по форме текста.
+    // Как и везде, это предложение, а не запрет: «отправить как есть» на
+    // карточке остаётся.
+    const isProblem = kindSel.value === "problem";
     send.disabled = true; send.textContent = "ИИ читает черновик…";
-    if (text === reviewedRoot) { hint.style.display = "none"; await doCreate(text); return; }
-    const rev = await reviewDraft({ text, kind: "problem" });
-    reviewedRoot = text;
+    // Переключение вида МЕНЯЕТ рамку разбора у проблемы: тест на вред и
+    // классификация по видам — разные вопросы. Поэтому «этот текст уже
+    // разобран» помнит и вид, с которым разбирали.
+    if (text === reviewedRoot && kindSel.value === reviewedKind) {
+      hint.style.display = "none"; await doCreate(text); return;
+    }
+    const rev = await reviewDraft({ text, kind: kindSel.value });
+    reviewedRoot = text; reviewedKind = kindSel.value;
     send.disabled = false; send.textContent = "опубликовать";
     if (!reviewHasNotes(rev)) { hint.style.display = "none"; await doCreate(text); return; }
     renderReview(hint, rev, {
       root: null,
-      rootTest: true,
+      // тест на вред — только у проблемы; у остальных видов обычная карточка
+      // «похоже, тип не совпадает» с кнопкой переключения
+      rootTest: isProblem,
+      switchLabel: KIND_RU[rev.suggested_type],
       getText: () => ta.value.trim(),
       setText: (t) => { ta.value = t; reviewedRoot = t.trim(); draftWrite("root", { text: t }); },
       connectTo: null,
       onSend: async () => { await doCreate(ta.value.trim()); },
+      // «отправить как «предложение»» — переключить вид и опубликовать: совет
+      // о качестве на карточке уже относится к предложенному виду
+      onSwitch: async (type) => {
+        if (PLACEHOLDER[type]) { kindSel.value = type; syncKind(); }
+        await doCreate(ta.value.trim());
+      },
     });
   };
   send.onclick = submit;
-  act.append(send, cancel);
+  if (savedKind && PLACEHOLDER[savedKind]) kindSel.value = savedKind;
+  syncKind();                      // плейсхолдеры под выбранный вид
+  act.append(kindSel, send, cancel);
   card.appendChild(act);
   card.appendChild(irreversibleNote());
-  // Выход для того, кто пришёл не с проблемой: вопрос и предложение живут
-  // ответами внутри проблемы, и найти её — работа карты.
+  // Второй путь, а не запасной выход: завести своё сверху можно любым видом,
+  // но ответ ВНУТРИ уже стоящей проблемы почти всегда прочитают больше людей
+  // — там есть, к чему относиться. Предложение, не гейт.
   const other = el("div", "muted");
   other.style.marginTop = "10px";
   other.style.fontSize = "12.5px";
-  other.appendChild(document.createTextNode("Это не проблема, а вопрос или предложение? "));
-  const toMap = el("a", "", "Найти проблему, к которой приложить →");
+  other.appendChild(document.createTextNode(
+    "Это про проблему, которая уже стоит? Ответ внутри неё прочитают скорее. "));
+  const toMap = el("a", "", "Найти проблему на карте →");
   toMap.href = "#";
   toMap.onclick = (e) => {
     e.preventDefault();

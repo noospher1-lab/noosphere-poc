@@ -119,7 +119,7 @@
       <a class="btn ghost" href="/create-vote.html">+ создать</a>
     </div>
     <p class="lead">Голосование — совещательная карта мнений: результат виден и по головам,
-      и по весу (кто насколько разобрался). Вес даёт разбор темы с ИИ перед голосом.</p>
+      и по весу (кто насколько разобрался). Вес даёт разбор вопроса с ИИ перед голосом.</p>
     <div id="list-body"></div>
     <div id="list-closed"></div>
   </section>
@@ -176,7 +176,7 @@ function voteCard(d) {
   return `
     <a class="card vote-card" href="/vote.html?id=${d.id}">
       <div class="vc-q">${esc(d.question)}</div>
-      <div class="vc-topic">Тема: ${esc(topicName(d))}</div>
+      <div class="vc-topic">Обсуждение: ${esc(topicName(d))}</div>
       <div class="vc-meta">${badge}
         &nbsp;· голосов: ${d.voters} · вариантов: ${d.options}
       </div>

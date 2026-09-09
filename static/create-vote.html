@@ -90,7 +90,7 @@
 
 <div id="wrap">
   <h1>Создать голосование</h1>
-  <p class="lead">Голосование привязано к теме и показывает распределение мнений —
+  <p class="lead">Голосование привязано к обсуждению и показывает распределение мнений —
     <b>по головам и по весу</b> (кто насколько разобрался). Оно совещательное:
     это карта размежевания, а не команда системе.</p>
 
@@ -100,7 +100,7 @@
   </div>
 
   <div id="form" class="card">
-    <label class="fld" for="topic">Тема</label>
+    <label class="fld" for="topic">Обсуждение</label>
     <select id="topic"><option value="">— загрузка тем… —</option></select>
 
     <label class="fld" for="question">Вопрос голосования</label>
@@ -179,7 +179,7 @@ async function boot() {
   try {
     const topics = await api("/api/topics");
     const sel = $("#topic");
-    sel.innerHTML = '<option value="">— выбери тему —</option>';
+    sel.innerHTML = '<option value="">— выбери обсуждение —</option>';
     for (const t of topics) {
       const o = document.createElement("option");
       o.value = t.id;
@@ -188,8 +188,8 @@ async function boot() {
       sel.append(o);
     }
   } catch (e) {
-    $("#topic").innerHTML = '<option value="">— не удалось загрузить темы —</option>';
-    err("Темы не загрузились: " + e.message);
+    $("#topic").innerHTML = '<option value="">— не удалось загрузить список —</option>';
+    err("Обсуждения не загрузились: " + e.message);
   }
 }
 
@@ -199,7 +199,7 @@ async function submit() {
   const question = $("#question").value.trim();
   const labels = optionLabels();
 
-  if (!topicId) return err("Выбери тему.");
+  if (!topicId) return err("Выбери обсуждение.");
   if (!question) return err("Впиши вопрос голосования.");
   if (labels.length < 2) return err("Нужно минимум два непустых варианта.");
 
@@ -235,7 +235,7 @@ function showResult(view) {
     <div class="tally">id <code>${d.id}</code> · статус ${escapeHtml(d.status || "open")} ·
       вариантов: ${opts.length}</div>
     <div class="note" style="margin-top:14px">
-      Голосование открыто. Участники разбирают тему с ИИ и голосуют на
+      Голосование открыто. Участники разбирают вопрос с ИИ и голосуют на
       <a href="/vote.html?id=${d.id}">странице голосования</a>; результат виден
       по головам и по весу.
     </div>

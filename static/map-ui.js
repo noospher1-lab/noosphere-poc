@@ -249,9 +249,9 @@ function mountComposer(host, { onCreated } = {}) {
         <label>Заголовок <span class="req">обязательно</span></label>
         <input class="cmp-title" maxlength="120" placeholder="Коротко, одной строкой" />
 
-        <label>Утверждение или вопрос <span class="req">обязательно</span></label>
+        <label>Постановка <span class="req">обязательно</span></label>
         <textarea class="cmp-text" rows="4"
-          placeholder="С чего начинается обсуждение — тезис, который можно поддержать или оспорить"></textarea>
+          placeholder="В чём вред, кого касается, каков масштаб. Вид можно сменить на следующем шаге — вопрос, предложение, тезис, разбор"></textarea>
 
         <div class="cmp-row">
           <div>

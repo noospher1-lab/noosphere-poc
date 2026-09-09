@@ -106,6 +106,13 @@
   .rel.qualify { color: var(--orange);border: 1px solid var(--orange); }
   .rel.question{ color: var(--blue);  border: 1px solid var(--blue); }
   .rel.root    { color: var(--bronze);border: 1px solid var(--bronze); }
+  /* виды корня, кроме проблемы: у каждого свой цвет, иначе предложение и
+     вопрос сверху выглядят одинаково — ровно та беда, из-за которой выбор
+     вида когда-то и убрали */
+  .rel.problem { color: var(--bronze);border: 1px solid var(--bronze); }
+  .rel.proposal    { color: var(--green); border: 1px solid var(--green); }
+  .rel.exploration { color: var(--violet);border: 1px solid var(--violet); }
+  .rel.argument    { color: var(--dim2); border: 1px solid var(--line2); }
   .txt { flex: 1; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical;
     -webkit-line-clamp: 3; overflow: hidden; }
   .poi { flex: none; color: var(--dim); font-size: 12px; font-family: var(--mono); }
@@ -305,6 +312,16 @@
   .prob-block > .actions { margin-top: 6px; }
 
   /* подсказка дублей при создании */
+  /* доска обсуждения: предложения («решения на столе») и открытые вопросы —
+     оба вида уже жили в графе, но видны были только внутри развёрнутой ветки */
+  .board .b { display: block; border: 1px solid var(--line2); border-radius: 9px;
+    padding: 9px 12px; margin-top: 7px; background: var(--panel2); cursor: pointer; }
+  .board .b:hover { border-color: var(--blue); }
+  .board .b-txt { line-height: 1.5; }
+  .board .b-meta { color: var(--dim2); font-size: 12px; margin-top: 4px;
+    display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .board .b.retr .b-txt { text-decoration: line-through; opacity: .6; }
+
   .dupes { margin-top: 8px; }
   .dupes .d { display: block; padding: 5px 9px; margin-top: 5px; border-radius: 7px;
     border: 1px solid var(--line2); background: var(--panel2); cursor: pointer; }
@@ -383,7 +400,7 @@
   <button id="logoutBtn" class="mini" style="display:none">Выйти</button>
   <button id="hintsBtn" class="mini">💡 Подсказки: вкл</button>
   <button id="refresh" class="mini">↻ Обновить</button>
-  <button id="newTopic" class="primary mini">+ Новая проблема</button>
+  <button id="newTopic" class="primary mini">+ Создать</button>
   <a href="/dialogue.html" title="Разговор с ИИ по одному вопросу — покажет сильные и слабые стороны твоего рассуждения">Тренажёр ▸</a>
   <a href="/vote.html" title="Голосования — совещательная карта мнений (по головам и по весу); можно проголосовать или создать своё">Голосования ▸</a>
   <a href="/profile.html" title="Мой кабинет — вклад в граф и остаток на счёте для работы с ИИ">Кабинет ▸</a>
@@ -460,7 +477,7 @@
       <h3>Выбери обсуждение слева</h3>
       <p>Каждая ветка — проблема. Разворачивай её, чтобы читать доводы за и против,
          задавать вопросы и добавлять свои.</p>
-      <p class="muted">Или начни своё — кнопка «Новая проблема» сверху.</p>
+      <p class="muted">Или начни своё — кнопка «Создать» сверху: проблема, вопрос, предложение, тезис или разбор.</p>
     </div>
   </div>
 </div>

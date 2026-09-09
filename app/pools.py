@@ -134,12 +134,15 @@ _REVIEW_TYPES = ("support (за: supports the parent claim), refute (проти�
                  "position)")
 
 
-# Наверху графа стоит ПРОБЛЕМА и только она (vault: problem-as-unit): у неё
-# есть состояние — причины, что пробовали и с каким исходом, где идёт спор,
-# какие решения на столе. Поэтому корень не классифицируется по видам (тезис /
-# вопрос / предложение) — он проходит ОДИН тест: заявлен ли вред. Вопрос,
-# тезис и предложение никуда не делись, но живут ответами ВНУТРИ проблемы.
-_ROOT_KINDS_DESC = ("problem (проблема: a stated HARM — it says who is hurt, "
+# У корня СНОВА есть вид (2026-09-09). Убрать просили слово «тема», а ушла
+# вместе с ним и возможность завести наверху что-либо кроме проблемы. Виды
+# вернулись, слово — нет: проблема / тезис / вопрос / предложение / разбор.
+#
+# Проблема остаётся особым видом: только у неё есть состояние — причины, что
+# пробовали и с каким исходом, где идёт спор, какие решения на столе. Поэтому
+# она и судится иначе: не «чем это является», а ОДНИМ тестом на заявленный
+# вред. Остальные корни классифицируются по видам, как ответы.
+_ROOT_PROBLEM_TEST = ("problem (проблема: a stated HARM — it says who is hurt, "
                     "at what scale, and admits conceivable solutions, so the "
                     "discussion can carry state: causes, what has been tried "
                     "and with what outcome, where the dispute runs) or "
@@ -151,8 +154,20 @@ _ROOT_KINDS_DESC = ("problem (проблема: a stated HARM — it says who is
                     "полиции остаются безнаказанными» is a problem)")
 
 
+# Виды корня, кроме проблемы. Тот же список, что был до 25.08: разница с
+# ответами в том, что корню не к чему относиться, поэтому support/refute/
+# qualify тут не бывает — узел ничего не поддерживает и не опровергает.
+_ROOT_KINDS_DESC = ("argument (тезис: a standalone claim opening a "
+                    "discussion), question (вопрос: an open question the "
+                    "author does not answer themselves), proposal "
+                    "(предложение: constructs — 'let's do X' — rather than "
+                    "reacting to a claim), exploration (исследование/разбор: "
+                    "a LARGE unsettled investigation mixing за, против and "
+                    "open questions, the author has NOT taken a position)")
+
+
 def review_draft(text, parent, branch, positions, neighbours=None,
-                 is_root=None):
+                 is_root=None, root_kind=None):
     """
     The pre-publication draft review (vault: ai-navigator-draft-review) — one
     LLM call that determines the draft's ACTUAL type, suggests ONE quality
@@ -174,13 +189,23 @@ def review_draft(text, parent, branch, positions, neighbours=None,
     draft against the topic's positions and passes no parent node, and telling
     the model «this is a new topic root» there made it judge a reply in the
     wrong frame entirely.
+    root_kind: which kind the author is opening (problem/argument/question/
+    proposal/exploration), meaningful only when is_root. 'problem' switches
+    step TYPE to the harm test — a problem is the one root that carries state,
+    so it is the one root judged by whether it states a harm; every other kind
+    is classified by form, exactly like a reply.
     branch: rows from db.topic_subtree(). positions: [{id, headline, composed}].
     Returns {"actual_type", "type_note", "quality_note",
              "verdict": "new|similar|covered|answered|countered",
              "node_id", "position_id", "note", "split"}
     """
     is_root = (parent is None) if is_root is None else bool(is_root)
-    type_vocab = _ROOT_KINDS_DESC if is_root else _REVIEW_TYPES
+    # Три рамки, не две: ответ, корень-проблема (тест на вред) и корень любого
+    # другого вида (классификация по видам). Вторую от третьей отличает только
+    # то, что у проблемы есть состояние, которое надо чем-то наполнять.
+    problem_root = is_root and (root_kind or "problem") == "problem"
+    type_vocab = (_ROOT_PROBLEM_TEST if problem_root
+                  else _ROOT_KINDS_DESC if is_root else _REVIEW_TYPES)
     parts = []
     if parent is not None:
         parts.append("The draft replies to this node:\n\n"
@@ -209,20 +234,22 @@ def review_draft(text, parent, branch, positions, neighbours=None,
             "OTHER PROBLEMS in the graph that look related to the draft, as "
             "[id] title: text. The draft is NOT currently filed under these:\n\n"
             + poi.wrap_user_text(nlist))
-    if is_root:
-        # Корень не выбирает вид — он проходит один тест. Автор уже нажал
-        # «новая проблема», так что вопрос не «чем это является», а «держит ли
-        # это состояние»: без заявленного вреда копить попытки решения не для
-        # чего, и наверху снова заводится тема, от которой ушли.
+    if problem_root:
+        # Автор выбрал вид «проблема» — значит вопрос не «чем это является»
+        # (он уже ответил), а «держит ли это состояние»: без заявленного вреда
+        # копить попытки решения не для чего, и наверху снова заводится тема,
+        # от которой ушли. Не пройденный тест — не отказ: вид рядом есть, и
+        # UI предложит завести это вопросом или предложением.
         step_type = (
             "1. TYPE: does the draft pass the PROBLEM test? actual_type is "
             "'problem' or 'not_problem'. In type_note, ONE sentence: for a "
             "problem — nothing to fix, leave it empty; for not_problem — what "
             "is missing (whose harm, at what scale) and how the author could "
-            "restate it as a harm, or that it belongs as a question or "
-            "proposal INSIDE an existing problem. Never scold: a person who "
-            "cannot yet name the harm is not doing anything wrong.\n")
+            "restate it as a harm, or which other root kind fits it better — "
+            "a question, a proposal or a plain thesis. Never scold: a person "
+            "who cannot yet name the harm is not doing anything wrong.\n")
     else:
+        # Корень-не-проблема и ответ судятся одинаково — по форме текста.
         step_type = (
             "1. TYPE: which type does the text's own form actually fit? Write "
             "actual_type and, in type_note, ONE sentence describing what the "
@@ -238,12 +265,17 @@ def review_draft(text, parent, branch, positions, neighbours=None,
             "consent. Never use 'exploration' for a short reply or for a text "
             "that clearly argues one side at length.\n")
     parts.append(
-        (f"The draft OPENS a new discussion. At the top of this graph stands "
-         f"a PROBLEM and nothing else: {type_vocab}"
+        (f"The draft OPENS a new discussion, and the author is opening it as "
+         f"a PROBLEM — the one root kind that carries state (causes, what has "
+         f"been tried and with what outcome, where the dispute runs), and so "
+         f"the one judged by a test rather than by form: {type_vocab}"
+         if problem_root else
+         f"The draft OPENS a new discussion and is filed under no problem, "
+         f"root kinds available: {type_vocab}"
          if is_root else
          f"The draft is a reply, types available: {type_vocab}")
         + f":\n\n{poi.wrap_user_text(text)}\n\n"
-        + ("Review it, judging the text on its own form:\n" if is_root else
+        + ("Review it, judging the text on its own form:\n" if problem_root else
            "Review it. You are NOT told what type the author declared — judge "
            "the text purely on its own form:\n")
         + step_type
@@ -279,7 +311,21 @@ def review_draft(text, parent, branch, positions, neighbours=None,
            "already states the SAME harm (set place_id to its id): then the "
            "draft belongs INSIDE it as a question, thesis or proposal, not as "
            "a second copy of the same problem. Never answer 'own_problem' "
-           "here — the draft already is a root.\n"
+           "here — the draft already is a root, and a problem at that.\n"
+           "In place_note, one sentence saying why — empty when 'here'.\n"
+           if problem_root else
+           "4. PLACEMENT: does this belong on its own at all? Default is "
+           "'here' — opening a standalone question, thesis, proposal or "
+           "exploration is normal and expected. Say otherwise ONLY on a clear "
+           "match:\n"
+           "   - 'elsewhere': one of the OTHER PROBLEMS listed above is "
+           "exactly what this draft is about, and it would be read by more "
+           "people as a reply inside it (set place_id to that problem's id);\n"
+           "   - 'own_problem': the draft actually states a HARM — who is "
+           "hurt, at what scale, and solutions are conceivable — so it would "
+           "be stronger opened as a PROBLEM, which carries a registry of what "
+           "has been tried;\n"
+           "   - 'here': anything else.\n"
            "In place_note, one sentence saying why — empty when 'here'.\n"
            if is_root else
            "5. PLACEMENT: is this the right place for the draft at all? "
@@ -302,7 +348,9 @@ def review_draft(text, parent, branch, positions, neighbours=None,
         "quality note, not homework. Empty string when the draft leaves no "
         "such gap.\n"
         + "Respond with ONLY JSON:\n"
-        + ('{"actual_type": "problem|not_problem", ' if is_root else
+        + ('{"actual_type": "problem|not_problem", ' if problem_root else
+           '{"actual_type": "argument|question|proposal|exploration", '
+           if is_root else
            '{"actual_type": "support|refute|qualify|question|proposal|'
            'exploration", ')
         + '"type_note": "one sentence, see above", '

@@ -1343,6 +1343,26 @@ async def topic_corpus(topic_root_id: int):
     return await db.topic_nodes(topic_root_id)
 
 
+@app.get("/api/topics/{topic_root_id}/board")
+async def topic_board(topic_root_id: int):
+    """Доска обсуждения: предложения и вопросы отдельными списками.
+
+    Оба вида уже жили в графе, но увидеть их можно было только развернув нужную
+    ветку дерева. Накопитель на странице проблемы — про то, что УЖЕ пробовали
+    (факты с исходом); предложение — про то, что ещё только предлагают, и
+    отдельного места у него не было. Открыто без входа, как и корпус.
+
+    Отдаётся для ЛЮБОГО корня, не только для проблемы: под вопросом и под
+    предложением тоже пишут предложения и вопросы.
+    """
+    node = await db.get_node(topic_root_id)
+    if node is None:
+        raise HTTPException(404, f"обсуждение {topic_root_id} не найдено")
+    if node.get("topic_root_id") != topic_root_id:
+        raise HTTPException(400, "доска собирается для корня обсуждения")
+    return await db.topic_board(topic_root_id)
+
+
 @app.get("/api/nodes/{node_id}/children")
 async def get_children(node_id: int, limit: int = 20, offset: int = 0):
     if await db.get_node(node_id) is None:
@@ -2074,7 +2094,7 @@ async def create_decision(body: DecisionIn, author=Depends(verified_author)):
         raise HTTPException(400, "пустой вопрос голосования")
     node = await db.get_node(body.topic_root_id)
     if node is None or node.get("topic_root_id") != body.topic_root_id:
-        raise HTTPException(400, "голосование привязывается к теме (корню дерева)")
+        raise HTTPException(400, "голосование привязывается к корню обсуждения")
     if await db.count_recent_decisions(author["id"], hours=1) >= DECISIONS_PER_HOUR:
         raise HTTPException(429, "слишком много голосований за час — подожди")
     return await db.create_decision(body.topic_root_id, q, created_by=author["id"])
@@ -2755,7 +2775,9 @@ class DraftReviewIn(BaseModel):
     text: str
     connect_to: int | None = None         # reply target (None = new topic root)
     edge_type: str | None = None          # reply type: support/refute/qualify/question
-    kind: str | None = None               # root type: argument/question
+    kind: str | None = None               # вид корня: problem (по умолчанию) /
+    #                                       argument / question / proposal /
+    #                                       exploration
     # насколько широко компаньон ищет место черновику: "near" — текущая тема и
     # несколько похожих проблем (по умолчанию, дёшево), "map" — шире по карте,
     # когда автор сам просит поискать
@@ -2775,9 +2797,11 @@ _REVIEW_CLEAN = {
 _PLACEMENTS = {"here", "elsewhere", "own_problem"}
 _REVIEW_TYPES = {"support", "refute", "qualify", "question",
                  "proposal", "exploration"}
-# Корень не выбирает вид: наверху стоит проблема (vault: problem-as-unit).
-# Навигатор отвечает по корню одним из двух вердиктов теста на вред.
+# У корня снова есть вид (2026-09-09). Проблема судится ТЕСТОМ на заявленный
+# вред (у неё одной есть состояние, которое нечем наполнить без вреда), все
+# остальные виды — обычной классификацией по форме, как ответы.
 _ROOT_VERDICTS = {"problem", "not_problem"}
+_ROOT_KINDS = {"argument", "question", "proposal", "exploration"}
 _SPLIT_TYPES = {"support", "refute", "qualify", "question", "proposal"}
 
 # The LLM classifies the draft's actual_type from the TEXT alone (vault:
@@ -2825,8 +2849,12 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         branch = await db.topic_subtree(root_id)
         positions = await db.list_positions(root_id)
         declared = body.edge_type or "support"
+        root_kind = None
     else:
-        declared = None                   # у корня вида нет — только тест
+        # Вид корня, заявленный автором. У проблемы сравнивать не с чем — там
+        # тест на вред; у остальных видов сравнение обычное, как у ответа.
+        root_kind = body.kind if body.kind in _ROOT_KINDS else "problem"
+        declared = None if root_kind == "problem" else root_kind
     # Соседние проблемы — то, без чего компаньон не может сказать «ты пишешь не
     # туда»: иначе он видит только ту тему, в которой автор уже стоит. Поиск
     # триграммный (suggest_problems), без LLM, поэтому дёшев; "map" лишь берёт
@@ -2834,7 +2862,13 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
     root_now = parent.get("topic_root_id") if parent else None
     neighbours = await db.suggest_problems(
         text, limit=8 if body.scope == "map" else 4, exclude_id=root_now)
-    cache_key = (body.connect_to, text, body.scope)
+    # Рамка входит в ключ: у корня-проблемы (тест на вред) и у корня любого
+    # другого вида промпты РАЗНЫЕ, и без этого переключение вида в форме
+    # доставало бы из кэша ответ на другой вопрос. Между собой не-проблемные
+    # виды рамку не меняют — там переключение по-прежнему бесплатно.
+    frame = "reply" if root_kind is None else (
+        "problem" if root_kind == "problem" else "root")
+    cache_key = (body.connect_to, text, body.scope, frame)
     result = _review_cache_get(cache_key)
     if result is None:
         # budget is charged only on a real LLM call — cache hits (the author
@@ -2847,18 +2881,23 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
                 pools_mod.review_draft, text, parent, branch,
                 [{"id": p["id"], "headline": p["headline"], "composed": p["composed"]}
                  for p in positions],
-                neighbours)
+                neighbours, root_kind=root_kind)
         except Exception:
             return dict(_REVIEW_CLEAN)    # fail-open: never stand in the way
         _review_cache_set(cache_key, result)
     out = dict(_REVIEW_CLEAN)
     actual = result.get("actual_type")
-    if body.connect_to is None:
-        # У корня один вопрос: заявлен ли вред. «not_problem» — не отказ, а
-        # предложение: дальше UI показывает, к какой проблеме это приложить,
-        # и всё равно даёт опубликовать.
+    if root_kind == "problem":
+        # У проблемы один вопрос: заявлен ли вред. «not_problem» — не отказ, а
+        # предложение: рядом в форме есть другие виды корня, и «отправить как
+        # есть» никуда не делось.
         if actual in _ROOT_VERDICTS and actual != "problem":
             out.update(type_ok=False, suggested_type="not_problem",
+                       type_note=str(result.get("type_note") or ""))
+    elif root_kind is not None:
+        # Корень не-проблема: обычное сравнение вида, как у ответа.
+        if actual in _ROOT_KINDS and actual != declared:
+            out.update(type_ok=False, suggested_type=actual,
                        type_note=str(result.get("type_note") or ""))
     elif actual in _REVIEW_TYPES and actual != declared:
         out.update(type_ok=False, suggested_type=actual,
@@ -2882,8 +2921,10 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         out.update(placement="elsewhere", place_id=place_id,
                    place_title=n.get("title") or (n.get("text") or "")[:60],
                    place_note=str(result.get("place_note") or ""))
-    elif placement == "own_problem" and body.connect_to is not None:
-        # для корня совет «заведи отдельную проблему» бессмыслен — он и так корень
+    elif placement == "own_problem" and root_kind != "problem":
+        # Для корня-проблемы совет «заведи отдельную проблему» бессмыслен — он
+        # и так корень, и так проблема. Для ответа и для корня другого вида
+        # это осмысленно: «тут заявлен вред, ему место в проблеме».
         out.update(placement="own_problem",
                    place_note=str(result.get("place_note") or ""))
     out["think"] = str(result.get("think") or "")

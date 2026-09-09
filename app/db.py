@@ -3635,3 +3635,59 @@ async def topic_nodes(topic_root_id):
             ORDER BY n.poi_score DESC NULLS LAST, n.id
             """, topic_root_id)
     return [dict(r) for r in rows]
+
+
+async def topic_board(topic_root_id):
+    """Доска обсуждения: ПРЕДЛОЖЕНИЯ и ВОПРОСЫ отдельными списками.
+
+    Оба вида уже лежали в графе, но увидеть их можно было только развернув
+    нужную ветку дерева. Накопитель (`interventions`) — про то, что УЖЕ
+    пробовали в реальности, это факты; предложение — про то, что ещё только
+    предлагают сделать, и места у него не было вовсе.
+
+    Принадлежность берётся через `node_topics` (истина принадлежности), а не
+    по скаляру `topic_root_id` — иначе довод, принесённый из другой проблемы,
+    в доску не попадёт.
+
+    Порядок — ПО ВРЕМЕНИ, а не по PoI. Предложения по одной проблеме
+    взаимоисключающи, и сортировка числом читалась бы как «вот правильное»
+    (то же решение, что и для детей узла: seed-problems-first-echelon).
+
+    Атомы разбора (`atom_group`) исключены: они куски чужого текста, у них своя
+    витрина внутри разбора.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT n.id, n.text, n.kind, n.poi_score, n.created_at,
+                   n.retracted_at, n.retract_note,
+                   a.name AS author, a.color AS author_color,
+                   a.is_service AS author_is_service,
+                   (a.username IS NULL AND NOT a.is_service) AS author_is_seed,
+                   (SELECT count(*) FROM edges e
+                    JOIN nodes cn ON cn.id = e.source_id
+                    WHERE e.target_id = n.id AND cn.deleted_at IS NULL)
+                       AS reply_count,
+                   (SELECT count(*) FROM reactions r
+                    WHERE r.node_id = n.id AND r.stance = 'agree')
+                       AS agree,
+                   (SELECT count(*) FROM reactions r
+                    WHERE r.node_id = n.id AND r.stance = 'disagree')
+                       AS disagree
+            FROM node_topics nt
+            JOIN nodes n ON n.id = nt.node_id
+            LEFT JOIN authors a ON a.id = n.author_id
+            WHERE nt.topic_root_id = $1
+              AND n.kind IN ('proposal', 'question')
+              AND n.atom_group IS NULL
+              AND n.deleted_at IS NULL
+              AND n.id <> $1                 -- сам корень в доску не входит
+            ORDER BY n.created_at, n.id
+            """, topic_root_id)
+    out = {"proposals": [], "questions": []}
+    for r in rows:
+        d = dict(r)
+        key = "proposals" if d["kind"] == "proposal" else "questions"
+        out[key].append(d)
+    return out

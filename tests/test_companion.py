@@ -54,6 +54,11 @@ def client(monkeypatch):
     # кеш разбора живёт в модуле и переживает тест: без сброса следующий тест с
     # тем же черновиком получил бы чужой заготовленный ответ
     main._REVIEW_CACHE.clear()
+    # то же и со счётчиком «ИИ-запросов в минуту»: он в модуле и ключом берёт
+    # id автора, а после wipe id повторяется. Тесты складывались в одну
+    # корзину, и стоило добавить пару вызовов — падал не тот тест, который их
+    # добавил, а следующий, с 429 вместо ответа. Сбрасываем.
+    main._llm_calls.clear()
     # бюджет списывается через тот же пул, что и остальное приложение —
     # TestClient поднимет его заново в своём цикле на старте
     db.DATABASE_URL = TEST_DB
@@ -90,6 +95,7 @@ def service_client(monkeypatch):
 
     uid = asyncio.run(prepare())
     main._REVIEW_CACHE.clear()
+    main._llm_calls.clear()
     db.DATABASE_URL = TEST_DB
     with TestClient(main.app) as c:
         assert c.post("/api/auth/login",
@@ -128,17 +134,95 @@ def test_placement_elsewhere_only_for_offered_problems(client, monkeypatch):
 
 
 @needs_db
-def test_own_problem_ignored_for_a_root(client, monkeypatch):
-    """«Заведи отдельную проблему» бессмысленно советовать корню — он и есть корень."""
+def test_own_problem_ignored_for_a_problem_root(client, monkeypatch):
+    """«Заведи отдельную проблему» бессмысленно советовать проблеме — она и есть
+    корень, и уже проблема. А вот корню ДРУГОГО вида это осмысленно: «тут
+    заявлен вред, ему место в проблеме с накопителем попыток»."""
     _stub_review(monkeypatch, {
         "actual_type": "argument", "type_note": "", "quality_note": "",
         "verdict": "new", "node_id": None, "position_id": None, "note": "",
         "split": None, "placement": "own_problem", "place_id": None,
-        "place_note": "тянет на свою тему", "think": "",
+        "place_note": "тут заявлен вред", "think": "",
     })
     r = client.post("/api/draft/review",
-                    json={"text": "Совсем другая проблема", "kind": "argument"})
+                    json={"text": "Совсем другая проблема", "kind": "problem"})
     assert r.json()["placement"] == "here"
+
+    from app import main as main_mod
+    main_mod._REVIEW_CACHE.clear()
+    r = client.post("/api/draft/review",
+                    json={"text": "Совсем другая проблема", "kind": "question"})
+    assert r.json()["placement"] == "own_problem"
+
+
+@needs_db
+def test_root_kind_is_compared_again(client, monkeypatch):
+    """Виды корня вернулись (2026-09-09): проблема проходит ТЕСТ на вред, а
+    вопрос/предложение/тезис/разбор сравниваются по форме, как ответы."""
+    from app import main as main_mod
+
+    # 1. Проблема: вердикт not_problem — предложение сменить вид, не запрет.
+    _stub_review(monkeypatch, {
+        "actual_type": "not_problem", "type_note": "вреда не видно",
+        "quality_note": "", "verdict": "new", "node_id": None,
+        "position_id": None, "note": "", "split": None, "placement": "here",
+        "place_id": None, "place_note": "", "think": "",
+    })
+    out = client.post("/api/draft/review",
+                      json={"text": "Что вообще такое справедливость?",
+                            "kind": "problem"}).json()
+    assert out["type_ok"] is False
+    assert out["suggested_type"] == "not_problem"
+
+    # 2. Тот же текст как ВОПРОС — рамка другая, значит и кэш другой: модель
+    #    зовут заново и она классифицирует по видам.
+    main_mod._REVIEW_CACHE.clear()
+    _stub_review(monkeypatch, {
+        "actual_type": "exploration", "type_note": "это скорее разбор",
+        "quality_note": "", "verdict": "new", "node_id": None,
+        "position_id": None, "note": "", "split": None, "placement": "here",
+        "place_id": None, "place_note": "", "think": "",
+    })
+    out = client.post("/api/draft/review",
+                      json={"text": "Что вообще такое справедливость?",
+                            "kind": "question"}).json()
+    assert out["type_ok"] is False
+    assert out["suggested_type"] == "exploration"
+
+    # 3. Вид совпал — молчим.
+    main_mod._REVIEW_CACHE.clear()
+    out = client.post("/api/draft/review",
+                      json={"text": "Что вообще такое справедливость?",
+                            "kind": "exploration"}).json()
+    assert out["type_ok"] is True
+    assert out["suggested_type"] is None
+
+
+@needs_db
+def test_root_frame_is_part_of_the_review_cache_key(client, monkeypatch):
+    """У проблемы и у вопроса РАЗНЫЕ промпты. Если рамка не в ключе кэша,
+    переключение вида в форме отдаёт ответ на другой вопрос."""
+    from app import pools as pools_mod
+
+    seen = []
+
+    def fake_review(text, parent, branch, positions, neighbours=None,
+                    is_root=None, root_kind=None):
+        seen.append(root_kind)
+        return {"actual_type": "problem", "type_note": "", "quality_note": "",
+                "verdict": "new", "node_id": None, "position_id": None,
+                "note": "", "split": None, "placement": "here",
+                "place_id": None, "place_note": "", "think": ""}
+
+    monkeypatch.setattr(pools_mod, "review_draft", fake_review)
+    body = {"text": "Один и тот же черновик"}
+    client.post("/api/draft/review", json={**body, "kind": "problem"})
+    client.post("/api/draft/review", json={**body, "kind": "question"})
+    assert seen == ["problem", "question"], seen
+    # а вот между собой не-проблемные виды рамку не меняют — второй раз модель
+    # не зовут, переключение остаётся бесплатным
+    client.post("/api/draft/review", json={**body, "kind": "proposal"})
+    assert seen == ["problem", "question"], seen
 
 
 @needs_db
