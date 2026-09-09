@@ -21,11 +21,22 @@
 
 set -euo pipefail
 
-RAILWAY=$HOME/.npm-global/bin/railway
-PROJECT=00000000-0000-0000-0000-000000000000
-ENVIRONMENT=production
-SERVICE=Postgres
-KEY="$HOME/.ssh/id_ed25519"          # без пароля: у cron нет ssh-agent
+# Идентификаторы прода живут в deploy.env — файле рядом со скриптом, которого
+# нет в гите. Пока они стояли прямо здесь, публичный репозиторий раздавал карту
+# инфраструктуры: какой проект, какое окружение, какой сервис и каким ключом к
+# нему ходит крон. Образец значений — deploy.env.example.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+[ -f "$HERE/deploy.env" ] || {
+  echo "⛔ нет $HERE/deploy.env — скопируй deploy.env.example и впиши свои значения" >&2
+  exit 1; }
+# shellcheck source=/dev/null
+. "$HERE/deploy.env"
+
+RAILWAY="${RAILWAY_BIN:?RAILWAY_BIN не задан в deploy.env}"
+PROJECT="${RAILWAY_PROJECT:?RAILWAY_PROJECT не задан в deploy.env}"
+ENVIRONMENT="${RAILWAY_ENVIRONMENT:-production}"
+KEY="${RAILWAY_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+SERVICE="${RAILWAY_SERVICE_DB:?RAILWAY_SERVICE_DB не задан в deploy.env}"
 
 DEST="${BACKUP_DIR:-$HOME/backups/db}"
 KEEP_DAYS="${BACKUP_KEEP_DAYS:-30}"

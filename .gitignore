@@ -15,3 +15,12 @@ uvicorn-agents.log
 companion-log.jsonl
 tools/agents/runs/
 tools/agents/*.log
+
+# Идентификаторы боевого развёртывания (проект/сервис/ключ Railway). Не секрет
+# сам по себе, но в публичном репозитории это карта инфраструктуры. Образец —
+# deploy.env.example, он в гите.
+deploy.env
+# Мой диалог с Gemini и Claude, из которого генерились варианты ответов
+# (tools/gen_variants.py). Рабочий материал автора, не код: черновые
+# формулировки и места, где модели галлюцинировали.
+tools/dialog.txt
