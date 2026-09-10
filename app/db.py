@@ -2441,12 +2441,31 @@ async def session_author(token):
                 RETURNING author_id
             )
             SELECT {', '.join('a.' + c.strip() for c in _AUTHOR_COLS.split(','))},
-                   a.email, a.email_verified, a.is_service
+                   a.email, a.email_verified, a.is_service, a.terms_version
             FROM sessions s
             JOIN authors a ON a.id = s.author_id
             WHERE s.token = $1 AND s.expires_at >= now()
             """, token, TOUCH_EVERY)
     return dict(row) if row else None
+
+
+async def accept_terms(author_id, version):
+    """Записать согласие с ТЕКУЩЕЙ редакцией условий.
+
+    Согласие спрашивалось только при регистрации, а сами условия по ним же
+    (п. 12) могут меняться, и существенные изменения обещано показывать при
+    входе. 10.09.2026 такое изменение и случилось — черновики стали храниться,
+    — а шести уже зарегистрированным сказать об этом было нечем.
+
+    Отметка времени переписывается: важно, когда человек согласился с ЭТОЙ
+    редакцией, а не когда впервые вообще.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE authors SET terms_version = $2, terms_accepted_at = now() "
+            "WHERE id = $1", author_id, version)
+        await _log(conn, "terms_accepted", {"version": version}, author_id)
 
 
 async def delete_session(token):

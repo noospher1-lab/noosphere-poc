@@ -158,6 +158,14 @@
   .guide .step .b { color: var(--ivory); font-weight: 600; }
   .guide .step p { margin: 3px 0 0; color: var(--dim); line-height: 1.55; }
 
+  /* полоса «условия изменились» — между шапкой и рабочей областью */
+  #termsBar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    padding: 9px 18px; background: rgba(224,184,120,.10);
+    border-bottom: 1px solid rgba(224,184,120,.34); font-size: 13px; }
+  #termsBar b { color: var(--bronze); }
+  #termsBar a { color: var(--bronze); }
+  #termsBar .spacer { flex: 1 1 auto; }
+
   /* empty-state / invitation blocks */
   .empty { max-width: 440px; margin: 8px auto; color: var(--dim);
     text-align: center; padding: 40px 12px; }
@@ -469,6 +477,12 @@
     <div id="authErr" class="muted" style="margin-top:8px"></div>
   </div>
 </div>
+
+<!-- Полоса «условия изменились». Пустая и невидимая, пока сравнивать нечего;
+     наполняется из tree.js, когда принятая человеком редакция отстала от
+     текущей. Это то самое «существенные изменения покажем при входе» из п. 12
+     самих условий — обещание было, показывать было нечем. -->
+<div id="termsBar" hidden></div>
 
 <div id="wrap">
   <div id="tree"><div class="muted" style="padding:10px">Загрузка…</div></div>

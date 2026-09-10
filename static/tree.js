@@ -186,18 +186,31 @@ function renderAuthUI() {
   }
 }
 
-// ---- фактическая высота шапки → --hdr.
+// ---- фактическая высота ВСЕГО, что стоит над рабочей областью → --hdr.
 // Карта позиционируется от неё (position:fixed). Высота непостоянна: на узком
-// экране шапка переносится на две-три строки, и на поворот телефона число
-// меняется — поэтому наблюдатель, а не разовый замер.
+// экране шапка переносится на две-три строки, на поворот телефона число
+// меняется, а под шапкой может появиться полоса «условия изменились» — поэтому
+// наблюдатель, а не разовый замер, и считаем сумму, а не одну шапку: иначе
+// карта залезала бы под полосу.
+let hdrObserver = null;
 function trackHeaderHeight() {
   const h = document.querySelector("header");
   if (!h) return;
-  const apply = () => document.documentElement.style.setProperty(
-    "--hdr", Math.round(h.getBoundingClientRect().height) + "px");
+  const bar = $("#termsBar");
+  const apply = () => {
+    let px = h.getBoundingClientRect().height;
+    if (bar && !bar.hidden) px += bar.getBoundingClientRect().height;
+    document.documentElement.style.setProperty("--hdr", Math.round(px) + "px");
+  };
   apply();
-  if (window.ResizeObserver) new ResizeObserver(apply).observe(h);
-  addEventListener("orientationchange", () => setTimeout(apply, 150));
+  // Наблюдатель ставится ОДИН раз: функцию зовут повторно, когда полоса
+  // появляется или уходит, и каждый вызов заводил бы ещё один.
+  if (!hdrObserver && window.ResizeObserver) {
+    hdrObserver = new ResizeObserver(apply);
+    hdrObserver.observe(h);
+    if (bar) hdrObserver.observe(bar);
+    addEventListener("orientationchange", () => setTimeout(apply, 150));
+  }
 }
 
 // ---- присутствие: сколько всего зарегистрировано и сколько здесь сейчас.
@@ -228,6 +241,60 @@ function plural(n, one, few, many) {
 async function loadMe() {
   try { ME = await api("/api/auth/me"); } catch (_) { ME = null; }
   renderAuthUI();
+  termsNotice();
+}
+
+// «Существенные изменения покажем при входе» — это обещание стоит в самом п. 12
+// условий, но выполнить его было нечем: согласие спрашивалось один раз при
+// регистрации, сервер не знал, какую редакцию человек читал, а клиент не знал
+// текущую. Теперь знают оба, и разошедшиеся версии дают эту полосу.
+//
+// Полоса не блокирует работу: закрыть площадку человеку, который не успел
+// дочитать, — не то же самое, что сообщить ему. Но и молча проставить согласие
+// нельзя: «прочитал» нажимает он сам.
+async function termsNotice() {
+  const bar = $("#termsBar");
+  if (!bar) return;
+  bar.hidden = true;
+  if (!ME) return;
+  let cfg;
+  try { cfg = await api("/api/config"); } catch (_) { return; }
+  const current = cfg && cfg.terms_version;
+  if (!current || ME.terms_version === current) return;
+
+  bar.innerHTML = "";
+  const t = el("span");
+  t.appendChild(el("b", null, "Условия участия изменились. "));
+  t.appendChild(document.createTextNode(
+    "С 10 сентября черновики и твой разговор с ИИ до публикации сохраняются "
+    + "на сервере и видны оператору. "));
+  const link = el("a", null, "Прочитать условия →");
+  link.href = "/tos.html";
+  link.target = "_blank";
+  link.rel = "noopener";
+  t.appendChild(link);
+  bar.appendChild(t);
+  bar.appendChild(el("div", "spacer"));
+
+  const ok = el("button", "mini", "прочитал, согласен");
+  ok.onclick = async () => {
+    ok.disabled = true;
+    try {
+      await api("/api/account/terms", { method: "POST" });
+      ME.terms_version = current;
+      bar.hidden = true;
+      // Пересчитать сразу: полоса ушла, и без этого карта осталась бы
+      // опущенной на её высоту — наблюдатель на display:none не срабатывает.
+      trackHeaderHeight();
+      toast("спасибо — согласие записано");
+    } catch (e) {
+      ok.disabled = false;
+      toast("ошибка: " + e.message);
+    }
+  };
+  bar.appendChild(ok);
+  bar.hidden = false;
+  trackHeaderHeight();          // полоса меняет высоту шапки — пересчитать
 }
 
 // Вход и регистрация — два режима одной формы, а не одна форма с полями

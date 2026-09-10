@@ -226,7 +226,11 @@ PUBLIC_URL = os.environ.get("PUBLIC_URL", "http://localhost:8000").rstrip("/")
 # Версия условий, под которой регистрируются сейчас. Меняется вместе с
 # текстом tos.html: без версии запись «согласился» через год не говорит,
 # с чем именно человек согласился.
-TERMS_VERSION = os.environ.get("TERMS_VERSION", "2026-07-21")
+# Редакция условий. Меняется, когда меняется то, о чём человек соглашался:
+# 10.09.2026 — черновики и разговор с ИИ стали храниться на сервере. Кто
+# принимал прошлую редакцию, увидит уведомление при входе (п. 12 самих условий
+# это и обещает).
+TERMS_VERSION = os.environ.get("TERMS_VERSION", "2026-09-10")
 
 SESSION_COOKIE = "session"
 SESSION_DAYS = 30
@@ -795,6 +799,21 @@ async def resend_verification(request: Request, body: ResendIn | None = None):
     return {"ok": True}
 
 
+@app.post("/api/account/terms")
+async def accept_terms(author=Depends(current_author)):
+    """Согласиться с текущей редакцией условий.
+
+    Раньше согласие спрашивалось ровно один раз — при регистрации. Сами условия
+    (п. 12) обещают показывать существенные изменения при входе, но показывать
+    было нечем: сервер не знал, какую редакцию человек видел, а клиент не знал
+    текущую. Теперь знают оба.
+    """
+    if not author:
+        raise HTTPException(401, "нужен вход")
+    await db.accept_terms(author["id"], TERMS_VERSION)
+    return {"ok": True, "terms_version": TERMS_VERSION}
+
+
 @app.post("/api/auth/logout")
 async def logout(request: Request, response: Response):
     token = request.cookies.get(SESSION_COOKIE)
@@ -917,7 +936,7 @@ async def meter_llm_usage(request: Request, call_next):
 async def config():
     """What the front-end needs to know about this instance. Only flags —
     never keys or tokens: this is unauthenticated."""
-    return {"dev_tools": DEV_TOOLS}
+    return {"dev_tools": DEV_TOOLS, "terms_version": TERMS_VERSION}
 
 
 @app.get("/api/stats")
