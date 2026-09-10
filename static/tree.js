@@ -654,8 +654,8 @@ function seedBadge(node) {
 
 // ---- tree render
 function relLabel(type) {
-  return { support: "за", refute: "против", qualify: "уточн.", question: "вопрос",
-           proposal: "предл.", exploration: "разбор", atom: "атом",
+  return { support: "за", refute: "против", qualify: "уточнение", question: "вопрос",
+           proposal: "предложение", exploration: "разбор", atom: "атом",
            root: "обсуждение",
            undercut: "не доказывает", attribution: "атрибуция" }[type] || type;
 }
@@ -809,7 +809,7 @@ function renderTree() {
     // совпадают («вопрос» есть и там, и там) — тем более их надо развести.
     const kinds = el("div", "legend");
     kinds.append(
-      el("span", "legend-key", "что это:"),
+      el("span", "legend-key", "верхняя ветка — что это:"),
       el("span", "rel problem", "проблема"),
       el("span", "rel question", "вопрос"),
       el("span", "rel proposal", "предложение"),
@@ -818,12 +818,12 @@ function renderTree() {
     );
     const rels = el("div", "legend");
     rels.append(
-      el("span", "legend-key", "как связано с тем, к чему прикреплено:"),
+      el("span", "legend-key", "вложенная — как относится к тому, под чем стоит:"),
       el("span", "rel support", "за"),
       el("span", "rel refute", "против"),
-      el("span", "rel qualify", "уточн."),
+      el("span", "rel qualify", "уточнение"),
       el("span", "rel question", "вопрос"),
-      el("span", "rel proposal", "предл."),
+      el("span", "rel proposal", "предложение"),
       el("span", "rel exploration", "разбор"),
       el("span", "rel undercut", "не доказывает"),
     );
@@ -833,8 +833,11 @@ function renderTree() {
     // НЕ .legend-key: у него flex: 0 0 auto, и длинная фраза не переносится, а
     // уезжает за правый край. Здесь нужен обычный переносимый абзац.
     const note = el("div", "legend-note",
-      "«не доказывает» — вывод может быть верен, но вот этот кусок его не "
-      + "доказывает. Проверка на прочность, а не возражение автору.");
+      "Вопрос, предложение и разбор стоят в обеих строках не по ошибке: ими "
+      + "можно открыть обсуждение, а можно ответить внутри чужого. "
+      + "«Не доказывает» — единственное, что стоит пояснить: вывод может быть "
+      + "верен, но вот этот кусок его не доказывает. Проверка на прочность, "
+      + "а не возражение автору.");
     tree.append(kinds, rels, note);
   }
   if (!TOPICS.length) {
