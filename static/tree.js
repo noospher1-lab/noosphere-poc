@@ -2710,20 +2710,27 @@ function newTopicForm(prefill) {
   // Второй путь, а не запасной выход: завести своё сверху можно любым видом,
   // но ответ ВНУТРИ уже стоящей проблемы почти всегда прочитают больше людей
   // — там есть, к чему относиться. Предложение, не гейт.
-  const other = el("div", "muted");
-  other.style.marginTop = "10px";
-  other.style.fontSize = "12.5px";
-  other.appendChild(document.createTextNode(
-    "Это про проблему, которая уже стоит? Ответ внутри неё прочитают скорее. "));
-  const toMap = el("a", "", "Найти проблему на карте →");
-  toMap.href = "#";
-  toMap.onclick = (e) => {
-    e.preventDefault();
-    showView("map");
-    toast("выбери проблему и ответь внутри неё — вопросом, тезисом или предложением");
-  };
-  other.appendChild(toMap);
-  card.appendChild(other);
+  //
+  // И только когда таким проблемам есть чем быть. На пустом графе эта строка
+  // отправляла на пустую карту: «найди проблему» — а их ноль. Ровно тот тупик,
+  // из-за которого сегодня вернули выбор вида, только зайдённый с другой
+  // стороны. Первому человеку показывать нечего — он и есть первый.
+  if (TOPICS.some((t) => t.kind === "problem")) {
+    const other = el("div", "muted");
+    other.style.marginTop = "10px";
+    other.style.fontSize = "12.5px";
+    other.appendChild(document.createTextNode(
+      "Это про проблему, которая уже стоит? Ответ внутри неё прочитают скорее. "));
+    const toMap = el("a", "", "Найти проблему на карте →");
+    toMap.href = "#";
+    toMap.onclick = (e) => {
+      e.preventDefault();
+      showView("map");
+      toast("выбери проблему и ответь внутри неё — вопросом, тезисом или предложением");
+    };
+    other.appendChild(toMap);
+    card.appendChild(other);
+  }
   card.appendChild(hint);
   d.appendChild(card);
   ta.focus();
