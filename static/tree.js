@@ -52,6 +52,14 @@ let selectedId = null;
 // ответ на фрагмент: форма ответа регистрирует здесь свой хэндл, а всплывающее
 // меню выделения через него ставит тип ребра, якорь и чип «в ответ на …».
 let replyHandle = null;
+// Поколение отрисовки правой панели. Она собирается из нескольких запросов, и
+// часть блоков дописывается ПОЗЖЕ, когда их ответ пришёл. Без счётчика
+// запоздавший ответ от прошлого узла дописывался в панель, собранную уже для
+// другого: на экране висело два «Голосование по этой проблеме», а при двух
+// одновременных selectNode — вся панель целиком в двух экземплярах.
+// Поколение поднимает каждый, кто забирает панель себе: selectNode, форма
+// создания и пустая панель.
+let detailGen = 0;
 
 // ---- hints: contextual tips, toggled from the header, remembered per browser
 let HINTS = localStorage.getItem("noo_hints") !== "off";   // on by default
@@ -80,6 +88,7 @@ function toggleHints() {
 
 // The empty detail panel doubles as the "how it works" guide when hints are on.
 function renderEmptyDetail() {
+  detailGen++;                  // см. newTopicForm: панель забираем себе
   const d = $("#detail");
   d.innerHTML = "";
   d.appendChild(HINTS ? guidePanel() : shortEmpty());
@@ -894,12 +903,6 @@ function errText(e) {
 }
 
 // ---- detail panel
-// Поколение отрисовки панели. Панель собирается из нескольких запросов, и
-// часть блоков дописывается ПОЗЖЕ, когда их ответ пришёл. Без этого счётчика
-// запоздавший ответ от прошлого узла дописывался в панель, которую собрали уже
-// для другого — на экране появлялось два блока «Голосование по этой проблеме».
-let detailGen = 0;
-
 async function selectNode(id) {
   const gen = ++detailGen;
   selectedId = id;
@@ -1019,7 +1022,15 @@ async function selectNode(id) {
   // страница состояния — только у проблемы: причины, масштаб, накопитель
   // решений, атрибуции. У вопроса, предложения, тезиса и разбора состояния
   // нет по устройству — они живут деревом доводов и позициями.
-  if (isRoot && node.kind === "problem") d.appendChild(await problemCard(id));
+  if (isRoot && node.kind === "problem") {
+    const pcard = await problemCard(id);
+    // Сторож нужен и ЗДЕСЬ, а не только после первого запроса: это второй и
+    // последний await после очистки панели. Без него два одновременных
+    // selectNode дописывали в одну панель по очереди, и на экране висело по
+    // два «Проблема · состояние», «Решения на столе» и так далее.
+    if (gen !== detailGen) return;
+    d.appendChild(pcard);
+  }
   // Голосование знает свой корень, а корень о голосовании молчал: войти в
   // него можно было только через отдельный раздел, зная, что оно вообще есть.
   // Привязывается голосование к ЛЮБОМУ корню (см. /api/decisions), поэтому и
@@ -2394,6 +2405,7 @@ async function votesForProblem(rootId, rootKind) {
 
 function newTopicForm(prefill) {
   selectedId = null;
+  detailGen++;                  // панель теперь наша: запоздавший selectNode её не тронет
   renderTree();
   const d = $("#detail");
   d.innerHTML = "";
