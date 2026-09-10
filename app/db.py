@@ -253,6 +253,37 @@ _SCHEMA = [
         updated_at TIMESTAMPTZ DEFAULT now()
     )
     """,
+    # РАЗГОВОР С ИИ ДО ПУБЛИКАЦИИ. Решение ai-navigator-draft-review сделало его
+    # эфемерным: черновик и разбор жили в браузере автора и умирали вместе с
+    # публикацией. На время закрытого теста с живыми людьми этого мало — понять,
+    # где человек споткнулся, постфактум нечем: опубликованный текст показывает
+    # результат и молчит о том, что ему предшествовало.
+    #
+    # Поэтому здесь лежат ВСЕ обращения к ИИ вокруг черновика: разбор
+    # (`review`), разговор с компаньоном (`companion`) и быстрая проверка места
+    # (`precheck`). Файловый лог COMPANION_LOG остаётся, но на Railway файл
+    # внутри контейнера не переживает передеплой — наблюдать по нему нельзя.
+    #
+    # CASCADE, а не SET NULL: удаление аккаунта стирает и его черновики
+    # (vault: data-deletion-model — аккаунт стираем; безотзывная лицензия
+    # покрывает ОПУБЛИКОВАННОЕ, а черновик человек не публиковал).
+    """
+    CREATE TABLE IF NOT EXISTS companion_log (
+        id          SERIAL PRIMARY KEY,
+        author_id   INTEGER REFERENCES authors(id) ON DELETE CASCADE,
+        created_at  TIMESTAMPTZ DEFAULT now(),
+        kind        TEXT NOT NULL,        -- review | companion | precheck
+        connect_to  INTEGER,              -- узел-родитель (NULL = корень)
+        root_kind   TEXT,                 -- вид корня, когда черновик открывает
+        draft       TEXT,                 -- текст черновика на этот ход
+        history     JSONB,                -- реплики разговора до этого хода
+        result      JSONB                 -- что ответил ИИ
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS companion_log_author_idx "
+    "ON companion_log (author_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS companion_log_time_idx "
+    "ON companion_log (created_at DESC)",
     # Opaque session tokens (HTTP-only cookie holds the token, nothing else).
     """
     CREATE TABLE IF NOT EXISTS sessions (
@@ -3634,6 +3665,73 @@ async def topic_nodes(topic_root_id):
             WHERE nt.topic_root_id = $1 AND n.deleted_at IS NULL
             ORDER BY n.poi_score DESC NULLS LAST, n.id
             """, topic_root_id)
+    return [dict(r) for r in rows]
+
+
+# ------------------------------------------------- разговор с ИИ до публикации
+async def add_companion_entry(author_id, kind, draft, result,
+                              connect_to=None, root_kind=None, history=None):
+    """Записать один ход разговора автора с ИИ вокруг черновика.
+
+    Пишется на КАЖДОЕ обращение, а не только на последнее: интересен не итог, а
+    путь — что ИИ сказал, что человек ответил, правил ли он текст после.
+
+    Ошибка записи не должна ронять сам разговор, ради которого лог и ведётся,
+    поэтому вызывающий оборачивает это в try/except.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "INSERT INTO companion_log "
+            "(author_id, kind, connect_to, root_kind, draft, history, result) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+            author_id, kind, connect_to, root_kind, draft,
+            json.dumps(history or [], ensure_ascii=False),
+            json.dumps(result or {}, ensure_ascii=False))
+
+
+async def list_companion_log(limit=200, author_id=None):
+    """Последние обращения к ИИ, новые сверху. Для наблюдения за закрытым тестом."""
+    pool = _pool_or_raise()
+    limit = max(1, min(1000, int(limit)))
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT c.id, c.created_at, c.kind, c.connect_to, c.root_kind,
+                   c.draft, c.history, c.result,
+                   c.author_id, a.username, a.name AS author
+            FROM companion_log c
+            LEFT JOIN authors a ON a.id = c.author_id
+            WHERE ($1::int IS NULL OR c.author_id = $1)
+            ORDER BY c.created_at DESC, c.id DESC
+            LIMIT $2
+            """, author_id, limit)
+    out = []
+    for r in rows:
+        d = dict(r)
+        for f in ("history", "result"):
+            if isinstance(d[f], str):
+                try:
+                    d[f] = json.loads(d[f])
+                except ValueError:
+                    pass
+        out.append(d)
+    return out
+
+
+async def companion_log_authors():
+    """Кто вообще говорил с ИИ и сколько раз — оглавление для наблюдателя."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT c.author_id, a.username, a.name AS author,
+                   count(*) AS entries, max(c.created_at) AS last_at
+            FROM companion_log c
+            LEFT JOIN authors a ON a.id = c.author_id
+            GROUP BY c.author_id, a.username, a.name
+            ORDER BY max(c.created_at) DESC
+            """)
     return [dict(r) for r in rows]
 
 

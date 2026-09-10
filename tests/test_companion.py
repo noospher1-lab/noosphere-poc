@@ -226,6 +226,73 @@ def test_root_frame_is_part_of_the_review_cache_key(client, monkeypatch):
 
 
 @needs_db
+def test_every_ai_turn_is_written_down(client, monkeypatch):
+    """Разговор с ИИ до публикации больше не эфемерен (2026-09-09).
+
+    Раньше он жил в браузере автора и умирал вместе с публикацией: понять
+    постфактум, где человек споткнулся, было нечем — опубликованный текст
+    показывает результат и молчит о том, что ему предшествовало. На время
+    закрытого теста с живыми людьми это и понадобилось.
+    """
+    from app import main as main_mod
+
+    token = os.environ.get("ADMIN_TOKEN")
+    if not token:
+        pytest.skip("ADMIN_TOKEN не задан — админский маршрут не проверить")
+    head = {"X-Admin-Token": token}
+
+    _stub_review(monkeypatch, {
+        "actual_type": "not_problem", "type_note": "вреда не видно",
+        "quality_note": "", "verdict": "new", "node_id": None,
+        "position_id": None, "note": "", "split": None, "placement": "here",
+        "place_id": None, "place_note": "", "think": "кого это задевает?",
+    })
+    r = client.post("/api/draft/review",
+                    json={"text": "Все спорят про политику", "kind": "problem"})
+    assert r.status_code == 200, r.text
+
+    rows = client.get("/api/dev/companion", headers=head).json()
+    assert len(rows) == 1, rows
+    e = rows[0]
+    assert e["kind"] == "review"
+    assert e["draft"] == "Все спорят про политику"
+    assert e["root_kind"] == "problem"
+    # пишем то, что УВИДЕЛ автор, а не сырой ответ модели
+    assert e["result"]["suggested_type"] == "not_problem"
+    assert e["result"]["think"] == "кого это задевает?"
+
+    # разговор с компаньоном ложится туда же, вместе с историей реплик
+    main_mod._REVIEW_CACHE.clear()
+    from app import pools as pools_mod
+    monkeypatch.setattr(pools_mod, "companion_reply",
+                        lambda *a, **kw: {"reply": "назови, кто теряет",
+                                          "suggestion": ""})
+    r = client.post("/api/draft/companion", json={
+        "text": "Все спорят про политику",
+        "history": [{"role": "author", "text": "а почему не проблема?"}],
+    })
+    assert r.status_code == 200, r.text
+
+    rows = client.get("/api/dev/companion", headers=head).json()
+    assert len(rows) == 2                      # новые сверху
+    assert rows[0]["kind"] == "companion"
+    assert rows[0]["history"] == [{"role": "author", "text": "а почему не проблема?"}]
+    assert rows[0]["result"]["reply"] == "назови, кто теряет"
+
+    # оглавление наблюдателя видит одного человека и два обращения
+    who = client.get("/api/dev/companion/authors", headers=head).json()
+    assert len(who) == 1 and who[0]["entries"] == 2
+
+
+@needs_db
+def test_companion_log_is_admin_only(client):
+    """Черновики тестеров — не публичное чтение, в отличие от корпуса."""
+    assert client.get("/api/dev/companion").status_code == 403
+    assert client.get("/api/dev/companion",
+                      headers={"X-Admin-Token": "wrong-token"}).status_code == 403
+
+
+@needs_db
 def test_think_question_reaches_the_author(client, monkeypatch):
     _stub_review(monkeypatch, {
         "actual_type": "argument", "type_note": "", "quality_note": "",

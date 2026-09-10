@@ -2710,6 +2710,20 @@ async def dev_get_dialogue(author_id: int):
     return _dlg_meta(d)
 
 
+# Разговоры с ИИ вокруг черновика. Тренажёрный диалог выше живёт своей таблицей
+# и своей страницей; здесь — то, что раньше не хранилось вовсе: разбор, спор с
+# компаньоном и precheck. Ради этого и заводилось: во время закрытого теста
+# видеть, где человек спотыкается, ДО того как он опубликовал (или бросил).
+@app.get("/api/dev/companion", dependencies=[Depends(admin_only)])
+async def dev_companion_log(limit: int = 200, author_id: int | None = None):
+    return await db.list_companion_log(limit=limit, author_id=author_id)
+
+
+@app.get("/api/dev/companion/authors", dependencies=[Depends(admin_only)])
+async def dev_companion_authors():
+    return await db.companion_log_authors()
+
+
 @app.get("/api/dev/balance-requests", dependencies=[Depends(admin_only)])
 async def dev_balance_requests(include_resolved: bool = False):
     """The queue of people waiting for a starting balance. Under admin_only
@@ -2757,13 +2771,17 @@ async def precheck_draft(topic_root_id: int, body: PrecheckIn,
     pid = result.get("position_id")
     known = {p["id"]: p for p in positions}
     if result.get("verdict") not in ("similar", "covered") or pid not in known:
+        await _log_ai(author, "precheck", body.text, dict(_PRECHECK_NEW),
+                      connect_to=topic_root_id)
         return _PRECHECK_NEW
-    return {
+    out = {
         "verdict": result["verdict"],
         "position_id": pid,
         "headline": known[pid]["headline"],
         "note": result.get("note", ""),
     }
+    await _log_ai(author, "precheck", body.text, out, connect_to=topic_root_id)
+    return out
 
 
 # Draft review (vault: ai-navigator-draft-review): the navigator's full
@@ -2942,6 +2960,10 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         out.update(verdict=verdict, position_id=pid,
                    headline=known[pid]["headline"],
                    note=str(result.get("note") or ""))
+    # Пишем то, что реально УВИДЕЛ автор (out), а не сырой ответ модели: сырой
+    # проходит проверку id и вида, и разбирать потом надо именно показанное.
+    await _log_ai(author, "review", text, out,
+                  connect_to=body.connect_to, root_kind=root_kind)
     return out
 
 
@@ -2980,6 +3002,22 @@ COMPANION_MAX_TURNS = int(os.environ.get("COMPANION_MAX_TURNS", "25"))
 # рядом с сервером, а не таблица: модель данных и решение об эфемерности
 # остаются в силе, а выключается лог одной строкой перед открытой регистрацией.
 COMPANION_LOG = os.environ.get("COMPANION_LOG")
+
+
+# Лог в БАЗЕ — то, ради чего он вообще нужен на проде: файл внутри контейнера
+# Railway не переживает передеплой, и наблюдать по нему нельзя. Пишем каждое
+# обращение к ИИ вокруг черновика: разбор, разговор с компаньоном и precheck.
+# Ошибка записи не имеет права ронять разговор, ради которого лог и ведётся.
+async def _log_ai(author, kind, draft, result, connect_to=None,
+                  root_kind=None, history=None):
+    if not author:
+        return
+    try:
+        await db.add_companion_entry(
+            author["id"], kind, draft, result,
+            connect_to=connect_to, root_kind=root_kind, history=history)
+    except Exception:
+        log.warning("не удалось записать разговор с ИИ в базу", exc_info=True)
 
 
 def _log_companion(author, body, out):
@@ -3037,6 +3075,9 @@ async def draft_companion(body: CompanionIn, author=Depends(verified_author)):
         # проверка, это разговор, и его обрыв надо назвать вслух
         raise HTTPException(502, f"компаньон не ответил, попробуй ещё раз: {e}")
     _log_companion(author, body, out)
+    await _log_ai(author, "companion", body.text, out,
+                  connect_to=body.connect_to,
+                  history=[h.model_dump() for h in body.history])
     # Остаток ходов виден и автору, и самому компаньону: внезапный отказ на
     # одиннадцатом ходу читается как поломка, а не как правило.
     out["turns_left"] = max(0, COMPANION_MAX_TURNS - turns_used)
