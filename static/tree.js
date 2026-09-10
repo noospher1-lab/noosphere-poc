@@ -2808,10 +2808,43 @@ async function loadPositions(root, target) {
   try {
     const data = await api(`/api/positions/${root}`);
     target.innerHTML = "";
-    if (!data.positions.length) { target.appendChild(el("div", "muted", "нет позиций")); return; }
+    if (!data.positions.length) { renderNoPositions(root, target); return; }
     const byId = new Map(data.positions.map((p) => [p.id, p]));
     for (const p of data.positions) target.appendChild(positionCard(p, root, byId, data.links || []));
   } catch (e) { target.textContent = "ошибка: " + e.message; }
+}
+
+// Позиций ещё нет. Раньше их собирал сам сервер при первом чтении — и платил
+// за это общий ключ, кто бы страницу ни открыл, хоть не входя. Теперь это
+// заказ: его делает вошедший и со своего гранта, как «развить», «оспорить» и
+// «сделать вывод» рядом.
+function renderNoPositions(root, target) {
+  if (!ME) {
+    target.appendChild(el("div", "muted",
+      "Позиции ещё не собраны. Их сводит ИИ по просьбе участника — войди, "
+      + "чтобы собрать."));
+    return;
+  }
+  target.appendChild(el("div", "muted", "Позиции ещё не собраны."));
+  const act = el("div", "actions");
+  const btn = el("button", "mini", "собрать позиции");
+  btn.title = "вызов ИИ — оплачивается из твоего гранта";
+  btn.onclick = async () => {
+    btn.disabled = true; btn.textContent = "ИИ сводит доводы…";
+    try {
+      await api(`/api/positions/${root}/recompute`, { method: "POST" });
+      await loadPositions(root, target);
+      toast("позиции собраны");
+    } catch (e) {
+      btn.disabled = false; btn.textContent = "собрать позиции";
+      toast("ошибка: " + e.message);
+    }
+  };
+  act.appendChild(btn);
+  target.appendChild(act);
+  target.appendChild(el("div", "muted",
+    "Это вызов ИИ: он прочитает доводы и сведёт близкие в общие позиции. "
+    + "Списывается с твоего гранта."));
 }
 
 function positionCard(p, root, byId, links) {

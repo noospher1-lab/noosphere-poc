@@ -53,6 +53,7 @@ def client(monkeypatch):
     uid, root, other = asyncio.run(prepare())
     # кеш разбора живёт в модуле и переживает тест: без сброса следующий тест с
     # тем же черновиком получил бы чужой заготовленный ответ
+    main._login_calls.clear()   # см. ниже: тот же общий счётчик, ключ — IP
     main._REVIEW_CACHE.clear()
     # то же и со счётчиком «ИИ-запросов в минуту»: он в модуле и ключом берёт
     # id автора, а после wipe id повторяется. Тесты складывались в одну
@@ -96,6 +97,7 @@ def service_client(monkeypatch):
     uid = asyncio.run(prepare())
     main._REVIEW_CACHE.clear()
     main._llm_calls.clear()
+    main._login_calls.clear()
     db.DATABASE_URL = TEST_DB
     with TestClient(main.app) as c:
         assert c.post("/api/auth/login",

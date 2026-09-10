@@ -57,6 +57,8 @@ def client():
     uid, root = asyncio.run(prepare())
     main._REVIEW_CACHE.clear()
     main._llm_calls.clear()
+    # лимит попыток входа тоже общий и ключом берёт IP, а он у тестов один
+    main._login_calls.clear()
     db.DATABASE_URL = TEST_DB
     with TestClient(main.app) as c:
         r = c.post("/api/auth/login",

@@ -967,7 +967,21 @@ async def meter_llm_usage(request: Request, call_next):
     token = request.cookies.get(SESSION_COOKIE)
     author = await db.session_author(token) if token else None
     if author is None:
-        return response          # anonymous: nothing to bill
+        # ПРАВИЛО (Alex, 2026-09-10): трат без автора не бывает. Модель зовёт
+        # только вошедший и со своего баланса — все ИИ-маршруты стоят под
+        # verified_author + llm_budget.
+        #
+        # Значит попасть сюда можно только багом: где-то появился путь к модели
+        # мимо аккаунта. Раньше такая запись молча выбрасывалась — и именно
+        # поэтому кластеризация на анонимном чтении расходовала общий ключ
+        # незамеченной. Заводить строку без автора не будем (записать не на
+        # кого, и правило это запрещает), но и молчать нельзя.
+        log.error(
+            "ВЫЗОВ МОДЕЛИ БЕЗ АВТОРА: %s %s, вызовов %d, входных токенов %d. "
+            "Так быть не должно — значит появился путь к ИИ мимо аккаунта.",
+            request.method, request.url.path, len(sink),
+            sum(r.get("input_tokens", 0) for r in sink))
+        return response
     await _flush_usage(author["id"], sink, request.url.path)
     return response
 
@@ -1863,20 +1877,49 @@ _last_recluster: dict[int, float] = {}
 
 
 @app.get("/api/positions/{topic_root_id}")
-async def get_positions(topic_root_id: int, recompute: bool = False):
-    existing = await db.list_positions(topic_root_id)
+async def get_positions(topic_root_id: int):
+    """ЧИСТОЕ чтение: отдаёт то, что уже посчитано, и модель не зовёт.
+
+    Раньше на первом чтении темы этот маршрут запускал полную кластеризацию.
+    Граф открыт без входа (корпус для чтения), проверок бюджета тут нет — и
+    получалось, что любой человек, просто открывший проблему, тратил деньги
+    общего ключа. Записи об этом не оставалось: middleware при анонимном
+    запросе выбрасывает траты, потому что записать их не на кого.
+
+    Правило (Alex, 2026-09-10): трат без автора не бывает. Кластеризацию
+    заказывает вошедший, с баланса — POST …/recompute ниже. Так же устроены и
+    все соседние ручки позиций (развить, оспорить, вопрос, вывод): у каждой
+    verified_author + llm_budget. Эта одна из шести выбивалась.
+    """
+    return {
+        "positions": [await _position_payload(p) for p in await db.list_positions(topic_root_id)],
+        "links": await db.list_position_links(topic_root_id),
+    }
+
+
+@app.post("/api/positions/{topic_root_id}/recompute",
+          dependencies=[Depends(verified_author), Depends(llm_budget)])
+async def recompute_positions(topic_root_id: int):
+    """Собрать позиции заново — заказ, а не побочный эффект чтения.
+
+    Оплачивается грантом того, кто нажал: llm_budget проверяет и лимит в
+    минуту, и остаток на аккаунте, и привязывает ключ, на который спишется.
+    """
+    node = await db.get_node(topic_root_id)
+    if node is None or node.get("topic_root_id") != topic_root_id:
+        raise HTTPException(404, f"обсуждение {topic_root_id} не найдено")
     now = time.monotonic()
-    if recompute and existing and \
-            now - _last_recluster.get(topic_root_id, 0.0) < _RECLUSTER_COOLDOWN:
-        recompute = False                 # too soon — serve the existing view
-    if recompute or not existing:
-        _last_recluster[topic_root_id] = now
-        try:
-            await _recompute_positions(topic_root_id)
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(502, f"clustering failed: {e}")
+    if now - _last_recluster.get(topic_root_id, 0.0) < _RECLUSTER_COOLDOWN:
+        # Пересборка стоит денег и выдаёт почти то же самое: подряд её заказывать
+        # незачем. Не ошибка — отдаём то, что есть.
+        raise HTTPException(429, "позиции только что пересобирали — подожди минуту")
+    _last_recluster[topic_root_id] = now
+    try:
+        await _recompute_positions(topic_root_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"не удалось собрать позиции: {e}")
     return {
         "positions": [await _position_payload(p) for p in await db.list_positions(topic_root_id)],
         "links": await db.list_position_links(topic_root_id),

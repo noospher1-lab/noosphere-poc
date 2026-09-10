@@ -1161,7 +1161,12 @@ async function buildPoolGraph(refresh) {
   if (bar) bar.textContent = topic + (refresh ? ' · пересборка…' : ' · загрузка…');
   let data;
   try {
-    data = await (await fetch(`/api/positions/${currentTopicId}${refresh ? '?recompute=true' : ''}`)).json();
+    // ?recompute убран с GET: сборка позиций — заказ вошедшего, со своего
+    // гранта (POST …/recompute). Чтение модель больше не зовёт.
+    if (refresh) {
+      await fetch(`/api/positions/${currentTopicId}/recompute`, { method: 'POST' });
+    }
+    data = await (await fetch(`/api/positions/${currentTopicId}`)).json();
   } catch (e) { if (bar) bar.textContent = topic + ' · ошибка'; return; }
   if (data.detail) { if (bar) bar.textContent = topic + ' · ' + data.detail; return; }
   const positions = data.positions || [];
