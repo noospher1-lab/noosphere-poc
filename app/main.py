@@ -140,6 +140,54 @@ def _spawn(coro):
     t.add_done_callback(_bg_tasks.discard)
 
 
+async def _flush_usage(author_id, sink, endpoint):
+    """Посчитать стоимость собранных вызовов и записать их на автора.
+
+    Вынесено из middleware, потому что считать надо в двух местах: там — то,
+    что успело случиться внутри запроса, здесь — то, что доделала фоновая
+    задача уже после ответа.
+    """
+    if not sink or author_id is None:
+        return
+    for r in sink:
+        r["cost_usd"] = poi.cost_usd(
+            r["model"], r["input_tokens"], r["output_tokens"],
+            cache_read_tokens=r.get("cache_read_tokens", 0),
+            cache_write_tokens=r.get("cache_write_tokens", 0))
+    try:
+        await db.record_usage(author_id, sink, endpoint)
+    except Exception:
+        # учёт не имеет права ронять то, ради чего он ведётся
+        log.warning("не удалось записать траты (%s)", endpoint, exc_info=True)
+
+
+def _spawn_billed(author, endpoint, coro):
+    """Фоновая задача, чьи вызовы модели ЗАПИСЫВАЮТСЯ на её автора.
+
+    Траты собирал middleware: он ставит корзину в contextvar и высыпает её,
+    когда обработчик вернул ответ. Фоновая задача стартует внутри запроса, но
+    заканчивается ПОСЛЕ ответа — и её вызовы падали в корзину, которую уже
+    никто не читал. Так пропадала оценка PoI: самый частый вызов в системе,
+    один на каждый опубликованный текст, не попадал ни в статистику, ни в
+    грант аккаунта. Проверялось просто: 45 узлов с оценкой и ни одной записи
+    трат по /api/argument.
+
+    Здесь задача заводит СВОЮ корзину (contextvar в задаче — своя копия, чужой
+    он не мешает) и высыпает её сама, когда закончила.
+    """
+    author_id = author["id"] if author else None
+
+    async def billed():
+        sink = []
+        poi.current_usage.set(sink)
+        try:
+            return await coro
+        finally:
+            await _flush_usage(author_id, sink, endpoint)
+
+    return _spawn(billed())
+
+
 # each kind is judged by its own rubric — never by another kind's shape
 _SCORERS = {"question": poi.score_question, "proposal": poi.score_proposal,
             "exploration": poi.score_exploration, "detail": poi.score_detail}
@@ -920,15 +968,7 @@ async def meter_llm_usage(request: Request, call_next):
     author = await db.session_author(token) if token else None
     if author is None:
         return response          # anonymous: nothing to bill
-    for r in sink:
-        r["cost_usd"] = poi.cost_usd(
-            r["model"], r["input_tokens"], r["output_tokens"],
-            cache_read_tokens=r.get("cache_read_tokens", 0),
-            cache_write_tokens=r.get("cache_write_tokens", 0))
-    try:
-        await db.record_usage(author["id"], sink, request.url.path)
-    except Exception:
-        pass                     # metering must never break a working request
+    await _flush_usage(author["id"], sink, request.url.path)
     return response
 
 
@@ -1207,7 +1247,8 @@ async def post_attribution(intervention_id: int, body: AttributionIn,
         body.text.strip(), author_id=author["id"], kind="attribution",
         topic_root_id=iv["topic_root_id"], intervention_id=intervention_id)
     # оценивается как аргумент (претензия с истинностным значением), в фоне
-    _spawn(_score_later(node_id, body.text.strip(), "attribution"))
+    _spawn_billed(author, "фон:оценка (атрибуция)",
+                  _score_later(node_id, body.text.strip(), "attribution"))
     node = await db.get_node(node_id)
     node["author"] = author["name"]
     node["author_color"] = author["color"]
@@ -1498,9 +1539,11 @@ async def add_argument(arg: ArgumentIn, author=Depends(verified_author)):
     # в том же рейтинге выше — писавший знает рубрику изнутри.
     if not author.get("is_service"):
         if kind != "problem":
-            _spawn(_score_later(node_id, arg.text, kind, parent_text))
+            _spawn_billed(author, "фон:оценка",
+                          _score_later(node_id, arg.text, kind, parent_text))
         if kind == "argument":
-            _spawn(_assign_position_later(node_id, arg.text))
+            _spawn_billed(author, "фон:позиция",
+                          _assign_position_later(node_id, arg.text))
 
     node = await db.get_node(node_id)
     node["weight"] = 0.0                       # unscored contributes zero weight
@@ -1867,8 +1910,9 @@ async def continue_position(position_id: int, body: PositionArgIn,
     await db.add_edge(nid, await _rep_member(position_id, pos["topic_root_id"]), "qualify")
     # score with the DETAIL rubric against the position it develops (was being
     # scored as a plain argument, the wrong genre for a qualification)
-    _spawn(_score_later(nid, body.text, "detail",
-                        pos.get("composed") or pos.get("headline")))
+    _spawn_billed(author, "фон:оценка (уточнение)",
+                  _score_later(nid, body.text, "detail",
+                               pos.get("composed") or pos.get("headline")))
     return await _position_payload(pos)
 
 
@@ -1884,7 +1928,8 @@ async def branch_node(node_id: int, body: BranchIn, author=Depends(verified_auth
                             position_id=pid,
                             topic_root_id=parent.get("topic_root_id"))
     await db.add_edge(nid, node_id, "question" if kind == "question" else "qualify")
-    _spawn(_score_later(nid, body.text, kind, parent["text"]))
+    _spawn_billed(author, "фон:оценка (ветка)",
+                  _score_later(nid, body.text, kind, parent["text"]))
     pos = await db.get_position(pid) if pid else None
     return await _position_payload(pos) if pos else {"ok": True}
 
@@ -1940,7 +1985,8 @@ async def conclude_confirm(position_id: int, body: ConcludeConfirmIn,
                                     text, "conclusion", author_id=author["id"])
     await db.set_node_position(nid, new_pid)
     await db.add_position_link(new_pid, position_id, "conclusion")
-    _spawn(_score_later(nid, text))       # scored like any contribution
+    # оценивается как любой вклад
+    _spawn_billed(author, "фон:оценка (вывод)", _score_later(nid, text))
     return await _position_payload(await db.get_position(new_pid))
 
 
@@ -1972,8 +2018,8 @@ async def oppose_position(position_id: int, body: PositionArgIn,
     new_pid = await db.add_position(pos["topic_root_id"], body.text[:60], body.text, "oppose")
     await db.set_node_position(nid, new_pid)
     await db.add_position_link(new_pid, position_id, "oppose")
-    _spawn(_score_later(nid, body.text))
-    _spawn(_compose_later(new_pid, [body.text]))
+    _spawn_billed(author, "фон:оценка (контрдовод)", _score_later(nid, body.text))
+    _spawn_billed(author, "фон:сборка позиции", _compose_later(new_pid, [body.text]))
     return await _position_payload(await db.get_position(new_pid))
 
 
@@ -1992,7 +2038,9 @@ async def question_position(position_id: int, body: PositionArgIn,
                             position_id=position_id,
                             topic_root_id=pos["topic_root_id"])
     await db.add_edge(nid, rep_id, "question")
-    _spawn(_score_later(nid, body.text, "question", rep_node["text"] if rep_node else None))
+    _spawn_billed(author, "фон:оценка (вопрос)",
+                  _score_later(nid, body.text, "question",
+                               rep_node["text"] if rep_node else None))
     return await _position_payload(await db.get_position(position_id))
 
 
@@ -2733,6 +2781,15 @@ async def dev_get_dialogue(author_id: int):
 # и своей страницей; здесь — то, что раньше не хранилось вовсе: разбор, спор с
 # компаньоном и precheck. Ради этого и заводилось: во время закрытого теста
 # видеть, где человек спотыкается, ДО того как он опубликовал (или бросил).
+# Куда ушли деньги. Сводка «потрачено всего» отвечает на «сколько», а на «куда»
+# ответить было нечем — и именно поэтому годами не замечали, что фоновые вызовы
+# не записываются вовсе. Разбивка по маршрутам показывает такое сразу.
+@app.get("/api/dev/usage", dependencies=[Depends(admin_only)])
+async def dev_usage(limit: int = 200):
+    return {"recent": await db.list_usage(limit),
+            "by_endpoint": await db.usage_by_endpoint()}
+
+
 @app.get("/api/dev/companion", dependencies=[Depends(admin_only)])
 async def dev_companion_log(limit: int = 200, author_id: int | None = None):
     return await db.list_companion_log(limit=limit, author_id=author_id)

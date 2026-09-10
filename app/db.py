@@ -1864,6 +1864,48 @@ async def stats_admin():
     }
 
 
+async def list_usage(limit=200):
+    """Последние вызовы модели: кто, куда, сколько токенов и почём.
+
+    Сводка на странице статистики отвечает «сколько всего», а на вопрос «куда
+    ушло» ответить было нечем. Особенно после того, как выяснилось, что фоновые
+    вызовы вообще не записывались: разбивка по endpoint — единственный способ
+    заметить такое, не читая код.
+    """
+    pool = _pool_or_raise()
+    limit = max(1, min(1000, int(limit)))
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT u.id, u.created_at, u.author_id, u.model, u.endpoint,
+                   u.input_tokens, u.output_tokens,
+                   u.cache_read_tokens, u.cache_write_tokens,
+                   u.cost_usd, u.shared_key,
+                   a.username, a.name AS author
+            FROM usage_events u
+            LEFT JOIN authors a ON a.id = u.author_id
+            ORDER BY u.created_at DESC, u.id DESC
+            LIMIT $1
+            """, limit)
+    return [dict(r) for r in rows]
+
+
+async def usage_by_endpoint():
+    """Та же правда, свёрнутая: по какому маршруту сколько ушло."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT coalesce(endpoint, '—') AS endpoint, count(*) AS calls,
+                   sum(input_tokens) AS input_tokens,
+                   sum(output_tokens) AS output_tokens,
+                   sum(cost_usd) AS cost_usd
+            FROM usage_events
+            GROUP BY 1 ORDER BY sum(cost_usd) DESC
+            """)
+    return [dict(r) for r in rows]
+
+
 async def record_usage(author_id, rows, endpoint=None):
     """Write one usage_event per LLM call made during a request."""
     if not rows:
