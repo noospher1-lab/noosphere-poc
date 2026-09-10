@@ -1249,7 +1249,7 @@ async def post_attribution(intervention_id: int, body: AttributionIn,
 
     Это НЕ правка факта: создаётся узел-аргумент kind='attribution' в теме
     проблемы, ссылающийся на запись. По нему затем бьют обычными рёбрами
-    (опровергнуть / «не доказывает» на участок) через /api/argument — атрибуция
+    (возразить / «не доказывает» на участок) через /api/argument — атрибуция
     оспорима, в этом её природа.
     """
     iv = await db.get_intervention(intervention_id)

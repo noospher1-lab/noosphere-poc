@@ -34,7 +34,7 @@ DATABASE_URL = os.environ.get(
 )
 
 # undercut («не доказывает») — целится в конкретное предложение (участок),
-# а не в узел целиком, чем и отличается от refute (опровергнуть). Именно ответ на
+# а не в узел целиком, чем и отличается от refute («против»). Именно ответ на
 # фрагмент делает различие REBUTS/UNDERCUTS различимым на практике.
 EDGE_TYPES = ("support", "refute", "qualify", "question",
               "proposal", "exploration", "atom", "undercut")
