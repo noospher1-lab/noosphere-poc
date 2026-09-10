@@ -33,7 +33,7 @@ DATABASE_URL = os.environ.get(
     "DATABASE_URL", "postgresql://noosphere:noosphere@localhost/noosphere"
 )
 
-# undercut (подорвать) — новый тип: целится в конкретное предложение (участок),
+# undercut («не доказывает») — целится в конкретное предложение (участок),
 # а не в узел целиком, чем и отличается от refute (опровергнуть). Именно ответ на
 # фрагмент делает различие REBUTS/UNDERCUTS различимым на практике.
 EDGE_TYPES = ("support", "refute", "qualify", "question",

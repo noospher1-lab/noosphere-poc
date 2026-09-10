@@ -287,7 +287,8 @@ async function loadVotes(id) {
 const KIND_LABEL = { problem: "проблема", argument: "тезис", question: "вопрос",
   proposal: "предложение", exploration: "разбор", attribution: "атрибуция" };
 const REL_LABEL = { support: "за", refute: "против", qualify: "уточнение",
-  question: "вопрос", undercut: "подрыв", proposal: "предложение", exploration: "разбор" };
+  question: "вопрос", undercut: "не доказывает", proposal: "предложение",
+  exploration: "разбор" };
 
 function renderActivity(activity) {
   const box = $("#activityList");

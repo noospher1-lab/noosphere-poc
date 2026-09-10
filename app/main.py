@@ -908,7 +908,7 @@ class ArgumentIn(BaseModel):
     kind: str | None = "argument"         # "question" marks a question node (a root can be one)
     title: str | None = None              # required when this opens a new topic (connect_to is None)
     # Ответ на фрагмент: якорь на участок текста цели (только с connect_to).
-    # None = ответ на весь узел. undercut (подорвать) без якоря не принимается.
+    # None = ответ на весь узел. undercut («не доказывает») без якоря не берётся.
     anchor: AnchorIn | None = None
     # Рубрика — только для новой темы (connect_to is None). Ответу внутри
     # ветки она не нужна: он наследует рубрику корня.
@@ -1249,7 +1249,7 @@ async def post_attribution(intervention_id: int, body: AttributionIn,
 
     Это НЕ правка факта: создаётся узел-аргумент kind='attribution' в теме
     проблемы, ссылающийся на запись. По нему затем бьют обычными рёбрами
-    (опровергнуть/подорвать участок) через /api/argument — атрибуция всегда
+    (опровергнуть / «не доказывает» на участок) через /api/argument — атрибуция
     оспорима, в этом её природа.
     """
     iv = await db.get_intervention(intervention_id)
@@ -1509,9 +1509,11 @@ async def add_argument(arg: ArgumentIn, author=Depends(verified_author)):
                 raise HTTPException(400, "цитата якоря не совпадает с текстом по смещениям")
             anchor_start, anchor_end, anchor_quote = a.start, a.end, a.quote
             anchor_hash = db.text_hash(t)
-        # подрыв целится в конкретное предложение — без якоря это refute
+        # «не доказывает» (undercut) целится в конкретное предложение — без
+        # якоря это обычное «против»: спор с выводом, а не с его опорой
         if edge_type == "undercut" and anchor_hash is None:
-            raise HTTPException(400, "подрыв (undercut) целится в участок — нужен якорь")
+            raise HTTPException(
+                400, "«не доказывает» целится в участок — нужен якорь")
 
     # 1. persist the node RIGHT AWAY, unscored (poi_score = NULL)
     node_id = await db.add_node(arg.text, author_id=author["id"], kind=kind,

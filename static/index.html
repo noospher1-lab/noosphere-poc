@@ -139,6 +139,10 @@
     border-bottom: 1px solid var(--line); }
   .legend-key { color: var(--dim2); font-size: 11px; align-self: center;
     flex: 0 0 auto; }
+  /* пояснение под легендой: обычный абзац, а не флекс-элемент — иначе длинная
+     фраза не переносится, а уезжает за правый край панели */
+  .legend-note { color: var(--dim2); font-size: 11px; line-height: 1.5;
+    padding: 0 8px 10px; }
 
   /* contextual hints (toggle in header) */
   .hint { background: rgba(224,184,120,.08); border: 1px solid rgba(224,184,120,.32);

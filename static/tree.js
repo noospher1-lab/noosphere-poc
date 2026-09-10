@@ -657,7 +657,7 @@ function relLabel(type) {
   return { support: "за", refute: "против", qualify: "уточн.", question: "вопрос",
            proposal: "предл.", exploration: "разбор", atom: "атом",
            root: "обсуждение",
-           undercut: "подрыв", attribution: "атрибуция" }[type] || type;
+           undercut: "не доказывает", attribution: "атрибуция" }[type] || type;
 }
 const KIND_CHIP = { question: "вопрос", proposal: "предложение", exploration: "разбор" };
 // Интерфейс русский, а ключи рубрик приходят с сервера латиницей (poi.py) —
@@ -825,9 +825,17 @@ function renderTree() {
       el("span", "rel question", "вопрос"),
       el("span", "rel proposal", "предл."),
       el("span", "rel exploration", "разбор"),
-      el("span", "rel undercut", "подрыв"),
+      el("span", "rel undercut", "не доказывает"),
     );
-    tree.append(kinds, rels);
+    // Единственная метка, которую по названию не угадать: остальные семь
+    // говорят сами за себя. «Против» и «не доказывает» легко перепутать, а
+    // разница между ними — вся причина, по которой второе вообще есть.
+    // НЕ .legend-key: у него flex: 0 0 auto, и длинная фраза не переносится, а
+    // уезжает за правый край. Здесь нужен обычный переносимый абзац.
+    const note = el("div", "legend-note",
+      "«не доказывает» — вывод может быть верен, но вот этот кусок его не "
+      + "доказывает. Проверка на прочность, а не возражение автору.");
+    tree.append(kinds, rels, note);
   }
   if (!TOPICS.length) {
     tree.appendChild(el("div", "muted",
@@ -1740,7 +1748,8 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
 
 // ---- ответ на фрагмент: выделение текста → типизированное действие с якорем
 const FRAG_ACTIONS = [
-  ["refute", "Опровергнуть"], ["undercut", "Подорвать"], ["qualify", "Уточнить"],
+  ["refute", "Опровергнуть"], ["undercut", "Показать, что не доказывает"],
+  ["qualify", "Уточнить"],
   ["support", "Поддержать"], ["question", "Спросить"],
 ];
 let fragPopEl = null;
@@ -2262,9 +2271,12 @@ function replyForm(parentId) {
   card.appendChild(ta);
   const act = el("div", "actions");
   const typeSel = el("select");
-  // подорвать (undercut) целится в участок — доступно только с якорем (см. ниже)
+  // «не доказывает» (undercut) целится в участок — доступно только с якорем.
+  // Слово выбрано Alex 10.09 вместо «подрыв»: тот был калькой с undercut и
+  // по-русски читался как диверсия. Здесь спорят не с выводом, а с опорой:
+  // вывод может быть верен, но ЭТОТ кусок его не доказывает.
   for (const [v, l] of [["support", "за"], ["refute", "против"], ["qualify", "уточнение"],
-                        ["undercut", "подорвать участок"], ["question", "вопрос"],
+                        ["undercut", "не доказывает этот участок"], ["question", "вопрос"],
                         ["proposal", "предложение"], ["exploration", "разбор"]])
     typeSel.appendChild(new Option(l, v));
   const send = el("button", "primary", "отправить");
@@ -2320,12 +2332,13 @@ function replyForm(parentId) {
   ta.addEventListener("input", rememberDraft);
   typeSel.addEventListener("change", rememberDraft);
 
-  // форма показывает якорь и, для «подорвать», требует его
+  // форма показывает якорь и, для «не доказывает», требует его
   const showAnchor = (a, type) => {
     anchor = a;
     chip.innerHTML = "";
     chip.append("в ответ на: «" + shortLabel(a.quote, 90) + "»");
     const x = el("span", "x", "✕"); x.title = "убрать привязку к участку";
+    // без якоря «не доказывает» бессмысленно: оно целится в участок
     x.onclick = () => { clearAnchor(); if (typeSel.value === "undercut") typeSel.value = "refute"; };
     chip.appendChild(x);
     chip.style.display = "";
@@ -2349,7 +2362,7 @@ function replyForm(parentId) {
 
   const doSend = async (text) => {
     if (typeSel.value === "undercut" && !anchor) {
-      toast("«подорвать» целится в участок — выдели фрагмент текста"); return;
+      toast("«не доказывает» целится в участок — выдели фрагмент текста"); return;
     }
     if (!await confirmIrreversible()) return;
     try {
