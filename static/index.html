@@ -159,6 +159,13 @@
   .guide .step p { margin: 3px 0 0; color: var(--dim); line-height: 1.55; }
 
   /* полоса «условия изменились» — между шапкой и рабочей областью */
+  /* ВАЖНО: правило ниже задаёт display по id, а это перебивает встроенное
+     правило браузера [hidden]{display:none} — селектор по id специфичнее.
+     Без этой строки атрибут hidden не работает вовсе: элемент.hidden = true
+     ставится, а полоса остаётся на экране. Так и было: кнопка «согласен»
+     ничего не убирала, а на обычной странице внизу шапки висела пустая
+     полоска с рамкой и отступами. */
+  #termsBar[hidden] { display: none; }
   #termsBar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
     padding: 9px 18px; background: rgba(224,184,120,.10);
     border-bottom: 1px solid rgba(224,184,120,.34); font-size: 13px; }
