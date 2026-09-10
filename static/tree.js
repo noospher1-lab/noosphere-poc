@@ -3026,7 +3026,7 @@ function showView(v) {
   const map = v === "map";
   $("#mapView").style.display = map ? "" : "none";
   $("#wrap").style.display = map ? "none" : "";
-  $("#tagline").textContent = map ? "карта проблем" : "дерево проблем";
+  $("#tagline").textContent = map ? "карта обсуждений" : "дерево обсуждений";
   document.querySelectorAll("#viewSeg .seg-i").forEach(b =>
     b.classList.toggle("on", b.dataset.view === v));
   if (map) {

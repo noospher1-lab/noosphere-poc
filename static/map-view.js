@@ -9,14 +9,17 @@
 // нужны тому, кто зашёл почитать одну ветку.
 
 const MapView = (() => {
-  // «4 тем» читалось как недоделка ещё и грамматически: слово меняем на
-  // «проблема», а раз меняем — сразу со склонением, иначе выйдет «4 проблем».
+  // Считаем ОБСУЖДЕНИЯ, а не проблемы: запрос карты (db.map_topics) фильтра по
+  // виду не имеет и отдаёт любой корень — вопрос, предложение, тезис, разбор.
+  // Пока наверху могла стоять только проблема, разницы не было; с 09.09 она
+  // есть, и «0 проблем» под списком, где лежит вопрос, — просто неправда.
+  // Склонение обязательно, иначе выйдет «4 обсуждений».
   const plural = (n) => {
     const d = n % 100, u = n % 10;
-    if (d > 10 && d < 20) return n + " проблем";
-    if (u === 1) return n + " проблема";
-    if (u >= 2 && u <= 4) return n + " проблемы";
-    return n + " проблем";
+    if (d > 10 && d < 20) return n + " обсуждений";
+    if (u === 1) return n + " обсуждение";
+    if (u >= 2 && u <= 4) return n + " обсуждения";
+    return n + " обсуждений";
   };
   let host = null, loaded = false, facets = null, hooks = {};
   let WS = new Set();                       // что уже в рабочем дереве
@@ -34,7 +37,7 @@ const MapView = (() => {
           <b class="seg-i" data-m="catalog">каталог</b>
         </span>
         <span class="btn mv-fx">☰ фильтры<span class="badge mv-fxn" style="display:none"></span></span>
-        <input type="search" class="mv-q" placeholder="Поиск по проблемам, тегам и странам…" />
+        <input type="search" class="mv-q" placeholder="Поиск по обсуждениям, тегам и странам…" />
         <select class="mv-sort">
           <option value="nodes">сначала активные</option>
           <option value="people">больше участников</option>
@@ -125,8 +128,8 @@ const MapView = (() => {
     ctx.clearRect(0, 0, cv.clientWidth, cv.clientHeight);
     const zoomedOut = view.k < 0.55;
     host.querySelector(".mv-level").innerHTML = zoomedOut
-      ? "уровень: <b>направления</b> · приблизь, чтобы увидеть проблемы"
-      : "уровень: <b>проблемы</b>";
+      ? "уровень: <b>направления</b> · приблизь, чтобы увидеть обсуждения"
+      : "уровень: <b>обсуждения</b>";
 
     for (const d of (host._ring || DOMAINS)) {
       const p = toScreen({ x: d.cx, y: d.cy });
@@ -247,14 +250,12 @@ const MapView = (() => {
       ? a.title.localeCompare(b.title, "ru") : b[sortBy] - a[sortBy]);
 
     if (!MAP_TOPICS.length) {
-      // Кнопка называется «+ Создать» с 2026-09-09: наверху может стоять не
-      // только проблема. Карта при этом остаётся картой ПРОБЛЕМ — рубрику и
-      // географию несут они, — поэтому зовём завести именно проблему.
-      box.innerHTML = `<div class="mv-none">Проблем пока нет. Заведи первую — кнопка «+ Создать» сверху, вид «проблема».</div>`;
+      // Ни проблем, ни вопросов, ни чего-либо ещё: карта отдаёт любые корни.
+      box.innerHTML = `<div class="mv-none">Здесь пока пусто — ни одного обсуждения. Заведи первое кнопкой «+ Создать» сверху.</div>`;
       return;
     }
     if (!out.length) {
-      box.innerHTML = `<div class="mv-none">Ничего не нашлось. Сними часть фильтров или заведи проблему здесь.</div>`;
+      box.innerHTML = `<div class="mv-none">Ничего не нашлось. Сними часть фильтров — или заведи своё кнопкой «+ Создать».</div>`;
       return;
     }
     box.innerHTML = out.map(t => {
