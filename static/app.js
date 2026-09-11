@@ -476,9 +476,33 @@ async function renderAll() {
       });
     }
   });
-  links.forEach((l, i) => allEdges.push({
-    id: 'pl' + i, source: l.cause, target: l.effect, relation: 'CAUSES', thesis: '',
-  }));
+  // ОБОСНОВАНИЕ связи — ответ в обсуждении следствия, из которого связь
+  // родилась. Раскладчик ставит его веткой справа от следствия, и рядом с
+  // проблемой-причиной слева это читается как одна и та же запись дважды.
+  // По смыслу же это аргумент САМОЙ связи, поэтому оно встаёт НА связь:
+  // причина —порождает→ обоснование —за→ следствие. Свою ветку (спор о
+  // связи) обоснование уводит за собой.
+  const byId = new Map(allNodes.map((n) => [n.id, n]));
+  const kids = new Map();
+  for (const e of allEdges) (kids.get(e.target) || kids.set(e.target, []).get(e.target)).push(e.source);
+  links.forEach((l, i) => {
+    const c = byId.get(l.cause), ef = byId.get(l.effect), j = l.node != null ? byId.get(l.node) : null;
+    if (j && j !== ef && j !== c) {
+      const tx = (c.x + ef.x) / 2, ty = ef.y, tz = ef.z;
+      const dx = tx - j.x, dy = ty - j.y, dz = tz - j.z;
+      const stack = [j.id], moved = new Set();
+      while (stack.length) {
+        const id = stack.pop();
+        if (moved.has(id)) continue;
+        moved.add(id);
+        const n = byId.get(id); n.x += dx; n.y += dy; n.z += dz;
+        for (const k of kids.get(id) || []) stack.push(k);
+      }
+      allEdges.push({ id: 'pl' + i, source: l.cause, target: j.id, relation: 'CAUSES', thesis: '' });
+    } else {
+      allEdges.push({ id: 'pl' + i, source: l.cause, target: l.effect, relation: 'CAUSES', thesis: '' });
+    }
+  });
   installGraph(allNodes, allEdges, true);
   fitCamera(allNodes);
 }
@@ -638,7 +662,8 @@ function buildAxis() {
     el.className = 'axis-label t';
     el.textContent = 'причины → следствия · время →';
     document.body.appendChild(el);
-    axisLabels.push({ el, world: new THREE.Vector3(x1, y - 4, 0) });
+    // ниже линии, а не на высоте узлов — иначе наезжает на крайний правый узел
+    axisLabels.push({ el, world: new THREE.Vector3(x1, y - 12, 0) });
     return;
   }
   const base = new THREE.Mesh(
