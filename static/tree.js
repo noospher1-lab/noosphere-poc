@@ -1608,8 +1608,8 @@ const TYPE_LABEL = { support: "за", refute: "против", qualify: "уточ
 // callbacks wire "switch type", "go to the node", "support the position",
 // "post as is" and "cancel"; editing the draft and resending re-reviews it.
 function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
-                                   switchLabel, getText, setText, connectTo,
-                                   rootTest }) {
+                                   onCause, switchLabel, getText, setText,
+                                   connectTo, rootTest }) {
   hint.innerHTML = "";
   hint.style.display = "";
   hint.className = "card";
@@ -1718,6 +1718,50 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
     const nt = el("button", "mini", "завести отдельной проблемой");
     nt.onclick = () => { hint.style.display = "none"; newTopicForm(getText && getText()); };
     actions.appendChild(nt);
+  } else if (rev.placement === "cause" && onCause) {
+    // ПРИЧИНА. Ответ соглашается, что вред есть, и называет ему причину
+    // уровнем выше — это не «за» и не «против», а связь «Б порождает А».
+    // Уровень нигде не хранится: он читается из таких связей. Ответ
+    // публикуется как обычно и становится ОБОСНОВАНИЕМ связи — спор о ней
+    // идёт под ним. Прежде чем заводить новую проблему, предлагаем сойтись
+    // к уже существующей: иначе у одной первопричины будет 50 копий.
+    hint.appendChild(el("div", "section-title", "ты называешь причину этой проблемы"));
+    if (rev.place_note) hint.appendChild(el("div", "muted", rev.place_note));
+    const cbox = el("div", "causebox");
+    let pick = null;                                  // id существующей или null = новая
+    const rows = [];
+    const mark = () => rows.forEach(({ row, id }) => row.classList.toggle("on", id === pick));
+    for (const m of (rev.cause_matches || [])) {
+      const row = el("div", "d");
+      row.appendChild(el("span", "t", m.title));
+      row.appendChild(el("span", "m", "   · уже есть — связать с ней"));
+      row.onclick = () => { pick = m.id; mark(); };
+      rows.push({ row, id: m.id });
+      cbox.appendChild(row);
+    }
+    const nrow = el("div", "d");
+    nrow.appendChild(el("span", "t", "новая проблема: "));
+    const tIn = el("input");
+    tIn.type = "text"; tIn.value = rev.cause_title || "";
+    tIn.placeholder = "заголовок проблемы-причины";
+    tIn.onfocus = () => { pick = null; mark(); };
+    nrow.appendChild(tIn);
+    nrow.onclick = () => { pick = null; mark(); };
+    rows.push({ row: nrow, id: null });
+    cbox.appendChild(nrow);
+    mark();
+    hint.appendChild(cbox);
+    hint.appendChild(el("div", "muted",
+      "ответ опубликуется здесь и станет обоснованием связи — спорить с ней "
+      + "будут под ним; у той проблемы появится «следствие», у этой — «причина»"));
+    const link = el("button", "mini", "опубликовать и связать как причину");
+    link.onclick = () => {
+      const title = tIn.value.trim();
+      if (pick == null && !title) { toast("дай заголовок проблеме-причине"); tIn.focus(); return; }
+      hint.style.display = "none";
+      onCause(pick != null ? { cause_id: pick } : { title });
+    };
+    actions.appendChild(link);
   }
 
   if (rev.quality_note) {
@@ -1991,6 +2035,38 @@ async function problemCard(nodeId) {
     body.appendChild(el("div", "section-title", "Причины и составные части"));
     body.appendChild(el("div", "causes", p.causes));
   }
+  // Связи с другими проблемами: «Б порождает А». Уровень нигде не хранится —
+  // он читается отсюда: причины — выше, следствия — ниже, а цепочка ведёт к
+  // проблемам, у которых причин пока не названо. Каждая связь — спорное
+  // утверждение с обоснованием-узлом; «оспорено» считается по рёбрам под ним.
+  const links = p.links || { causes: [], effects: [] };
+  if (links.causes.length || links.effects.length) {
+    const lb = el("div", "prob-block");
+    if (links.causes.length) {
+      lb.appendChild(el("div", "section-title", "Причины · проблемы уровнем выше"));
+      for (const l of links.causes) lb.appendChild(problemLinkRow(l, "cause"));
+    }
+    if (links.effects.length) {
+      const t = el("div", "section-title", "Следствия · что эта проблема порождает");
+      if (links.causes.length) t.style.marginTop = "10px";
+      lb.appendChild(t);
+      for (const l of links.effects) lb.appendChild(problemLinkRow(l, "effect"));
+    }
+    const chain = (p.chain || []).filter((c) => c.depth > 1 || c.cycle);
+    if (chain.length) {
+      const ch = el("div", "chain");
+      ch.appendChild(el("span", "m", "цепочка выше: "));
+      for (const c of chain) {
+        const a = el("span", "t" + (c.cycle ? " cyc" : ""),
+                     "↑".repeat(c.depth) + " " + (c.title || shortLabel(c.text, 50))
+                     + (c.cycle ? " (замкнутый круг)" : ""));
+        a.onclick = () => selectNode(c.id);
+        ch.appendChild(a);
+      }
+      lb.appendChild(ch);
+    }
+    body.appendChild(lb);
+  }
   // Масштаб — где встречается и в каких объёмах. Строками: один регион, одна
   // цифра, свой источник у каждой. Старый сплошной абзац (scale_note/url)
   // показываем только пока строк нет — данные, записанные до разделения.
@@ -2055,6 +2131,31 @@ async function problemCard(nodeId) {
     card.appendChild(foot);
   }
   return card;
+}
+
+// связь «Б порождает А» одной строкой: та проблема, кто заявил, обоснование
+// (узел, под которым идёт спор о связи) и сводка этого спора
+function problemLinkRow(l, side) {
+  const row = el("div", "plink");
+  const head = el("div", "pl-head");
+  const t = el("span", "pl-title", (side === "cause" ? "↑ " : "↓ ")
+               + (l.problem_title || shortLabel(l.problem_text, 60)));
+  t.onclick = () => selectNode(side === "cause" ? l.cause_id : l.effect_id);
+  head.appendChild(t);
+  if (l.disputed) head.appendChild(el("span", "oc failure", "оспорено · " + l.disputed));
+  else if (l.supported) head.appendChild(el("span", "oc success", "поддержано · " + l.supported));
+  row.appendChild(head);
+  const meta = el("div", "pl-meta");
+  meta.append("связал: " + (l.author || "—"));
+  if (l.node_id) {
+    meta.append(" · ");
+    const j = el("a", null, l.node_retracted_at ? "обоснование (отозвано)" : "обоснование");
+    j.href = "#"; j.onclick = (e) => { e.preventDefault(); selectNode(l.node_id); };
+    meta.appendChild(j);
+    if (l.node_text) meta.appendChild(el("span", "q", " «" + shortLabel(l.node_text, 110) + "»"));
+  }
+  row.appendChild(meta);
+  return row;
 }
 
 // строка масштаба: регион — цифра — источник. Цифра не правится: её снимают и
@@ -2379,7 +2480,7 @@ function replyForm(parentId) {
     }
     if (!await confirmIrreversible()) return;
     try {
-      await api("/api/argument", {
+      const node = await api("/api/argument", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({
           text, connect_to: parentId, edge_type: typeSel.value,
@@ -2393,6 +2494,7 @@ function replyForm(parentId) {
       await fetchChildren(parentId);   // refresh just this branch
       await loadTopics();              // reply counts on roots may change
       selectNode(parentId);
+      return node;                     // нужен тому, кто свяжет его дальше
     } catch (e) { toast("ошибка: " + e.message); }
   };
 
@@ -2435,6 +2537,24 @@ function replyForm(parentId) {
         hint.style.display = "none";
         ta.value = "";
         await positionVote(pid, root, "agree");
+      },
+      // ответ назвал причину: публикуем его как обычно, затем связываем
+      // проблему-причину (существующую или новую) со следствием — этим
+      // корнем. Если публикация сорвалась, связывать нечего.
+      onCause: async (choice) => {
+        const node = await doSend(ta.value.trim());
+        if (!node) return;
+        try {
+          const link = await api(`/api/problems/${root}/causes`, {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ node_id: node.id, ...choice }),
+          });
+          const ct = (link.cause && link.cause.title) || "";
+          toast(link.existed ? "такая связь уже есть — твой ответ под ней"
+                             : "связано: «" + ct + "» → причина");
+          await loadTopics();          // новая проблема появляется в списке
+          selectNode(root);            // у следствия теперь виден блок «причины»
+        } catch (e) { toast("ответ опубликован, но связать не вышло: " + e.message); }
       },
       // two glued contributions, approved by the author → two sibling nodes
       onSplit: async (parts) => {

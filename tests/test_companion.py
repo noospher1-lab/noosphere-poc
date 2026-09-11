@@ -209,7 +209,7 @@ def test_root_frame_is_part_of_the_review_cache_key(client, monkeypatch):
     seen = []
 
     def fake_review(text, parent, branch, positions, neighbours=None,
-                    is_root=None, root_kind=None):
+                    is_root=None, root_kind=None, **kw):
         seen.append(root_kind)
         return {"actual_type": "problem", "type_note": "", "quality_note": "",
                 "verdict": "new", "node_id": None, "position_id": None,

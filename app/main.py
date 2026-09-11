@@ -1161,7 +1161,61 @@ async def read_problem(topic_root_id: int):
     problem = await db.get_problem(topic_root_id)
     problem["interventions"] = await db.list_interventions(topic_root_id)
     problem["kind"] = node.get("kind")
+    # связи с другими проблемами: причины (выше), следствия (ниже) и цепочка
+    # вверх до известных корней — уровень не хранится, он читается отсюда
+    problem["links"] = await db.problem_links_of(topic_root_id)
+    problem["chain"] = await db.problem_chain(topic_root_id)
     return problem
+
+
+class CauseIn(BaseModel):
+    node_id: int                         # ответ-обоснование в обсуждении следствия
+    cause_id: int | None = None          # существующая проблема-причина (схождение)
+    title: str | None = None             # …или заголовок новой проблемы-причины
+    text: str | None = None              # постановка новой (по умолчанию — текст ответа)
+
+
+@app.post("/api/problems/{effect_id}/causes")
+async def post_cause(effect_id: int, body: CauseIn, author=Depends(verified_author)):
+    """Заявить: «эту проблему порождает другая» (vault: drafts/problem-causal-links).
+
+    Связь рождается из ОТВЕТА: node_id — уже опубликованный узел в обсуждении
+    следствия, он и есть обоснование, под ним идёт спор о связи готовыми
+    типами. Связать вправе автор этого ответа: так у каждой связи гарантированно
+    есть текст, за который кто-то отвечает. Причина — либо существующая
+    проблема (cause_id; схождение важнее создания — иначе 50 копий одной
+    первопричины), либо новая (title), которая заводится и связывается одной
+    транзакцией. Уровень отсюда выводится, а не задаётся.
+    """
+    effect = await _problem_root_or_404(effect_id)
+    if effect.get("kind") != "problem":
+        raise HTTPException(400, "причины и следствия — только у проблем")
+    just = await db.get_node(body.node_id)
+    if just is None:
+        raise HTTPException(404, f"узел-обоснование {body.node_id} не найден")
+    if just.get("author_id") != author["id"]:
+        raise HTTPException(403, "связать может автор ответа-обоснования")
+    homes = {t["topic_root_id"] for t in await db.node_topics_of(body.node_id)}
+    if effect_id not in homes:
+        raise HTTPException(400, "обоснование должно стоять в обсуждении следствия")
+    if body.cause_id is not None:
+        if body.cause_id == effect_id:
+            raise HTTPException(400, "проблема не может быть причиной самой себя")
+        cause = await db.get_node(body.cause_id)
+        if (cause is None or cause.get("kind") != "problem"
+                or cause.get("topic_root_id") != body.cause_id):
+            raise HTTPException(404, f"проблема {body.cause_id} не найдена")
+        link = await db.add_problem_link(body.cause_id, effect_id,
+                                         node_id=body.node_id, author_id=author["id"])
+    else:
+        title = (body.title or "").strip()
+        if not title:
+            raise HTTPException(400, "нужен заголовок новой проблемы-причины или cause_id")
+        text = (body.text or "").strip() or just["text"]
+        link = await db.open_cause_problem(effect_id, title, text,
+                                           node_id=body.node_id, author_id=author["id"])
+    link["cause"] = await db.get_node(link["cause_id"])
+    return link
 
 
 @app.put("/api/problems/{topic_root_id}")
@@ -2928,12 +2982,15 @@ _REVIEW_CLEAN = {
     "quality_note": "", "verdict": "new", "node_id": None,
     "position_id": None, "headline": "", "target_text": "", "note": "",
     "split": None,
-    # размещение: сюда / в другую проблему / отдельным корнем
+    # размещение: сюда / в другую проблему / отдельным корнем / причиной
     "placement": "here", "place_id": None, "place_title": "", "place_note": "",
+    # «ты называешь причину этой проблемы»: заголовок для проблемы-причины и
+    # похожие уже существующие, чтобы сойтись к ним вместо копии
+    "cause_title": "", "cause_matches": [],
     # один вопрос автору — с него начинается разговор с компаньоном
     "think": "",
 }
-_PLACEMENTS = {"here", "elsewhere", "own_problem"}
+_PLACEMENTS = {"here", "elsewhere", "own_problem", "cause"}
 _REVIEW_TYPES = {"support", "refute", "qualify", "question",
                  "proposal", "exploration"}
 # У корня снова есть вид (2026-09-09). Проблема судится ТЕСТОМ на заявленный
@@ -2989,11 +3046,16 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         positions = await db.list_positions(root_id)
         declared = body.edge_type or "support"
         root_kind = None
+        # причину можно назвать только проблеме: у вопроса или тезиса
+        # «уровня выше» нет — им нечего порождать
+        root_node = parent if parent["id"] == root_id else await db.get_node(root_id)
+        in_problem = bool(root_node and root_node.get("kind") == "problem")
     else:
         # Вид корня, заявленный автором. У проблемы сравнивать не с чем — там
         # тест на вред; у остальных видов сравнение обычное, как у ответа.
         root_kind = body.kind if body.kind in _ROOT_KINDS else "problem"
         declared = None if root_kind == "problem" else root_kind
+        in_problem = False
     # Соседние проблемы — то, без чего компаньон не может сказать «ты пишешь не
     # туда»: иначе он видит только ту тему, в которой автор уже стоит. Поиск
     # триграммный (suggest_problems), без LLM, поэтому дёшев; "map" лишь берёт
@@ -3020,7 +3082,7 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
                 pools_mod.review_draft, text, parent, branch,
                 [{"id": p["id"], "headline": p["headline"], "composed": p["composed"]}
                  for p in positions],
-                neighbours, root_kind=root_kind)
+                neighbours, root_kind=root_kind, in_problem=in_problem)
         except Exception:
             return dict(_REVIEW_CLEAN)    # fail-open: never stand in the way
         _review_cache_set(cache_key, result)
@@ -3065,6 +3127,23 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         # и так корень, и так проблема. Для ответа и для корня другого вида
         # это осмысленно: «тут заявлен вред, ему место в проблеме».
         out.update(placement="own_problem",
+                   place_note=str(result.get("place_note") or ""))
+    elif placement == "cause" and in_problem:
+        # Ответ называет ПРИЧИНУ проблемы — это не «за» и не «против», а связь
+        # «Б порождает А». Компаньон только замечает; связывает автор, после
+        # публикации ответа. Прежде чем заводить Б, ищем, к какой существующей
+        # проблеме сойтись, — иначе 50 копий одной первопричины.
+        ctitle = " ".join(str(result.get("cause_title") or "").split())[:120]
+        matches = []
+        if ctitle:
+            try:
+                matches = await db.suggest_problems(ctitle, limit=3, exclude_id=root_id)
+            except Exception:
+                matches = []
+        out.update(placement="cause", cause_title=ctitle,
+                   cause_matches=[{"id": m["id"],
+                                   "title": m.get("title") or (m.get("text") or "")[:60]}
+                                  for m in matches],
                    place_note=str(result.get("place_note") or ""))
     out["think"] = str(result.get("think") or "")
 

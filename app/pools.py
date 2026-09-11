@@ -167,7 +167,7 @@ _ROOT_KINDS_DESC = ("argument (тезис: a standalone claim opening a "
 
 
 def review_draft(text, parent, branch, positions, neighbours=None,
-                 is_root=None, root_kind=None):
+                 is_root=None, root_kind=None, in_problem=False):
     """
     The pre-publication draft review (vault: ai-navigator-draft-review) — one
     LLM call that determines the draft's ACTUAL type, suggests ONE quality
@@ -194,6 +194,11 @@ def review_draft(text, parent, branch, positions, neighbours=None,
     step TYPE to the harm test — a problem is the one root that carries state,
     so it is the one root judged by whether it states a harm; every other kind
     is classified by form, exactly like a reply.
+    in_problem: the reply lands inside a PROBLEM root (not a question/thesis
+    root). Only then may PLACEMENT answer 'cause' — «the draft names an
+    upstream problem that produces this one» — with cause_title for it.
+    Levels between problems are never stored; they are read off these links
+    (vault: drafts/problem-causal-links).
     branch: rows from db.topic_subtree(). positions: [{id, headline, composed}].
     Returns {"actual_type", "type_note", "quality_note",
              "verdict": "new|similar|covered|answered|countered",
@@ -332,7 +337,18 @@ def review_draft(text, parent, branch, positions, neighbours=None,
            "Default is 'here' — say otherwise ONLY on a clear mismatch:\n"
            "   - 'elsewhere': the draft is really about one of the OTHER "
            "PROBLEMS listed above (set place_id to that problem's id);\n"
-           "   - 'own_problem': the draft states a distinct PROBLEM of its "
+           + ("   - 'cause': the draft names a CAUSE of this problem — a "
+              "distinct upstream problem (a harm of its own, with its own "
+              "possible solutions) that PRODUCES the one discussed here, e.g. "
+              "«the law is not the problem, the problem is that elected "
+              "representatives do not represent». Typical shape: agreement "
+              "that the harm is real, then «but the real problem is …». Set "
+              "cause_title: a short title (5-10 words, in the draft's "
+              "language) for that upstream problem as its own root. Not "
+              "'cause' when the draft merely explains a mechanism inside "
+              "this problem or blames an actor without naming a separate "
+              "harm;\n" if in_problem else "")
+           + "   - 'own_problem': the draft states a distinct PROBLEM of its "
            "own rather than arguing inside this one, and deserves its own "
            "root;\n"
            "   - 'here': anything else. Never nudge a person out of a "
@@ -361,8 +377,11 @@ def review_draft(text, parent, branch, positions, neighbours=None,
         'empty if verdict is new", '
         '"split": [{"type": "support|refute|qualify|question|proposal", '
         '"text": "..."}, {...}] or null, '
-        '"placement": "here|elsewhere|own_problem", '
-        '"place_id": <problem id or null>, '
+        + ('"placement": "here|elsewhere|own_problem|cause", '
+           '"cause_title": "short title of the upstream problem, or empty", '
+           if in_problem else
+           '"placement": "here|elsewhere|own_problem", ')
+        + '"place_id": <problem id or null>, '
         '"place_note": "one sentence or empty", '
         '"think": "one question to the author or empty"}'
     )

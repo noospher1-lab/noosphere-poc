@@ -759,6 +759,42 @@ _SCHEMA = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS node_addenda_node_idx ON node_addenda (node_id)",
+    # СВЯЗИ МЕЖДУ ПРОБЛЕМАМИ (vault: drafts/problem-causal-links). «Уровень»
+    # проблемы не хранится числом — он ВЫВОДИТСЯ из одного отношения
+    # «cause порождает effect»: выше всех та, у которой не названо ни одной
+    # причины. Абсолютный номер ломается, как только у проблемы появляются
+    # причины разной глубины; отношение — нет.
+    #
+    # Связь — сама СПОРНОЕ утверждение: можно соглашаться с А и с Б и при этом
+    # оспаривать, что Б порождает А. Поэтому у неё есть автор и ОБОСНОВАНИЕ —
+    # узел (node_id) в обсуждении следствия, из которого связь родилась. Спор
+    # о связи идёт под этим узлом готовыми типами рёбер; отдельной механики и
+    # отдельного статуса нет: «оспорена» выводится из рёбер под обоснованием.
+    #
+    # Отдельная таблица, а не тип ребра в edges: рёбра держат ДЕРЕВО внутри
+    # одной темы (parent_of ждёт одно исходящее, topic_subtree не проверяет
+    # циклов), а связи проблем — граф поверх деревьев, где цикл не ошибка, а
+    # реальная структура, которую надо показать замкнутым кругом.
+    #
+    # kind — на вырост: пока только 'cause'; «часть» (подпроблема без
+    # причинности) заведётся, когда понадобится на живом случае.
+    """
+    CREATE TABLE IF NOT EXISTS problem_links (
+        id         SERIAL PRIMARY KEY,
+        cause_id   INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        effect_id  INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        kind       TEXT NOT NULL DEFAULT 'cause' CHECK (kind IN ('cause')),
+        node_id    INTEGER REFERENCES nodes(id) ON DELETE SET NULL,
+        author_id  INTEGER REFERENCES authors(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        deleted_at TIMESTAMPTZ,
+        CHECK (cause_id <> effect_id)
+    )
+    """,
+    # одна живая связь на пару: второй человек с тем же утверждением
+    # поддерживает обоснование, а не заводит дубль
+    "CREATE UNIQUE INDEX IF NOT EXISTS problem_links_pair_live "
+    "ON problem_links (cause_id, effect_id) WHERE deleted_at IS NULL",
     # ПОСЛЕДНЯЯ АКТИВНОСТЬ СЕССИИ — из неё считается «сколько человек сейчас
     # онлайн». Живёт на сессии, а не на аккаунте: у одного человека может быть
     # открыт телефон и ноутбук, и «онлайн» тогда честнее считать по
@@ -800,6 +836,9 @@ _INDEXES = [
     "CREATE INDEX IF NOT EXISTS node_topics_node_idx ON node_topics(node_id)",
     # атрибуции одной записи реестра — индексный поиск, не скан таблицы узлов
     "CREATE INDEX IF NOT EXISTS idx_nodes_intervention ON nodes(intervention_id)",
+    # «причины этой проблемы» и «следствия этой проблемы» — оба направления
+    "CREATE INDEX IF NOT EXISTS problem_links_effect_idx ON problem_links(effect_id)",
+    "CREATE INDEX IF NOT EXISTS problem_links_cause_idx ON problem_links(cause_id)",
     # «кто онлайн» — запрос по окну последней активности, а не скан всех сессий
     "CREATE INDEX IF NOT EXISTS sessions_last_seen_idx ON sessions(last_seen)",
 ]
@@ -3453,6 +3492,177 @@ async def suggest_problems(query, limit=5, exclude_id=None):
                 d = dict(r); d["sim"] = round(hits / len(words), 3); scored.append(d)
         scored.sort(key=lambda d: d["sim"], reverse=True)
         return scored[:limit]
+
+
+# ------------------------------------------------------------ problem links
+# «Б порождает А». Уровень выводится из этого отношения, не хранится; связь —
+# спорное утверждение с автором и обоснованием-узлом (см. схему problem_links).
+async def add_problem_link(cause_id, effect_id, node_id=None, author_id=None):
+    """Заявить: проблема cause_id порождает проблему effect_id.
+
+    Идемпотентно по паре: если живая связь уже есть, возвращается она с
+    пометкой existed — второй человек с тем же утверждением поддерживает
+    обоснование в графе, а не заводит дубль. Цикл НЕ запрещается: «А порождает
+    Б, а Б порождает А» — реальная структура (порочный круг), и её надо
+    показать, а не отвергнуть на входе.
+    """
+    if cause_id == effect_id:
+        raise ValueError("проблема не может быть причиной самой себя")
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                INSERT INTO problem_links (cause_id, effect_id, node_id, author_id)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (cause_id, effect_id) WHERE deleted_at IS NULL
+                DO NOTHING
+                RETURNING *
+                """, cause_id, effect_id, node_id, author_id)
+            if row is None:
+                row = await conn.fetchrow(
+                    "SELECT * FROM problem_links WHERE cause_id = $1 "
+                    "AND effect_id = $2 AND deleted_at IS NULL", cause_id, effect_id)
+                d = _link_dict(row); d["existed"] = True
+                return d
+            await _log(conn, "problem_link_added",
+                       {"link_id": row["id"], "cause_id": cause_id,
+                        "effect_id": effect_id, "node_id": node_id}, author_id)
+    d = _link_dict(row); d["existed"] = False
+    return d
+
+
+def _link_dict(row):
+    d = dict(row)
+    for k in ("created_at", "deleted_at", "node_retracted_at"):
+        if d.get(k) is not None:
+            d[k] = d[k].isoformat()
+    return d
+
+
+# Обоснование снято (узел удалён в свой час) — связь без обоснования не
+# показывается: утверждение без текста, под которым можно спорить, — не
+# утверждение. Отозванное обоснование (retracted) остаётся, но помечается.
+_LINK_SELECT = """
+    SELECT l.id, l.cause_id, l.effect_id, l.kind, l.node_id, l.author_id,
+           l.created_at,
+           a.name AS author, a.color AS author_color,
+           p.title AS problem_title, left(p.text, 240) AS problem_text,
+           left(j.text, 400) AS node_text, j.retracted_at AS node_retracted_at,
+           ja.name AS node_author,
+           (SELECT count(*) FROM edges e JOIN nodes s ON s.id = e.source_id
+             WHERE e.target_id = l.node_id AND s.deleted_at IS NULL
+               AND e.type IN ('refute', 'undercut')) AS disputed,
+           (SELECT count(*) FROM edges e JOIN nodes s ON s.id = e.source_id
+             WHERE e.target_id = l.node_id AND s.deleted_at IS NULL
+               AND e.type = 'support') AS supported
+    FROM problem_links l
+    JOIN nodes p ON p.id = {other} AND p.deleted_at IS NULL
+    LEFT JOIN authors a ON a.id = l.author_id
+    LEFT JOIN nodes j ON j.id = l.node_id
+    LEFT JOIN authors ja ON ja.id = j.author_id
+    WHERE {mine} = $1 AND l.deleted_at IS NULL
+      AND (l.node_id IS NULL OR j.deleted_at IS NULL)
+    ORDER BY l.id
+"""
+
+
+async def problem_links_of(topic_root_id):
+    """Причины (выше) и следствия (ниже) одной проблемы, с обоснованием и
+    сводкой спора под ним. Статуса у связи нет — «оспорена» читается по рёбрам
+    против обоснования (refute/undercut), «поддержана» — по support."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        causes = await conn.fetch(
+            _LINK_SELECT.format(other="l.cause_id", mine="l.effect_id"), topic_root_id)
+        effects = await conn.fetch(
+            _LINK_SELECT.format(other="l.effect_id", mine="l.cause_id"), topic_root_id)
+    return {"causes": [_link_dict(r) for r in causes],
+            "effects": [_link_dict(r) for r in effects]}
+
+
+async def open_cause_problem(effect_id, title, text, node_id=None, author_id=None):
+    """Завести проблему-ПРИЧИНУ из ответа: новый корень kind='problem' + связь
+    «новая порождает effect_id» — одной транзакцией, чтобы не осталось
+    проблемы без связи (та самая потеря, с которой всё началось: «завести
+    отдельной проблемой» открывало форму, а связь с исходной пропадала).
+
+    Рубрика наследуется от следствия: причина живёт там же, где следствие, и
+    без рубрики не находилась бы ни одним фильтром карты. Автор поправит.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            new_id = await conn.fetchval(
+                "INSERT INTO nodes (text, author_id, kind, title) "
+                "VALUES ($1, $2, 'problem', $3) RETURNING id",
+                text, author_id, title)
+            await conn.execute(
+                "UPDATE nodes SET topic_root_id = id WHERE id = $1", new_id)
+            await conn.execute(
+                "INSERT INTO node_topics (node_id, topic_root_id, author_id) "
+                "VALUES ($1, $1, $2) ON CONFLICT DO NOTHING", new_id, author_id)
+            await _log(conn, "node_added",
+                       {"node_id": new_id, "text": text, "kind": "problem",
+                        "position_id": None, "poi_score": None,
+                        "topic_root_id": new_id, "atom_group": None}, author_id)
+            for tbl, cols in (("topic_facets", "domain, sub"),
+                              ("topic_geo", "geo"), ("topic_tags", "tag")):
+                await conn.execute(
+                    f"INSERT INTO {tbl} (topic_root_id, {cols}) "
+                    f"SELECT $1, {cols} FROM {tbl} WHERE topic_root_id = $2 "
+                    f"ON CONFLICT DO NOTHING", new_id, effect_id)
+            await conn.execute(
+                "INSERT INTO workspace (author_id, topic_root_id) VALUES ($1, $2) "
+                "ON CONFLICT DO NOTHING", author_id, new_id)
+            row = await conn.fetchrow(
+                "INSERT INTO problem_links (cause_id, effect_id, node_id, author_id) "
+                "VALUES ($1, $2, $3, $4) RETURNING *", new_id, effect_id, node_id,
+                author_id)
+            await _log(conn, "problem_link_added",
+                       {"link_id": row["id"], "cause_id": new_id,
+                        "effect_id": effect_id, "node_id": node_id}, author_id)
+    d = _link_dict(row); d["existed"] = False
+    return d
+
+
+async def problem_chain(topic_root_id, limit=40):
+    """Цепочка причин вверх до известных корней — обход в ширину с отсечкой
+    посещённых. Возвращает [{id, title, depth, via, cycle}]: depth — сколько
+    шагов «порождает» отделяет от исходной проблемы; cycle=True на связи,
+    которая ведёт в уже пройденную проблему (замкнутый круг — показывается,
+    а не глотается). Корень цепочки — та, у кого причин пока не названо."""
+    pool = _pool_or_raise()
+    out = []
+    seen = {topic_root_id}
+    frontier = [topic_root_id]
+    depth = 0
+    async with pool.acquire() as conn:
+        while frontier and len(out) < limit:
+            depth += 1
+            rows = await conn.fetch(
+                """
+                SELECT l.id AS via, l.effect_id, l.cause_id AS id, p.title,
+                       left(p.text, 160) AS text
+                FROM problem_links l
+                JOIN nodes p ON p.id = l.cause_id AND p.deleted_at IS NULL
+                LEFT JOIN nodes j ON j.id = l.node_id
+                WHERE l.effect_id = ANY($1::int[]) AND l.deleted_at IS NULL
+                  AND (l.node_id IS NULL OR j.deleted_at IS NULL)
+                ORDER BY l.id
+                """, frontier)
+            nxt = []
+            for r in rows:
+                cyc = r["id"] in seen
+                out.append({"id": r["id"], "title": r["title"], "text": r["text"],
+                            "depth": depth, "via": r["via"],
+                            "effect_id": r["effect_id"], "cycle": cyc})
+                if not cyc:
+                    seen.add(r["id"]); nxt.append(r["id"])
+                if len(out) >= limit:
+                    break
+            frontier = nxt
+    return out
 
 
 # ------------------------------------------------------------ interventions
