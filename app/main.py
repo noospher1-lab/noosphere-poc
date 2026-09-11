@@ -32,8 +32,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
 
-from . import (auth, db, dialogue as dialogue_mod, mail, material, poi,
-               taxonomy, voteweight,
+from . import (auth, db, dialogue as dialogue_mod, embed as embed_mod, mail,
+               material, poi, taxonomy, voteweight,
                votedialogue, pools as pools_mod)
 
 
@@ -43,9 +43,52 @@ async def lifespan(app):
     await db.init_pool()
     await db.init_db()
     hub.bind_loop(asyncio.get_running_loop())
+    # модель эмбеддингов — в фоне: первый старт качает ~240 МБ, healthcheck
+    # этого ждать не должен; до загрузки поиск похожих идёт триграммами
+    if embed_mod.ENABLED:
+        asyncio.create_task(_embed_warm_and_backfill())
     yield
     # shutdown
     await db.close_pool()
+
+
+async def _embed_warm_and_backfill():
+    """Загрузить модель и досчитать векторы проблемам, у которых их нет (или
+    текст изменился). Ошибки не роняют сервер — поиск остаётся лексическим."""
+    try:
+        await asyncio.to_thread(embed_mod.warm)
+        if not embed_mod.ready():
+            return
+        todo = await db.problems_needing_embedding(
+            embed_mod.MODEL, lambda t, x: embed_mod.text_hash(embed_mod.problem_text(t, x)))
+        for i in range(0, len(todo), 32):
+            batch = todo[i:i + 32]
+            texts = [embed_mod.problem_text(p["title"], p["text"]) for p in batch]
+            vecs = await embed_mod.embed(texts)
+            for p, t, v in zip(batch, texts, vecs):
+                await db.upsert_embedding(p["id"], embed_mod.MODEL, v, embed_mod.text_hash(t))
+        if todo:
+            log.info("векторы досчитаны: %d проблем", len(todo))
+    except Exception:
+        log.warning("прогрев эмбеддингов не удался", exc_info=True)
+
+
+async def _embed_problem(topic_root_id, title, text):
+    """Вектор одной новой проблемы (фон, fail-open)."""
+    try:
+        t = embed_mod.problem_text(title, text)
+        vecs = await embed_mod.embed([t])
+        if vecs:
+            await db.upsert_embedding(topic_root_id, embed_mod.MODEL, vecs[0],
+                                      embed_mod.text_hash(t))
+    except Exception:
+        log.warning("вектор проблемы %s не посчитан", topic_root_id, exc_info=True)
+
+
+async def suggest_problems(text, limit=5, exclude_id=None):
+    """Похожие проблемы: по смыслу (если модель загружена) + по буквам."""
+    qvec = await embed_mod.query_vector(text)
+    return await db.suggest_problems(text, limit=limit, exclude_id=exclude_id, qvec=qvec)
 
 
 app = FastAPI(title="Noosphere PoC", version="0.2.0", lifespan=lifespan)
@@ -1148,7 +1191,7 @@ async def problem_suggestions(title: str = "", limit: int = 5):
     Объявлен ДО /api/problems/{topic_root_id}, иначе 'suggest' попал бы в int-параметр.
     Открыт без входа: карта и форма создания рисуются до логина.
     """
-    return await db.suggest_problems(title, limit=max(1, min(10, limit)))
+    return await suggest_problems(title, limit=max(1, min(10, limit)))
 
 
 @app.get("/api/problems/{topic_root_id}")
@@ -1222,6 +1265,7 @@ async def post_cause(effect_id: int, body: CauseIn, author=Depends(verified_auth
             raise HTTPException(400, "новой проблеме-причине нужны заголовок и постановка "
                                      "(или cause_id существующей)")
         link = await db.open_cause_problem(effect_id, title, text, author_id=author["id"])
+        _spawn(_embed_problem(link["cause_id"], title, text))
     link["cause"] = await db.get_node(link["cause_id"])
     return link
 
@@ -1580,6 +1624,11 @@ async def add_argument(arg: ArgumentIn, author=Depends(verified_author)):
     # 1. persist the node RIGHT AWAY, unscored (poi_score = NULL)
     node_id = await db.add_node(arg.text, author_id=author["id"], kind=kind,
                                 topic_root_id=root_id, title=title)
+
+    # 1a. вектор новой проблемы — чтобы следующий черновик о том же (на любом
+    #     языке) увидел её в подсказке дублей; в фоне, без модели — молча
+    if kind == "problem":
+        _spawn(_embed_problem(node_id, title, arg.text))
 
     # 1b. рубрика новой темы — сразу после узла, тем же запросом-цепочкой
     if arg.connect_to is None and facets:
@@ -3069,7 +3118,7 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
     # триграммный (suggest_problems), без LLM, поэтому дёшев; "map" лишь берёт
     # шире список кандидатов, когда автор сам просит поискать.
     root_now = parent.get("topic_root_id") if parent else None
-    neighbours = await db.suggest_problems(
+    neighbours = await suggest_problems(
         text, limit=8 if body.scope == "map" else 4, exclude_id=root_now)
     # Рамка входит в ключ: у корня-проблемы (тест на вред) и у корня любого
     # другого вида промпты РАЗНЫЕ, и без этого переключение вида в форме
@@ -3145,7 +3194,7 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         matches = []
         if ctitle:
             try:
-                matches = await db.suggest_problems(ctitle, limit=3, exclude_id=root_id)
+                matches = await suggest_problems(ctitle, limit=3, exclude_id=root_id)
             except Exception:
                 matches = []
         out.update(placement="cause", cause_title=ctitle,
@@ -3269,7 +3318,7 @@ async def draft_companion(body: CompanionIn, author=Depends(verified_author)):
             raise HTTPException(404, f"connect_to node {body.connect_to} not found")
         root_id = parent.get("topic_root_id") or await db.topic_root_of(body.connect_to)
         branch = await db.topic_subtree(root_id)
-    neighbours = await db.suggest_problems(
+    neighbours = await suggest_problems(
         text, limit=8 if body.scope == "map" else 4,
         exclude_id=parent.get("topic_root_id") if parent else None)
     await spend_llm(author)

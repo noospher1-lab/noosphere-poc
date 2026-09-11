@@ -16,9 +16,12 @@ All access goes through a shared asyncpg pool created at startup.
 import os
 import json
 import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 
 import asyncpg
+
+log = logging.getLogger("noosphere.db")
 
 from . import poiformula
 
@@ -795,6 +798,20 @@ _SCHEMA = [
     # поддерживает обоснование, а не заводит дубль
     "CREATE UNIQUE INDEX IF NOT EXISTS problem_links_pair_live "
     "ON problem_links (cause_id, effect_id) WHERE deleted_at IS NULL",
+    # ВЕКТОР ПРОБЛЕМЫ (app/embed.py) — поиск похожих по смыслу, поверх языков.
+    # Массив REAL, а не pgvector: расширения на хостинге может не быть, а
+    # проблем — сотни; косинус по всем считается в Python за миллисекунды.
+    # model — чтобы при смене модели старые векторы не сравнивались с новыми;
+    # text_hash — чтобы пересчитать, когда постановку поправили.
+    """
+    CREATE TABLE IF NOT EXISTS problem_embeddings (
+        topic_root_id INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+        model         TEXT NOT NULL,
+        vec           REAL[] NOT NULL,
+        text_hash     TEXT NOT NULL,
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
     # ПОСЛЕДНЯЯ АКТИВНОСТЬ СЕССИИ — из неё считается «сколько человек сейчас
     # онлайн». Живёт на сессии, а не на аккаунте: у одного человека может быть
     # открыт телефон и ноутбук, и «онлайн» тогда честнее считать по
@@ -3465,14 +3482,96 @@ async def delete_scale_row(row_id, author_id=None):
     return _scale_dict(row)
 
 
-async def suggest_problems(query, limit=5, exclude_id=None):
+# ------------------------------------------------------- problem embeddings
+async def upsert_embedding(topic_root_id, model, vec, text_hash):
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO problem_embeddings (topic_root_id, model, vec, text_hash, updated_at)
+            VALUES ($1, $2, $3, $4, now())
+            ON CONFLICT (topic_root_id) DO UPDATE SET
+                model = EXCLUDED.model, vec = EXCLUDED.vec,
+                text_hash = EXCLUDED.text_hash, updated_at = now()
+            """, topic_root_id, model, vec, text_hash)
+
+
+async def problems_needing_embedding(model, hash_fn, limit=200):
+    """Живые корни-проблемы без вектора этой модели или с изменившимся текстом.
+    hash_fn(title, text) — как считается отпечаток (app.embed.text_hash)."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT n.id, n.title, n.text, e.model, e.text_hash
+            FROM nodes n
+            LEFT JOIN problem_embeddings e ON e.topic_root_id = n.id
+            WHERE n.kind = 'problem' AND n.id = n.topic_root_id
+              AND n.deleted_at IS NULL
+            ORDER BY n.id
+            """)
+    out = []
+    for r in rows:
+        if r["model"] == model and r["text_hash"] == hash_fn(r["title"], r["text"]):
+            continue
+        out.append({"id": r["id"], "title": r["title"], "text": r["text"]})
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def semantic_neighbours(qvec, model, floor, limit, exclude_id=None):
+    """Проблемы, чей вектор ближе floor к вектору запроса. Косинус считается в
+    Python по всем живым проблемам — при сотнях строк это дешевле расширения."""
+    from . import embed as embed_mod
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT n.id, n.title, n.text, e.vec,
+                   (SELECT count(*) FROM node_topics nt
+                    JOIN nodes cn ON cn.id = nt.node_id
+                    WHERE nt.topic_root_id = n.id AND cn.deleted_at IS NULL) AS nodes
+            FROM problem_embeddings e
+            JOIN nodes n ON n.id = e.topic_root_id
+            WHERE e.model = $1 AND n.kind = 'problem' AND n.deleted_at IS NULL
+              AND ($2::int IS NULL OR n.id <> $2)
+            """, model, exclude_id)
+    scored = []
+    for r in rows:
+        s = embed_mod.cosine(qvec, list(r["vec"]))
+        if s >= floor:
+            scored.append({"id": r["id"], "title": r["title"], "text": r["text"],
+                           "nodes": r["nodes"], "sim": round(s, 3), "semantic": True})
+    scored.sort(key=lambda d: d["sim"], reverse=True)
+    return scored[:limit]
+
+
+async def suggest_problems(query, limit=5, exclude_id=None, qvec=None):
     """Соседние проблемы, похожие на черновик, — ПОДСКАЗКА при создании, не гейт и
     не слияние. Свободное создание остаётся: это лишь «может, вот эта уже есть?».
-    С pg_trgm — триграммное сходство заголовка/текста; без него — совпадение
-    значимых слов (ILIKE-фолбэк)."""
+
+    Два поиска, объединённые: по СМЫСЛУ (qvec — вектор запроса, см. app/embed;
+    ловит одну проблему на разных языках) и по буквам (pg_trgm, а без него —
+    совпадение значимых слов). Смысловые совпадения идут первыми: у них счёт
+    выше и они ловят то, чего триграммы не видят в принципе."""
     q = " ".join((query or "").split()).strip()
     if len(q) < 3:
         return []
+    from . import embed as embed_mod
+    sem = []
+    if qvec:
+        try:
+            sem = await semantic_neighbours(qvec, embed_mod.MODEL, embed_mod.SIM_FLOOR,
+                                            limit, exclude_id)
+        except Exception:
+            log.warning("смысловой поиск проблем не удался", exc_info=True)
+    lex = await _lexical_neighbours(q, limit, exclude_id)
+    seen = {d["id"] for d in sem}
+    return (sem + [d for d in lex if d["id"] not in seen])[:limit]
+
+
+async def _lexical_neighbours(q, limit, exclude_id):
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         if _has_trgm:
