@@ -1786,28 +1786,31 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
     nrow.onclick = () => { pick = null; mark(); };
     rows.push({ row: nrow, id: null });
     cbox.appendChild(nrow);
-    // Постановка новой проблемы — отдельно от ответа. Без неё постановкой
-    // становился сам ответ («полностью согласен с проблемой, но…»), и на
-    // странице причины он читался как реплика, а не как заявленный вред.
-    const sIn = el("textarea");
-    sIn.rows = 3;
-    sIn.placeholder = "постановка новой проблемы: в чём вред, кого касается "
-      + "(необязательно — иначе постановкой станет твой ответ)";
-    sIn.className = "cause-stmt";
-    sIn.onfocus = () => { pick = null; mark(); };
-    cbox.appendChild(sIn);
     mark();
     hint.appendChild(cbox);
-    hint.appendChild(el("div", "muted",
-      "ответ опубликуется здесь и станет обоснованием связи — спорить с ней "
-      + "будут под ним; у той проблемы появится «следствие», у этой — «причина»"));
+    // Одна мысль — один узел. Новая причина: текст из поля выше становится
+    // ПОСТАНОВКОЙ проблемы Б, ответа под А не остаётся — иначе одна запись
+    // висела в двух местах. Схождение: у Б свой текст, а этот довод «А
+    // порождается Б» — вклад в обсуждение А, он публикуется ответом здесь.
+    const note = el("div", "muted");
+    const syncNote = () => {
+      note.textContent = pick != null
+        ? "твой текст опубликуется ответом здесь как обоснование связи; у той "
+          + "проблемы появится «следствие», у этой — «причина»"
+        : "твой текст станет ПОСТАНОВКОЙ новой проблемы — одной записью, без "
+          + "ответа здесь. Если он написан как ответ («согласен, но…»), перепиши "
+          + "его как описание вреда: кто страдает и в чём";
+    };
+    for (const r of rows) r.row.addEventListener("click", syncNote);
+    tIn.addEventListener("focus", syncNote);
+    syncNote();
+    hint.appendChild(note);
     const link = el("button", "mini", "опубликовать и связать как причину");
     link.onclick = () => {
       const title = tIn.value.trim();
       if (pick == null && !title) { toast("дай заголовок проблеме-причине"); tIn.focus(); return; }
       hint.style.display = "none";
-      const stmt = sIn.value.trim();
-      onCause(pick != null ? { cause_id: pick } : { title, text: stmt || undefined });
+      onCause(pick != null ? { cause_id: pick } : { title });
     };
     actions.appendChild(link);
   }
@@ -2195,13 +2198,16 @@ function problemLinkRow(l, side) {
   row.appendChild(head);
   const meta = el("div", "pl-meta");
   meta.append("связал: " + (l.author || "—"));
-  if (l.node_id) {
+  // обоснование = сама постановка причины (одна запись) — тогда ссылка на
+  // «обоснование» вела бы туда же, куда и заголовок; показываем только текст
+  const selfJust = l.node_id === l.cause_id;
+  if (l.node_id && !selfJust) {
     meta.append(" · ");
     const j = el("a", null, l.node_retracted_at ? "обоснование (отозвано)" : "обоснование");
     j.href = "#"; j.onclick = (e) => { e.preventDefault(); selectNode(l.node_id); };
     meta.appendChild(j);
-    if (l.node_text) meta.appendChild(el("span", "q", " «" + shortLabel(l.node_text, 110) + "»"));
   }
+  if (l.node_text) meta.appendChild(el("span", "q", " «" + shortLabel(l.node_text, 110) + "»"));
   row.appendChild(meta);
   return row;
 }
@@ -2590,19 +2596,33 @@ function replyForm(parentId) {
       // проблему-причину (существующую или новую) со следствием — этим
       // корнем. Если публикация сорвалась, связывать нечего.
       onCause: async (choice) => {
-        const node = await doSend(ta.value.trim());
-        if (!node) return;
+        const text = ta.value.trim();
+        let payload;
+        if (choice.cause_id != null) {
+          // схождение: довод публикуется ответом здесь, связь ссылается на него
+          const node = await doSend(text);
+          if (!node) return;
+          payload = { cause_id: choice.cause_id, node_id: node.id };
+        } else {
+          // новая причина: одна запись — корень проблемы Б, ответа здесь нет
+          if (!await confirmIrreversible()) return;
+          payload = { title: choice.title, text };
+        }
         try {
           const link = await api(`/api/problems/${root}/causes`, {
             method: "POST", headers: { "content-type": "application/json" },
-            body: JSON.stringify({ node_id: node.id, ...choice }),
+            body: JSON.stringify(payload),
           });
           const ct = (link.cause && link.cause.title) || "";
+          if (choice.cause_id == null) { ta.value = ""; draftDrop(parentId); }
           toast(link.existed ? "такая связь уже есть — твой ответ под ней"
                              : "связано: «" + ct + "» → причина");
           await loadTopics();          // новая проблема появляется в списке
           selectNode(root);            // у следствия теперь виден блок «причины»
-        } catch (e) { toast("ответ опубликован, но связать не вышло: " + e.message); }
+        } catch (e) {
+          toast((choice.cause_id != null ? "ответ опубликован, но связать не вышло: "
+                                         : "не вышло завести причину: ") + e.message);
+        }
       },
       // two glued contributions, approved by the author → two sibling nodes
       onSplit: async (parts) => {

@@ -221,22 +221,27 @@ def test_review_offers_cause_only_inside_a_problem(client, monkeypatch):
     assert out["cause_title"] == "" and out["cause_matches"] == []
 
 
-def test_cause_from_reply_new_problem_inherits_facets(client):
+def test_new_cause_is_one_node_and_inherits_facets(client):
+    """Одна мысль — один узел: новая причина заводится корнем Б, ответа под А
+    не остаётся, обоснование связи — сама постановка Б."""
     ids = client.ids
+    before = client.get(f"/api/nodes/{ids['effect']}/children").json()["total"]
     r = client.post(f"/api/problems/{ids['effect']}/causes",
-                    json={"node_id": ids["reply"],
-                          "title": "Представники не представляють"})
+                    json={"title": "Представники не представляють",
+                          "text": "Обрані системно ведуть політику всупереч виборцям."})
     assert r.status_code == 200, r.text
     link = r.json()
     cause = link["cause"]
     assert cause["kind"] == "problem" and cause["topic_root_id"] == cause["id"]
     assert cause["title"] == "Представники не представляють"
-    # постановка новой проблемы — текст ответа, если своего не дали
-    assert cause["text"].startswith("Проблема не в законах")
+    assert cause["text"].startswith("Обрані системно")
+    # под следствием ничего не прибавилось
+    assert client.get(f"/api/nodes/{ids['effect']}/children").json()["total"] == before
 
     p = client.get(f"/api/problems/{ids['effect']}").json()
     assert [c["cause_id"] for c in p["links"]["causes"]] == [cause["id"]]
-    assert p["links"]["causes"][0]["node_id"] == ids["reply"]
+    assert p["links"]["causes"][0]["node_id"] == cause["id"]
+    assert p["links"]["causes"][0]["node_text"].startswith("Обрані системно")
     assert [x["id"] for x in p["chain"]] == [cause["id"]]
     up = client.get(f"/api/problems/{cause['id']}").json()
     assert [e["effect_id"] for e in up["links"]["effects"]] == [ids["effect"]]
@@ -261,25 +266,31 @@ def test_cause_converges_to_existing_problem(client):
     assert r.status_code == 200 and r.json()["existed"] is True
 
 
-def test_cause_requires_own_reply_inside_the_effect(client):
+def test_cause_validation(client):
     ids = client.ids
-    # чужой ответ — связать нельзя
+    ex = ids["existing"]
+    # схождение с чужим ответом как обоснованием — нельзя
     r = client.post(f"/api/problems/{ids['effect']}/causes",
-                    json={"node_id": ids["foreign"], "title": "x"})
+                    json={"cause_id": ex, "node_id": ids["foreign"]})
     assert r.status_code == 403
     # свой ответ, но в другом обсуждении
     r = client.post(f"/api/problems/{ids['effect']}/causes",
-                    json={"node_id": ids["elsewhere"], "title": "x"})
+                    json={"cause_id": ex, "node_id": ids["elsewhere"]})
     assert r.status_code == 400
     # следствием может быть только проблема
     r = client.post(f"/api/problems/{ids['qroot']}/causes",
-                    json={"node_id": ids["elsewhere"], "title": "x"})
+                    json={"cause_id": ex})
     assert r.status_code == 400
     # сама себе причиной — нет
     r = client.post(f"/api/problems/{ids['effect']}/causes",
-                    json={"node_id": ids["reply"], "cause_id": ids["effect"]})
+                    json={"cause_id": ids["effect"]})
     assert r.status_code == 400
-    # без заголовка и без cause_id — нечего заводить
-    r = client.post(f"/api/problems/{ids['effect']}/causes",
-                    json={"node_id": ids["reply"]})
+    # новой причине нужны и заголовок, и постановка
+    r = client.post(f"/api/problems/{ids['effect']}/causes", json={"title": "x"})
     assert r.status_code == 400
+    r = client.post(f"/api/problems/{ids['effect']}/causes", json={"text": "x"})
+    assert r.status_code == 400
+    # схождение без своего ответа — просто заявленная связь, обоснование = Б
+    r = client.post(f"/api/problems/{ids['effect']}/causes", json={"cause_id": ex})
+    assert r.status_code == 200, r.text
+    assert r.json()["node_id"] == ex

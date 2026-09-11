@@ -1169,35 +1169,32 @@ async def read_problem(topic_root_id: int):
 
 
 class CauseIn(BaseModel):
-    node_id: int                         # ответ-обоснование в обсуждении следствия
     cause_id: int | None = None          # существующая проблема-причина (схождение)
-    title: str | None = None             # …или заголовок новой проблемы-причины
-    text: str | None = None              # постановка новой (по умолчанию — текст ответа)
+    node_id: int | None = None           # при схождении: свой ответ в обсуждении следствия
+    title: str | None = None             # новая проблема-причина: заголовок…
+    text: str | None = None              # …и постановка (одна запись, без ответа под следствием)
 
 
 @app.post("/api/problems/{effect_id}/causes")
 async def post_cause(effect_id: int, body: CauseIn, author=Depends(verified_author)):
-    """Заявить: «эту проблему порождает другая» (vault: drafts/problem-causal-links).
+    """Заявить: «эту проблему порождает другая» (vault: 2026-09-11-problem-causal-links).
 
-    Связь рождается из ОТВЕТА: node_id — уже опубликованный узел в обсуждении
-    следствия, он и есть обоснование, под ним идёт спор о связи готовыми
-    типами. Связать вправе автор этого ответа: так у каждой связи гарантированно
-    есть текст, за который кто-то отвечает. Причина — либо существующая
-    проблема (cause_id; схождение важнее создания — иначе 50 копий одной
-    первопричины), либо новая (title), которая заводится и связывается одной
-    транзакцией. Уровень отсюда выводится, а не задаётся.
+    ОДНА МЫСЛЬ — ОДИН УЗЕЛ. Новая причина заводится сразу корнем проблемы Б и
+    связывается с А одной транзакцией; ответа под А не остаётся, обоснование
+    связи — сама постановка Б (она и должна объяснять, почему Б порождает А).
+    Раньше текст публиковался ответом под А и копировался в Б — одна запись
+    висела в двух местах, и Alex это сразу увидел.
+
+    Схождение к уже существующей причине (cause_id) — другое дело: у Б свой
+    текст, а довод автора «А порождается Б» — это законный вклад в обсуждение
+    А, не дубль. Он публикуется ответом под А, и связь ссылается на него
+    (node_id, только свой и только в обсуждении следствия). Без node_id связь
+    просто заявляется — автор записан, обоснование = постановка Б.
+    Уровень отсюда выводится, а не задаётся.
     """
     effect = await _problem_root_or_404(effect_id)
     if effect.get("kind") != "problem":
         raise HTTPException(400, "причины и следствия — только у проблем")
-    just = await db.get_node(body.node_id)
-    if just is None:
-        raise HTTPException(404, f"узел-обоснование {body.node_id} не найден")
-    if just.get("author_id") != author["id"]:
-        raise HTTPException(403, "связать может автор ответа-обоснования")
-    homes = {t["topic_root_id"] for t in await db.node_topics_of(body.node_id)}
-    if effect_id not in homes:
-        raise HTTPException(400, "обоснование должно стоять в обсуждении следствия")
     if body.cause_id is not None:
         if body.cause_id == effect_id:
             raise HTTPException(400, "проблема не может быть причиной самой себя")
@@ -1205,15 +1202,26 @@ async def post_cause(effect_id: int, body: CauseIn, author=Depends(verified_auth
         if (cause is None or cause.get("kind") != "problem"
                 or cause.get("topic_root_id") != body.cause_id):
             raise HTTPException(404, f"проблема {body.cause_id} не найдена")
+        node_id = body.cause_id
+        if body.node_id is not None:
+            just = await db.get_node(body.node_id)
+            if just is None:
+                raise HTTPException(404, f"узел-обоснование {body.node_id} не найден")
+            if just.get("author_id") != author["id"]:
+                raise HTTPException(403, "связать может автор ответа-обоснования")
+            homes = {t["topic_root_id"] for t in await db.node_topics_of(body.node_id)}
+            if effect_id not in homes:
+                raise HTTPException(400, "обоснование должно стоять в обсуждении следствия")
+            node_id = body.node_id
         link = await db.add_problem_link(body.cause_id, effect_id,
-                                         node_id=body.node_id, author_id=author["id"])
+                                         node_id=node_id, author_id=author["id"])
     else:
         title = (body.title or "").strip()
-        if not title:
-            raise HTTPException(400, "нужен заголовок новой проблемы-причины или cause_id")
-        text = (body.text or "").strip() or just["text"]
-        link = await db.open_cause_problem(effect_id, title, text,
-                                           node_id=body.node_id, author_id=author["id"])
+        text = (body.text or "").strip()
+        if not title or not text:
+            raise HTTPException(400, "новой проблеме-причине нужны заголовок и постановка "
+                                     "(или cause_id существующей)")
+        link = await db.open_cause_problem(effect_id, title, text, author_id=author["id"])
     link["cause"] = await db.get_node(link["cause_id"])
     return link
 

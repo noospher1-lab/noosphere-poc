@@ -3612,11 +3612,13 @@ async def problem_links_of(topic_root_id):
 
 
 async def open_cause_problem(effect_id, title, text, node_id=None, author_id=None):
-    """Завести проблему-ПРИЧИНУ из ответа: новый корень kind='problem' + связь
-    «новая порождает effect_id» — одной транзакцией, чтобы не осталось
-    проблемы без связи (та самая потеря, с которой всё началось: «завести
-    отдельной проблемой» открывало форму, а связь с исходной пропадала).
+    """Завести проблему-ПРИЧИНУ: новый корень kind='problem' + связь «новая
+    порождает effect_id» — одной транзакцией, чтобы не осталось проблемы без
+    связи (та самая потеря, с которой всё началось: «завести отдельной
+    проблемой» открывало форму, а связь с исходной пропадала).
 
+    Одна мысль — один узел: ответа под следствием не остаётся, обоснованием
+    связи служит сам корень новой проблемы (node_id по умолчанию = он).
     Рубрика наследуется от следствия: причина живёт там же, где следствие, и
     без рубрики не находилась бы ни одним фильтром карты. Автор поправит.
     """
@@ -3647,8 +3649,8 @@ async def open_cause_problem(effect_id, title, text, node_id=None, author_id=Non
                 "ON CONFLICT DO NOTHING", author_id, new_id)
             row = await conn.fetchrow(
                 "INSERT INTO problem_links (cause_id, effect_id, node_id, author_id) "
-                "VALUES ($1, $2, $3, $4) RETURNING *", new_id, effect_id, node_id,
-                author_id)
+                "VALUES ($1, $2, $3, $4) RETURNING *", new_id, effect_id,
+                node_id if node_id is not None else new_id, author_id)
             await _log(conn, "problem_link_added",
                        {"link_id": row["id"], "cause_id": new_id,
                         "effect_id": effect_id, "node_id": node_id}, author_id)
