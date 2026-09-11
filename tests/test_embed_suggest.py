@@ -85,20 +85,53 @@ def test_semantic_hits_come_first_and_cross_languages():
     _run(body)
 
 
-def test_backfill_finds_missing_and_stale_vectors():
+def test_backfill_covers_every_node_kind_and_stale_text():
     async def body():
         db = await _fresh_db()
         uid = await db.add_user("emb2", "hash", "Автор", invite_required=False)
         a = await db.add_node("текст а", author_id=uid, kind="problem", title="А")
-        b = await db.add_node("текст б", author_id=uid, kind="problem", title="Б")
         q = await db.add_node("вопрос", author_id=uid, kind="question", title="В")
-        hf = lambda t, x: embed_mod.text_hash(embed_mod.problem_text(t, x))
-        todo = await db.problems_needing_embedding(embed_mod.MODEL, hf)
-        assert [p["id"] for p in todo] == [a, b]          # вопрос не проблема
+        r = await db.add_node("довод внутри", author_id=uid, kind="argument",
+                              topic_root_id=a)
+        await db.add_edge(r, a, "support")
+        hf = lambda t, x: embed_mod.text_hash(embed_mod.node_text(t, x))
+        todo = await db.nodes_needing_embedding(embed_mod.MODEL, hf)
+        assert [p["id"] for p in todo] == [a, q, r]       # вектор у КАЖДОГО узла
         await db.upsert_embedding(a, embed_mod.MODEL, [1, 0, 0], hf("А", "текст а"))
-        await db.upsert_embedding(b, embed_mod.MODEL, [0, 1, 0], "устаревший")
-        todo = await db.problems_needing_embedding(embed_mod.MODEL, hf)
-        assert [p["id"] for p in todo] == [b]             # у б текст «изменился»
+        await db.upsert_embedding(q, embed_mod.MODEL, [0, 1, 0], "устаревший")
+        await db.upsert_embedding(r, embed_mod.MODEL, [0, 0, 1], hf(None, "довод внутри"))
+        todo = await db.nodes_needing_embedding(embed_mod.MODEL, hf)
+        assert [p["id"] for p in todo] == [q]             # у q текст «изменился»
+        # другая модель — всё пересчитывается
+        assert len(await db.nodes_needing_embedding("other", hf)) == 3
+    _run(body)
+
+
+def test_semantic_nodes_search_arguments_across_discussions():
+    """Довод в другом обсуждении и на другом языке находится по смыслу;
+    корни-проблемы, отозванные и исключённые узлы — нет."""
+    async def body():
+        db = await _fresh_db()
+        uid = await db.add_user("emb3", "hash", "Автор", invite_required=False)
+        a = await db.add_node("Проблема А", author_id=uid, kind="problem", title="А")
+        b = await db.add_node("Проблема Б", author_id=uid, kind="problem", title="Б")
+        ra = await db.add_node("Розширення доріг не зменшує затори.", author_id=uid,
+                               kind="argument", topic_root_id=a)
+        await db.add_edge(ra, a, "support")
+        rb = await db.add_node("отозванный довод", author_id=uid, kind="argument",
+                               topic_root_id=b)
+        await db.add_edge(rb, b, "support")
+        await db.upsert_embedding(a, embed_mod.MODEL, [1, 0, 0], "h")
+        await db.upsert_embedding(ra, embed_mod.MODEL, [0.9, 0.1, 0], "h")
+        await db.upsert_embedding(rb, embed_mod.MODEL, [0.9, 0.1, 0], "h")
+        pool = db._pool_or_raise()
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE nodes SET retracted_at = now() WHERE id = $1", rb)
+        hits = await db.semantic_nodes([1, 0.1, 0], embed_mod.MODEL, 0.6, 5)
+        assert [h["id"] for h in hits] == [ra]            # корень А и отозванный — нет
+        assert hits[0]["topic_root_id"] == a and hits[0]["topic_title"] == "А"
+        assert await db.semantic_nodes([1, 0.1, 0], embed_mod.MODEL, 0.6, 5,
+                                       exclude_ids=[ra]) == []
     _run(body)
 
 
@@ -127,8 +160,13 @@ def client(monkeypatch):
                                 title="Представники не виконують волю виборців")
         await db.upsert_embedding(effect, embed_mod.MODEL, UK_LANG, "h1")
         await db.upsert_embedding(rep, embed_mod.MODEL, UK_REPR, "h2")
+        # довод в ДРУГОМ обсуждении — для проверки «уже отвечено там»
+        other = await db.add_node("Розширення доріг не зменшує затори — індукований попит.",
+                                  author_id=uid, kind="argument", topic_root_id=rep)
+        await db.add_edge(other, rep, "support")
+        await db.upsert_embedding(other, embed_mod.MODEL, [0.0, 0.0, 1.0], "h3")
         await db.close_pool()
-        return {"effect": effect, "rep": rep}
+        return {"effect": effect, "rep": rep, "other": other}
 
     ids = asyncio.run(prepare())
     main._login_calls.clear()
@@ -168,3 +206,40 @@ def test_cause_matches_converge_across_languages(client, monkeypatch):
     monkeypatch.setattr(embed_mod, "query_vector", fake_qvec2)
     hits = client.get("/api/problems/suggest?title=Запрет русского языка").json()
     assert [h["id"] for h in hits] == [client.ids["effect"]]
+
+
+def test_review_may_point_to_a_node_in_another_discussion(client, monkeypatch):
+    """«На этот вопрос уже есть ответ» — и в ДРУГОМ обсуждении, найденный по
+    смыслу. Сервер принимает только предложенные id и отдаёт корень узла,
+    чтобы UI мог туда перейти; чужой id по-прежнему отбрасывается."""
+    from app import main as main_mod, pools as pools_mod
+    other = client.ids["other"]
+
+    async def fake_qvec(text):
+        return [0.0, 0.05, 1.0]
+    monkeypatch.setattr(embed_mod, "query_vector", fake_qvec)
+    seen = {}
+
+    def fake_review(*a, **kw):
+        seen["similar"] = kw.get("similar")
+        return {"actual_type": "question", "type_note": "", "quality_note": "",
+                "verdict": "answered", "node_id": other, "position_id": None,
+                "note": "уже отвечено в другом обсуждении", "split": None,
+                "placement": "here", "place_id": None, "place_note": "", "think": ""}
+    monkeypatch.setattr(pools_mod, "review_draft", fake_review)
+    out = client.post("/api/draft/review",
+                      json={"text": "Расширение дорог снижает пробки?",
+                            "connect_to": client.ids["effect"], "edge_type": "question"}).json()
+    assert [s["id"] for s in seen["similar"]] == [other]
+    assert out["verdict"] == "answered" and out["node_id"] == other
+    assert out["node_root"] == client.ids["rep"]
+    assert out["node_topic"].startswith("Представники")
+
+    # id, которого не показывали, — отбрасывается
+    main_mod._REVIEW_CACHE.clear()
+    monkeypatch.setattr(pools_mod, "review_draft", lambda *a, **kw: {
+        **fake_review(), "node_id": 999999})
+    out = client.post("/api/draft/review",
+                      json={"text": "Расширение дорог снижает пробки?",
+                            "connect_to": client.ids["effect"], "edge_type": "question"}).json()
+    assert out["verdict"] == "new" and out["node_id"] is None

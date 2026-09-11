@@ -803,14 +803,29 @@ _SCHEMA = [
     # проблем — сотни; косинус по всем считается в Python за миллисекунды.
     # model — чтобы при смене модели старые векторы не сравнивались с новыми;
     # text_hash — чтобы пересчитать, когда постановку поправили.
+    # Вектор есть у КАЖДОГО узла, не только у проблемы: довод на русском
+    # должен находить довод на украинском так же, как проблема — проблему.
+    # Таблица одна; какие узлы сравнивать — решает запрос (см. semantic_*).
     """
-    CREATE TABLE IF NOT EXISTS problem_embeddings (
-        topic_root_id INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
-        model         TEXT NOT NULL,
-        vec           REAL[] NOT NULL,
-        text_hash     TEXT NOT NULL,
-        updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    CREATE TABLE IF NOT EXISTS node_embeddings (
+        node_id    INTEGER PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+        model      TEXT NOT NULL,
+        vec        REAL[] NOT NULL,
+        text_hash  TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
+    """,
+    # первые часы жили только векторы проблем в problem_embeddings — переносим
+    # и убираем, чтобы не держать два хранилища одного и того же
+    """
+    DO $$ BEGIN
+      IF to_regclass('problem_embeddings') IS NOT NULL THEN
+        INSERT INTO node_embeddings (node_id, model, vec, text_hash, updated_at)
+        SELECT topic_root_id, model, vec, text_hash, updated_at FROM problem_embeddings
+        ON CONFLICT (node_id) DO NOTHING;
+        DROP TABLE problem_embeddings;
+      END IF;
+    END $$
     """,
     # ПОСЛЕДНЯЯ АКТИВНОСТЬ СЕССИИ — из неё считается «сколько человек сейчас
     # онлайн». Живёт на сессии, а не на аккаунте: у одного человека может быть
@@ -3482,42 +3497,50 @@ async def delete_scale_row(row_id, author_id=None):
     return _scale_dict(row)
 
 
-# ------------------------------------------------------- problem embeddings
-async def upsert_embedding(topic_root_id, model, vec, text_hash):
+# ---------------------------------------------------------- node embeddings
+async def upsert_embedding(node_id, model, vec, text_hash):
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO problem_embeddings (topic_root_id, model, vec, text_hash, updated_at)
+            INSERT INTO node_embeddings (node_id, model, vec, text_hash, updated_at)
             VALUES ($1, $2, $3, $4, now())
-            ON CONFLICT (topic_root_id) DO UPDATE SET
+            ON CONFLICT (node_id) DO UPDATE SET
                 model = EXCLUDED.model, vec = EXCLUDED.vec,
                 text_hash = EXCLUDED.text_hash, updated_at = now()
-            """, topic_root_id, model, vec, text_hash)
+            """, node_id, model, vec, text_hash)
 
 
-async def problems_needing_embedding(model, hash_fn, limit=200):
-    """Живые корни-проблемы без вектора этой модели или с изменившимся текстом.
-    hash_fn(title, text) — как считается отпечаток (app.embed.text_hash)."""
+async def nodes_needing_embedding(model, hash_fn, limit=200):
+    """Живые узлы (любого вида) без вектора этой модели или с изменившимся
+    текстом. hash_fn(title, text) — отпечаток (app.embed.text_hash)."""
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT n.id, n.title, n.text, e.model, e.text_hash
+            SELECT n.id, n.title, n.text, n.kind, e.model, e.text_hash
             FROM nodes n
-            LEFT JOIN problem_embeddings e ON e.topic_root_id = n.id
-            WHERE n.kind = 'problem' AND n.id = n.topic_root_id
-              AND n.deleted_at IS NULL
+            LEFT JOIN node_embeddings e ON e.node_id = n.id
+            WHERE n.deleted_at IS NULL
+              AND (e.node_id IS NULL OR e.model <> $1)
             ORDER BY n.id
-            """)
-    out = []
-    for r in rows:
-        if r["model"] == model and r["text_hash"] == hash_fn(r["title"], r["text"]):
-            continue
-        out.append({"id": r["id"], "title": r["title"], "text": r["text"]})
-        if len(out) >= limit:
-            break
-    return out
+            LIMIT $2
+            """, model, limit)
+        # отдельным проходом — узлы, чей текст поправили после расчёта
+        # (редкость: правило часа; сверять хеш по всем строкам каждый раз
+        # незачем, достаточно тех, что уже с вектором и не попали выше)
+        if len(rows) < limit:
+            stale = await conn.fetch(
+                """
+                SELECT n.id, n.title, n.text, n.kind, e.model, e.text_hash
+                FROM nodes n JOIN node_embeddings e ON e.node_id = n.id
+                WHERE n.deleted_at IS NULL AND e.model = $1
+                ORDER BY n.id
+                """, model)
+            rows = list(rows) + [r for r in stale
+                                 if r["text_hash"] != hash_fn(r["title"], r["text"])]
+    return [{"id": r["id"], "title": r["title"], "text": r["text"], "kind": r["kind"]}
+            for r in rows[:limit]]
 
 
 async def semantic_neighbours(qvec, model, floor, limit, exclude_id=None):
@@ -3532,9 +3555,10 @@ async def semantic_neighbours(qvec, model, floor, limit, exclude_id=None):
                    (SELECT count(*) FROM node_topics nt
                     JOIN nodes cn ON cn.id = nt.node_id
                     WHERE nt.topic_root_id = n.id AND cn.deleted_at IS NULL) AS nodes
-            FROM problem_embeddings e
-            JOIN nodes n ON n.id = e.topic_root_id
-            WHERE e.model = $1 AND n.kind = 'problem' AND n.deleted_at IS NULL
+            FROM node_embeddings e
+            JOIN nodes n ON n.id = e.node_id
+            WHERE e.model = $1 AND n.kind = 'problem' AND n.id = n.topic_root_id
+              AND n.deleted_at IS NULL
               AND ($2::int IS NULL OR n.id <> $2)
             """, model, exclude_id)
     scored = []
@@ -3543,6 +3567,39 @@ async def semantic_neighbours(qvec, model, floor, limit, exclude_id=None):
         if s >= floor:
             scored.append({"id": r["id"], "title": r["title"], "text": r["text"],
                            "nodes": r["nodes"], "sim": round(s, 3), "semantic": True})
+    scored.sort(key=lambda d: d["sim"], reverse=True)
+    return scored[:limit]
+
+
+async def semantic_nodes(qvec, model, floor, limit, exclude_ids=()):
+    """Доводы (узлы любого вида, кроме корней-проблем) по всему графу, ближе
+    floor к вектору запроса — на любом языке и в любом обсуждении. Даёт
+    компаньону кандидатов «на это уже отвечали / это уже возражали», которых
+    он не видит, читая только текущее дерево."""
+    from . import embed as embed_mod
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT n.id, n.text, n.kind, n.topic_root_id, e.vec,
+                   r.title AS topic_title, left(r.text, 80) AS topic_text,
+                   a.name AS author
+            FROM node_embeddings e
+            JOIN nodes n ON n.id = e.node_id
+            JOIN nodes r ON r.id = n.topic_root_id
+            LEFT JOIN authors a ON a.id = n.author_id
+            WHERE e.model = $1 AND n.deleted_at IS NULL AND n.retracted_at IS NULL
+              AND NOT (n.kind = 'problem' AND n.id = n.topic_root_id)
+              AND NOT (n.id = ANY($2::int[]))
+            """, model, list(exclude_ids))
+    scored = []
+    for r in rows:
+        s = embed_mod.cosine(qvec, list(r["vec"]))
+        if s >= floor:
+            scored.append({"id": r["id"], "text": r["text"], "kind": r["kind"],
+                           "topic_root_id": r["topic_root_id"],
+                           "topic_title": r["topic_title"] or r["topic_text"],
+                           "author": r["author"], "sim": round(s, 3)})
     scored.sort(key=lambda d: d["sim"], reverse=True)
     return scored[:limit]
 

@@ -28,6 +28,11 @@ MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 DIM = 384
 # ниже этого — не «похожая проблема», а шум; дубли на разных языках дают 0,85+
 SIM_FLOOR = 0.6
+# порог для ДОВОДОВ ниже: вопрос и утверждение об одном и том же дают ~0,5–0,75
+# (замер: «Расширение дорог снижает пробки?» ↔ украинский довод 0,75, «помогает
+# ли платная парковка» ↔ довод о парковках < 0,6), а кандидатов здесь читает
+# модель и сервер принимает только предложенные id — ложный кандидат безвреден
+NODE_SIM_FLOOR = 0.5
 
 ENABLED = os.environ.get("NOOSPHERE_EMBED", "1") != "0"
 CACHE_DIR = os.environ.get("NOOSPHERE_EMBED_CACHE") or None
@@ -60,9 +65,12 @@ def ready():
     return _model is not None
 
 
-def problem_text(title, text):
-    """Что именно кладётся в вектор: заголовок + начало постановки."""
+def node_text(title, text):
+    """Что именно кладётся в вектор: заголовок (у корня) + начало текста."""
     return ((title or "").strip() + ". " + (text or "").strip()[:1000]).strip(". ")
+
+
+problem_text = node_text          # старое имя — вектор проблемы считается так же
 
 
 def text_hash(s):

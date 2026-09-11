@@ -53,36 +53,60 @@ async def lifespan(app):
 
 
 async def _embed_warm_and_backfill():
-    """Загрузить модель и досчитать векторы проблемам, у которых их нет (или
-    текст изменился). Ошибки не роняют сервер — поиск остаётся лексическим."""
+    """Загрузить модель и досчитать векторы всем узлам, у которых их нет.
+    Ошибки не роняют сервер — поиск остаётся лексическим."""
     try:
         await asyncio.to_thread(embed_mod.warm)
         if not embed_mod.ready():
             return
-        todo = await db.problems_needing_embedding(
-            embed_mod.MODEL, lambda t, x: embed_mod.text_hash(embed_mod.problem_text(t, x)))
-        for i in range(0, len(todo), 32):
-            batch = todo[i:i + 32]
-            texts = [embed_mod.problem_text(p["title"], p["text"]) for p in batch]
-            vecs = await embed_mod.embed(texts)
-            for p, t, v in zip(batch, texts, vecs):
-                await db.upsert_embedding(p["id"], embed_mod.MODEL, v, embed_mod.text_hash(t))
-        if todo:
-            log.info("векторы досчитаны: %d проблем", len(todo))
+        while await _embed_pending(limit=200):
+            pass
     except Exception:
         log.warning("прогрев эмбеддингов не удался", exc_info=True)
 
 
-async def _embed_problem(topic_root_id, title, text):
-    """Вектор одной новой проблемы (фон, fail-open)."""
+_embed_lock = asyncio.Lock()
+
+
+async def _embed_pending(limit=64):
+    """ОДИН механизм на все случаи: посчитать векторы узлам без вектора (любого
+    вида — корень, ответ, атом, атрибуция). Зовётся после старта и после
+    каждой публикации; кто создал узел — неважно, отстающих подбирает
+    следующий вызов. Возвращает, сколько посчитано. Fail-open."""
+    if not embed_mod.ready():
+        return 0
+    async with _embed_lock:
+        try:
+            todo = await db.nodes_needing_embedding(
+                embed_mod.MODEL,
+                lambda t, x: embed_mod.text_hash(embed_mod.node_text(t, x)), limit=limit)
+            for i in range(0, len(todo), 32):
+                batch = todo[i:i + 32]
+                texts = [embed_mod.node_text(p["title"], p["text"]) for p in batch]
+                vecs = await embed_mod.embed(texts)
+                for p, t, v in zip(batch, texts, vecs):
+                    await db.upsert_embedding(p["id"], embed_mod.MODEL, v,
+                                              embed_mod.text_hash(t))
+            if todo:
+                log.info("векторы досчитаны: %d узлов", len(todo))
+            return len(todo)
+        except Exception:
+            log.warning("расчёт векторов не удался", exc_info=True)
+            return 0
+
+
+async def similar_nodes(text, exclude_ids=(), limit=5):
+    """Доводы по всему графу, близкие по смыслу к тексту (любой язык, любое
+    обсуждение). Пусто, пока модель не загружена."""
+    qvec = await embed_mod.query_vector(text)
+    if not qvec:
+        return []
     try:
-        t = embed_mod.problem_text(title, text)
-        vecs = await embed_mod.embed([t])
-        if vecs:
-            await db.upsert_embedding(topic_root_id, embed_mod.MODEL, vecs[0],
-                                      embed_mod.text_hash(t))
+        return await db.semantic_nodes(qvec, embed_mod.MODEL, embed_mod.NODE_SIM_FLOOR,
+                                       limit, exclude_ids)
     except Exception:
-        log.warning("вектор проблемы %s не посчитан", topic_root_id, exc_info=True)
+        log.warning("смысловой поиск доводов не удался", exc_info=True)
+        return []
 
 
 async def suggest_problems(text, limit=5, exclude_id=None):
@@ -1265,7 +1289,7 @@ async def post_cause(effect_id: int, body: CauseIn, author=Depends(verified_auth
             raise HTTPException(400, "новой проблеме-причине нужны заголовок и постановка "
                                      "(или cause_id существующей)")
         link = await db.open_cause_problem(effect_id, title, text, author_id=author["id"])
-        _spawn(_embed_problem(link["cause_id"], title, text))
+        _spawn(_embed_pending())
     link["cause"] = await db.get_node(link["cause_id"])
     return link
 
@@ -1369,6 +1393,7 @@ async def post_attribution(intervention_id: int, body: AttributionIn,
     # оценивается как аргумент (претензия с истинностным значением), в фоне
     _spawn_billed(author, "фон:оценка (атрибуция)",
                   _score_later(node_id, body.text.strip(), "attribution"))
+    _spawn(_embed_pending())
     node = await db.get_node(node_id)
     node["author"] = author["name"]
     node["author_color"] = author["color"]
@@ -1625,10 +1650,9 @@ async def add_argument(arg: ArgumentIn, author=Depends(verified_author)):
     node_id = await db.add_node(arg.text, author_id=author["id"], kind=kind,
                                 topic_root_id=root_id, title=title)
 
-    # 1a. вектор новой проблемы — чтобы следующий черновик о том же (на любом
-    #     языке) увидел её в подсказке дублей; в фоне, без модели — молча
-    if kind == "problem":
-        _spawn(_embed_problem(node_id, title, arg.text))
+    # 1a. вектор нового узла — чтобы следующий черновик о том же (на любом
+    #     языке, в любом обсуждении) увидел его; в фоне, без модели — молча
+    _spawn(_embed_pending())
 
     # 1b. рубрика новой темы — сразу после узла, тем же запросом-цепочкой
     if arg.connect_to is None and facets:
@@ -3037,6 +3061,7 @@ class DraftReviewIn(BaseModel):
 _REVIEW_CLEAN = {
     "type_ok": True, "suggested_type": None, "type_note": "",
     "quality_note": "", "verdict": "new", "node_id": None,
+    "node_root": None, "node_topic": "",
     "position_id": None, "headline": "", "target_text": "", "note": "",
     "split": None,
     # размещение: сюда / в другую проблему / отдельным корнем / причиной
@@ -3120,6 +3145,11 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
     root_now = parent.get("topic_root_id") if parent else None
     neighbours = await suggest_problems(
         text, limit=8 if body.scope == "map" else 4, exclude_id=root_now)
+    # ДОВОДЫ по всему графу, близкие по смыслу (любой язык, любое обсуждение):
+    # без них «на это уже отвечали» компаньон мог сказать только про текущее
+    # дерево. Узлы этого дерева исключаются — они и так в промпте целиком.
+    similar = await similar_nodes(
+        text, exclude_ids=[n["id"] for n in branch] + ([body.connect_to] if body.connect_to else []))
     # Рамка входит в ключ: у корня-проблемы (тест на вред) и у корня любого
     # другого вида промпты РАЗНЫЕ, и без этого переключение вида в форме
     # доставало бы из кэша ответ на другой вопрос. Между собой не-проблемные
@@ -3139,7 +3169,8 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
                 pools_mod.review_draft, text, parent, branch,
                 [{"id": p["id"], "headline": p["headline"], "composed": p["composed"]}
                  for p in positions],
-                neighbours, root_kind=root_kind, in_problem=in_problem)
+                neighbours, root_kind=root_kind, in_problem=in_problem,
+                similar=similar)
         except Exception:
             return dict(_REVIEW_CLEAN)    # fail-open: never stand in the way
         _review_cache_set(cache_key, result)
@@ -3206,12 +3237,18 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
 
     verdict = result.get("verdict")
     nid, pid = result.get("node_id"), result.get("position_id")
+    # узлы дерева + смысловые совпадения из других обсуждений: id, которых мы
+    # не показывали, модель назвать не может (та же защита, что у place_id)
     nodes = {n["id"]: n for n in branch}
+    nodes.update({n["id"]: n for n in similar})
     known = {p["id"]: p for p in positions}
     # the parent itself is what the draft replies to — pointing at it is noise
     if verdict in ("answered", "countered") and nid in nodes and nid != body.connect_to:
         out.update(verdict=verdict, node_id=nid,
                    target_text=nodes[nid]["text"],
+                   # корень нужен, чтобы UI открыл узел из ДРУГОГО обсуждения
+                   node_root=nodes[nid].get("topic_root_id") or root_now,
+                   node_topic=nodes[nid].get("topic_title") or "",
                    note=str(result.get("note") or ""))
     elif verdict in ("similar", "covered") and pid in known:
         out.update(verdict=verdict, position_id=pid,
@@ -3321,12 +3358,14 @@ async def draft_companion(body: CompanionIn, author=Depends(verified_author)):
     neighbours = await suggest_problems(
         text, limit=8 if body.scope == "map" else 4,
         exclude_id=parent.get("topic_root_id") if parent else None)
+    similar = await similar_nodes(
+        text, exclude_ids=[n["id"] for n in branch] + ([body.connect_to] if body.connect_to else []))
     await spend_llm(author)
     try:
         out = await asyncio.to_thread(
             pools_mod.companion_reply, text,
             [h.model_dump() for h in body.history], parent, branch, neighbours,
-            turns_left=max(0, COMPANION_MAX_TURNS - turns_used))
+            turns_left=max(0, COMPANION_MAX_TURNS - turns_used), similar=similar)
     except Exception as e:
         # молчаливого компаньона автор принял бы за «всё в порядке» — а это не
         # проверка, это разговор, и его обрыв надо назвать вслух
@@ -3413,6 +3452,7 @@ async def atomize_confirm(node_id: int, body: AtomizeConfirmIn,
     # idempotent: a repeat confirm (double-click / retry) returns the atoms
     # already created instead of duplicating them; all writes are one transaction
     created, already = await db.add_atoms_once(node_id, root_id, author["id"], atoms)
+    _spawn(_embed_pending())
     if not already:
         hub.publish({"type": "atoms_created", "node_id": node_id,
                      "count": len(created)})

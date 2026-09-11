@@ -167,7 +167,7 @@ _ROOT_KINDS_DESC = ("argument (тезис: a standalone claim opening a "
 
 
 def review_draft(text, parent, branch, positions, neighbours=None,
-                 is_root=None, root_kind=None, in_problem=False):
+                 is_root=None, root_kind=None, in_problem=False, similar=None):
     """
     The pre-publication draft review (vault: ai-navigator-draft-review) — one
     LLM call that determines the draft's ACTUAL type, suggests ONE quality
@@ -239,6 +239,20 @@ def review_draft(text, parent, branch, positions, neighbours=None,
             "OTHER PROBLEMS in the graph that look related to the draft, as "
             "[id] title: text. The draft is NOT currently filed under these:\n\n"
             + poi.wrap_user_text(nlist))
+    # ДОВОДЫ из других обсуждений, близкие по смыслу (эмбеддинги, поверх
+    # языков): модель может назвать их в answered/countered — сервер примет
+    # только id из этого списка и из дерева
+    if similar:
+        slist = "\n".join(
+            f'[{n["id"]}] ({n["kind"]}, in discussion «{n.get("topic_title") or ""}») '
+            f'{(n.get("text") or "")[:300]}' for n in similar)
+        parts.append(
+            "NODES FROM OTHER DISCUSSIONS that are close in MEANING to the draft "
+            "(found by embeddings, so the language may differ), as [id] (kind, "
+            "discussion) text. If one of them already answers the draft's question "
+            "or already makes/objects to its claim, you may name it in the CONTEXT "
+            "verdict exactly like a node of this tree:\n\n"
+            + poi.wrap_user_text(slist))
     if problem_root:
         # Автор выбрал вид «проблема» — значит вопрос не «чем это является»
         # (он уже ответил), а «держит ли это состояние»: без заявленного вреда
@@ -443,7 +457,7 @@ COMPANION_SYSTEM = (
 
 
 def companion_reply(text, history, parent=None, branch=None, neighbours=None,
-                    turns_left=None):
+                    turns_left=None, similar=None):
     """
     Один ход разговора с автором о ещё не опубликованном черновике.
 
@@ -471,6 +485,14 @@ def companion_reply(text, history, parent=None, branch=None, neighbours=None,
             for n in neighbours)
         parts.append("Related problems elsewhere in the graph:\n\n"
                      + poi.wrap_user_text(nlist))
+    if similar:
+        slist = "\n".join(
+            f'[{n["id"]}] (in «{n.get("topic_title") or ""}») {(n.get("text") or "")[:300]}'
+            for n in similar)
+        parts.append("Nodes from OTHER discussions close in meaning to the draft "
+                     "(language may differ) — mention one only if it genuinely "
+                     "answers or contradicts what the author is writing:\n\n"
+                     + poi.wrap_user_text(slist))
     parts.append("The author's current draft:\n\n" + poi.wrap_user_text(text))
     if history:
         convo = "\n".join(

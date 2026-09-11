@@ -313,7 +313,7 @@ def test_companion_turn_returns_reply_and_suggestion(client, monkeypatch):
     seen = {}
 
     def fake(text, history, parent=None, branch=None, neighbours=None,
-             turns_left=None):
+             turns_left=None, **kw):
         seen["text"] = text
         seen["history"] = history
         seen["turns_left"] = turns_left

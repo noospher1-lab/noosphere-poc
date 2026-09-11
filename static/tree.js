@@ -1688,12 +1688,17 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
       rev.verdict === "answered" ? "на этот вопрос уже есть ответ"
                                  : "на этот тезис уже есть возражение"));
     hint.appendChild(el("b", null, rev.target_text || ""));
+    // узел может быть из ДРУГОГО обсуждения (найден по смыслу, на любом языке)
+    const foreign = rev.node_root && rev.node_root !== root;
+    if (foreign) hint.appendChild(el("div", "muted", "в обсуждении «" + (rev.node_topic || "#" + rev.node_root) + "»"));
     if (rev.note) hint.appendChild(el("div", "muted", rev.note));
-    const go = el("button", "mini", "перейти к узлу");
+    const go = el("button", "mini", foreign ? "перейти к узлу в том обсуждении" : "перейти к узлу");
     go.onclick = () => {
       hint.style.display = "none";
-      if (root != null) ROOT.set(rev.node_id, root);
-      selectNode(rev.node_id);
+      const r = rev.node_root ?? root;
+      if (r != null) ROOT.set(rev.node_id, r);
+      if (foreign) openTopic(r).catch(() => {}).then(() => selectNode(rev.node_id));
+      else selectNode(rev.node_id);
     };
     actions.appendChild(go);
   } else if (rev.verdict === "similar" || rev.verdict === "covered") {
