@@ -749,6 +749,22 @@ function nodeRow(node, type) {
   const label = type === "root" ? (node.title || shortLabel(node.text)) : shortLabel(node.text);
   const txt = el("span", "txt", label);
   txt.title = node.text;
+  // Связи между проблемами прямо в списке: без этого две проблемы, одна из
+  // которых порождает другую, лежат рядом как равные, а уровень виден только
+  // внутри карточки состояния — то есть нигде.
+  if (type === "root" && ((node.causes || []).length || (node.effects || []).length)) {
+    const pl = el("div", "plinks");
+    const chip = (dir, p) => {
+      const c = el("span", "pl " + dir, (dir === "up" ? "↑ причина: " : "↓ порождает: ") + p.title);
+      c.title = dir === "up" ? "эту проблему порождает: " + p.title
+                             : "эта проблема порождает: " + p.title;
+      c.onclick = (e) => { e.stopPropagation(); selectNode(p.id); };
+      return c;
+    };
+    for (const p of node.causes || []) pl.appendChild(chip("up", p));
+    for (const p of node.effects || []) pl.appendChild(chip("down", p));
+    txt.appendChild(pl);
+  }
   row.appendChild(txt);
   // отозванный довод виден в дереве как отозванный — иначе на него отвечают,
   // не зная, что автор от него уже отказался
@@ -1770,6 +1786,16 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
     nrow.onclick = () => { pick = null; mark(); };
     rows.push({ row: nrow, id: null });
     cbox.appendChild(nrow);
+    // Постановка новой проблемы — отдельно от ответа. Без неё постановкой
+    // становился сам ответ («полностью согласен с проблемой, но…»), и на
+    // странице причины он читался как реплика, а не как заявленный вред.
+    const sIn = el("textarea");
+    sIn.rows = 3;
+    sIn.placeholder = "постановка новой проблемы: в чём вред, кого касается "
+      + "(необязательно — иначе постановкой станет твой ответ)";
+    sIn.className = "cause-stmt";
+    sIn.onfocus = () => { pick = null; mark(); };
+    cbox.appendChild(sIn);
     mark();
     hint.appendChild(cbox);
     hint.appendChild(el("div", "muted",
@@ -1780,7 +1806,8 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
       const title = tIn.value.trim();
       if (pick == null && !title) { toast("дай заголовок проблеме-причине"); tIn.focus(); return; }
       hint.style.display = "none";
-      onCause(pick != null ? { cause_id: pick } : { title });
+      const stmt = sIn.value.trim();
+      onCause(pick != null ? { cause_id: pick } : { title, text: stmt || undefined });
     };
     actions.appendChild(link);
   }

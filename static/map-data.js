@@ -60,6 +60,9 @@ function fromApi(t) {
     poi: t.avg_poi != null ? Math.round(t.avg_poi) : (t.poi_score != null ? Math.round(t.poi_score) : 0),
     author: t.author,
     unsorted: !t.domain,
+    // связи между проблемами: «эту порождает …» / «эта порождает …»
+    causes: t.causes || [],
+    effects: t.effects || [],
     _geo: new Set(t.geo || []),
   };
 }

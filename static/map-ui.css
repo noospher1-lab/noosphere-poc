@@ -161,6 +161,12 @@
   color:var(--ivory,#edeef2); }
 .mv-title mark { background:rgba(224,184,120,.25); color:var(--bronze,#e0b878);
   border-radius:3px; padding:0 2px; }
+/* связи между проблемами в карточке: «↑ причина» / «↓ порождает» */
+.mv-links { display:flex; flex-wrap:wrap; gap:4px 14px; margin:-4px 0 9px;
+  font-size:12.5px; }
+.mv-link { color:var(--dim,#9aa0b0); cursor:pointer; }
+.mv-link.up { color:var(--bronze,#e0b878); }
+.mv-link:hover { color:var(--blue,#66b0ea); text-decoration:underline; }
 .mv-bot { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
 .mv-tag { font-size:12px; color:var(--dim2,#6f7688);
   border:1px solid var(--line,#272c39); border-radius:99px; padding:2px 9px; }

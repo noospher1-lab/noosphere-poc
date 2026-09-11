@@ -3175,7 +3175,13 @@ async def workspace_topics(author_id):
                                WHERE c.topic_root_id = n.id AND c.deleted_at IS NULL),
                               w.added_at) DESC
             """, author_id)
-    return [dict(r) for r in rows]
+        links = await _links_by_root(conn)
+    out = []
+    for r in rows:
+        d = dict(r)
+        d.update(links.get(d["id"], {"causes": [], "effects": []}))
+        out.append(d)
+    return out
 
 
 async def seed_workspace_once(author_id, limit=5):
@@ -3283,12 +3289,16 @@ async def map_topics():
             WHERE n.id = n.topic_root_id AND n.deleted_at IS NULL
             ORDER BY n.id
             """)
+        links = await _links_by_root(conn)
     out = []
     for r in rows:
         d = dict(r)
         d["geo"] = list(d["geo"] or [])
         d["tags"] = list(d["tags"] or [])
         d["avg_poi"] = round(float(d["avg_poi"]), 1) if d["avg_poi"] is not None else None
+        # причины/следствия — чтобы на карте связанные проблемы не лежали
+        # рядом как равные, когда одна порождает другую
+        d.update(links.get(d["id"], {"causes": [], "effects": []}))
         out.append(d)
     return out
 
@@ -3318,7 +3328,13 @@ async def list_topics():
               AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_id = n.id)
             ORDER BY n.id
             """)
-    return [dict(r) for r in rows]
+        links = await _links_by_root(conn)
+    out = []
+    for r in rows:
+        d = dict(r)
+        d.update(links.get(d["id"], {"causes": [], "effects": []}))
+        out.append(d)
+    return out
 
 
 # ---------------------------------------------------------------- problems
@@ -3624,6 +3640,34 @@ async def open_cause_problem(effect_id, title, text, node_id=None, author_id=Non
                         "effect_id": effect_id, "node_id": node_id}, author_id)
     d = _link_dict(row); d["existed"] = False
     return d
+
+
+async def _links_by_root(conn):
+    """Связи всех проблем одним запросом — для списков (дерево, карта), где
+    N+1 обращений по одному на корень не годится. root_id → {causes, effects},
+    в каждом [{id, title}]. Живые связи с живым обоснованием, как в
+    problem_links_of."""
+    rows = await conn.fetch(
+        """
+        SELECT l.cause_id, l.effect_id,
+               c.title AS cause_title, left(c.text, 90) AS cause_text,
+               e.title AS effect_title, left(e.text, 90) AS effect_text
+        FROM problem_links l
+        JOIN nodes c ON c.id = l.cause_id AND c.deleted_at IS NULL
+        JOIN nodes e ON e.id = l.effect_id AND e.deleted_at IS NULL
+        LEFT JOIN nodes j ON j.id = l.node_id
+        WHERE l.deleted_at IS NULL AND (l.node_id IS NULL OR j.deleted_at IS NULL)
+        ORDER BY l.id
+        """)
+    out = {}
+    for r in rows:
+        eff = out.setdefault(r["effect_id"], {"causes": [], "effects": []})
+        eff["causes"].append({"id": r["cause_id"],
+                              "title": r["cause_title"] or r["cause_text"]})
+        cau = out.setdefault(r["cause_id"], {"causes": [], "effects": []})
+        cau["effects"].append({"id": r["effect_id"],
+                               "title": r["effect_title"] or r["effect_text"]})
+    return out
 
 
 async def problem_chain(topic_root_id, limit=40):

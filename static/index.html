@@ -303,6 +303,12 @@
   .causebox .d .t { color: var(--ivory); font-weight: 500; white-space: nowrap; }
   .causebox .d .m { color: var(--dim2); font-size: 12px; }
   .causebox .d input { flex: 1 1 auto; min-width: 0; }
+  .causebox .cause-stmt { width: 100%; margin-top: 6px; }
+  /* связи проблем в списке дерева: «↑ причина» / «↓ порождает» */
+  .plinks { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 2px; }
+  .plinks .pl { font-size: 11.5px; color: var(--dim2); cursor: pointer; }
+  .plinks .pl.up { color: var(--bronze); }
+  .plinks .pl:hover { color: var(--blue); text-decoration: underline; }
 
   /* принадлежность узла нескольким проблемам */
   .belong { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }

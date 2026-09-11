@@ -173,6 +173,33 @@ const MapView = (() => {
                    p.x, p.y - 4);
     }
 
+    // Связи «причина → следствие» — линией со стрелкой к следствию, ПОД
+    // кружками. Без них две проблемы, одна из которых порождает другую,
+    // лежат в пейзаже как равные точки, и уровень не виден нигде.
+    const byId = new Map(nodes.map(n => [n.id, n]));
+    for (const n of nodes) {
+      for (const e of n.effects || []) {
+        const m = byId.get(e.id);
+        if (!m) continue;
+        const a = toScreen(n), b = toScreen(m);
+        const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len, uy = dy / len;
+        const ra = n.r * view.k + 2, rb = m.r * view.k + 2;
+        const x1 = a.x + ux * ra, y1 = a.y + uy * ra;
+        const x2 = b.x - ux * rb, y2 = b.y - uy * rb;
+        ctx.globalAlpha = matchTopic(n) && matchTopic(m) ? 0.85 : 0.13;
+        ctx.strokeStyle = "#e0b878"; ctx.fillStyle = "#e0b878";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+        const ah = 6 * Math.max(0.7, Math.min(1.4, view.k));
+        ctx.beginPath();
+        ctx.moveTo(x2, y2);
+        ctx.lineTo(x2 - ux * ah - uy * ah * 0.5, y2 - uy * ah + ux * ah * 0.5);
+        ctx.lineTo(x2 - ux * ah + uy * ah * 0.5, y2 - uy * ah - ux * ah * 0.5);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+
     for (const n of nodes) {
       const p = toScreen(n), on = matchTopic(n), r = n.r * view.k;
       ctx.globalAlpha = on ? 1 : 0.13;
@@ -220,7 +247,10 @@ const MapView = (() => {
         tip.innerHTML = `<div class="t">${n.title}</div><div class="m">${n.d.name}` +
           (n.sub ? " · " + n.sub : "") +
           (n.geo.length ? "<br>" + n.geo.slice(0, 3).join(", ") : "") +
-          `<br>${n.nodes} узлов · ${n.people} участников</div>`;
+          `<br>${n.nodes} узлов · ${n.people} участников` +
+          (n.causes.length ? "<br>↑ причина: " + n.causes.map(c => c.title).join("; ") : "") +
+          (n.effects.length ? "<br>↓ порождает: " + n.effects.map(c => c.title).join("; ") : "") +
+          `</div>`;
       } else tip.style.display = "none";
     });
     cv.addEventListener("wheel", e => {
@@ -281,6 +311,10 @@ const MapView = (() => {
           ${btn}
         </div>
         <div class="mv-title">${hl(t.title)}</div>
+        ${(t.causes.length || t.effects.length) ? `<div class="mv-links">${[
+          ...t.causes.map(c => `<span class="mv-link up" data-go="${c.id}">↑ причина: ${c.title}</span>`),
+          ...t.effects.map(c => `<span class="mv-link" data-go="${c.id}">↓ порождает: ${c.title}</span>`),
+        ].join("")}</div>` : ""}
         <div class="mv-bot">${meta}
           <span class="mv-stats"><b>${t.nodes}</b> узлов · <b>${t.people}</b> уч.${
             t.poi ? ` · PoI <b>${t.poi}</b>` : ""}</span>
@@ -291,6 +325,13 @@ const MapView = (() => {
       const id = +c.dataset.id;
       c.onclick = () => hooks.onOpenTopic &&
         hooks.onOpenTopic(id, MAP_TOPICS.find(t => t.id === id));
+    });
+    box.querySelectorAll("[data-go]").forEach(el => {
+      el.onclick = (e) => {
+        e.stopPropagation();               // ссылка ведёт к той проблеме, не к этой
+        const id = +el.dataset.go;
+        hooks.onOpenTopic && hooks.onOpenTopic(id, MAP_TOPICS.find(t => t.id === id));
+      };
     });
     box.querySelectorAll("[data-ws]").forEach(el => {
       el.onclick = (e) => {
