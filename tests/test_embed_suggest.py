@@ -243,3 +243,37 @@ def test_review_may_point_to_a_node_in_another_discussion(client, monkeypatch):
                       json={"text": "Расширение дорог снижает пробки?",
                             "connect_to": client.ids["effect"], "edge_type": "question"}).json()
     assert out["verdict"] == "new" and out["node_id"] is None
+
+
+def test_pick_context_keeps_chain_siblings_and_top_k():
+    """Чистая выборка контекста: корень, цепочка предков к родителю, соседи
+    под родителем и топ-k по смыслу; порядок дерева сохраняется."""
+    from app.main import _pick_context
+    # дерево: 1 корень; 2,3 под 1; 4 под 2; 5,6 под 4; 7..12 под 3
+    rows = [{"id": 1, "parent_id": None, "depth": 0},
+            {"id": 2, "parent_id": 1, "depth": 1}, {"id": 3, "parent_id": 1, "depth": 1},
+            {"id": 4, "parent_id": 2, "depth": 2}]
+    rows += [{"id": i, "parent_id": 3, "depth": 2} for i in range(7, 13)]
+    rows += [{"id": 5, "parent_id": 4, "depth": 3}, {"id": 6, "parent_id": 4, "depth": 3}]
+    sims = {7: 0.9, 8: 0.2, 9: 0.8, 10: 0.1, 11: 0.7, 12: 0.05, 3: 0.95}
+    out = _pick_context(rows, connect_to=4, sims=sims, k=2)
+    ids = [r["id"] for r in out]
+    # корень 1, предки 2→4, соседи 5 и 6, топ-2 по смыслу: 3 (0.95) и 7 (0.9)
+    assert ids == [1, 2, 3, 4, 7, 5, 6]
+    # корень без родителя: только корень + топ-k
+    out = _pick_context(rows, connect_to=None, sims=sims, k=1)
+    assert [r["id"] for r in out] == [1, 3]
+
+
+def test_node_vectors_reads_only_the_asked_model():
+    async def body():
+        db = await _fresh_db()
+        uid = await db.add_user("emb4", "hash", "Автор", invite_required=False)
+        a = await db.add_node("а", author_id=uid, kind="problem", title="А")
+        b = await db.add_node("б", author_id=uid, kind="argument", topic_root_id=a)
+        await db.upsert_embedding(a, embed_mod.MODEL, [1, 0], "h")
+        await db.upsert_embedding(b, "other", [0, 1], "h")
+        got = await db.node_vectors([a, b], embed_mod.MODEL)
+        assert got == {a: [1.0, 0.0]}
+        assert await db.node_vectors([], embed_mod.MODEL) == {}
+    _run(body)

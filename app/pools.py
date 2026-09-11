@@ -222,7 +222,10 @@ def review_draft(text, parent, branch, positions, neighbours=None,
             + f') {n["text"]}' for n in branch)
         parts.append(
             "The discussion tree so far, one node per line as "
-            "[id] (kind, relation -> parent id) text:\n\n"
+            "[id] (kind, relation -> parent id) text. In a large discussion this "
+            "is a SELECTION: the root, the chain the draft replies to, its "
+            "siblings, and the nodes closest in meaning to the draft — other "
+            "nodes exist but are omitted:\n\n"
             + poi.wrap_user_text(listing))
     if positions:
         plist = "\n".join(
@@ -478,7 +481,10 @@ def companion_reply(text, history, parent=None, branch=None, neighbours=None,
         listing = "\n".join(
             f'{"  " * n["depth"]}[{n["id"]}] ({n["kind"]}) {n["text"]}'
             for n in branch)
-        parts.append("The discussion so far:\n\n" + poi.wrap_user_text(listing))
+        parts.append("The discussion so far (in a large discussion — a selection: "
+                     "the root, the chain the draft replies to, its siblings and "
+                     "the nodes closest in meaning to the draft):\n\n"
+                     + poi.wrap_user_text(listing))
     if neighbours:
         nlist = "\n".join(
             f'[{n["id"]}] {n.get("title") or ""}: {(n.get("text") or "")[:240]}'

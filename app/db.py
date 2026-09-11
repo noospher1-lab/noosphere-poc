@@ -3571,6 +3571,19 @@ async def semantic_neighbours(qvec, model, floor, limit, exclude_id=None):
     return scored[:limit]
 
 
+async def node_vectors(ids, model):
+    """Векторы заданных узлов: {id: vec}. Для выбора контекста внутри одного
+    дерева — косинус считает вызывающий."""
+    if not ids:
+        return {}
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT node_id, vec FROM node_embeddings "
+            "WHERE model = $1 AND node_id = ANY($2::int[])", model, list(ids))
+    return {r["node_id"]: list(r["vec"]) for r in rows}
+
+
 async def semantic_nodes(qvec, model, floor, limit, exclude_ids=()):
     """Доводы (узлы любого вида, кроме корней-проблем) по всему графу, ближе
     floor к вектору запроса — на любом языке и в любом обсуждении. Даёт

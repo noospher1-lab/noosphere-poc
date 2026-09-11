@@ -95,6 +95,55 @@ async def _embed_pending(limit=64):
             return 0
 
 
+# КОНТЕКСТ РАЗБОРА: не всё дерево, а то, что нужно навигатору (vault:
+# drafts/review-prompt-cost → решение 2026-09-11). Дерево росло без потолка,
+# и каждый разбор однострочного ответа платил за всё обсуждение целиком.
+# Маленькое дерево уходит целиком — там экономить нечего, а терять контекст
+# есть что. Большое режется до: корень + цепочка предков (к чему отвечают) +
+# прямые дети родителя (соседи черновика — «это уже сказано здесь») + топ-k
+# узлов по СМЫСЛУ к черновику. Без модели — как раньше, первые 80 в ширину.
+CONTEXT_FULL = 24      # до стольких узлов дерево идёт в промпт целиком
+CONTEXT_K = 12         # сколько узлов добираем по смыслу
+CONTEXT_MAX = 2000     # страховочный кап на чтение дерева из базы
+
+
+def _pick_context(rows, connect_to, sims, k=CONTEXT_K):
+    """Чистая выборка: rows — дерево в порядке (depth, id) с parent_id;
+    sims — {id: косинус к черновику}. Возвращает подмножество в том же порядке."""
+    by_id = {r["id"]: r for r in rows}
+    keep = set()
+    if rows:
+        keep.add(rows[0]["id"])                        # корень — первым в списке
+    node = connect_to
+    while node in by_id:                              # цепочка предков
+        keep.add(node)
+        node = by_id[node].get("parent_id")
+    for r in rows:                                    # соседи под родителем
+        if connect_to is not None and r.get("parent_id") == connect_to:
+            keep.add(r["id"])
+    ranked = sorted((i for i in sims if i in by_id and i not in keep),
+                    key=lambda i: sims[i], reverse=True)
+    keep.update(ranked[:k])
+    return [r for r in rows if r["id"] in keep]
+
+
+async def topic_context(root_id, connect_to, text):
+    """Узлы обсуждения для промпта разбора/компаньона (см. выше)."""
+    rows = await db.topic_subtree(root_id, limit=CONTEXT_MAX)
+    if len(rows) <= CONTEXT_FULL:
+        return rows
+    qvec = await embed_mod.query_vector(text)
+    if not qvec:
+        return rows[:80]                              # модели нет — как раньше
+    try:
+        vecs = await db.node_vectors([r["id"] for r in rows], embed_mod.MODEL)
+    except Exception:
+        log.warning("векторы дерева не прочитались", exc_info=True)
+        return rows[:80]
+    sims = {i: embed_mod.cosine(qvec, v) for i, v in vecs.items()}
+    return _pick_context(rows, connect_to, sims)
+
+
 async def similar_nodes(text, exclude_ids=(), limit=5):
     """Доводы по всему графу, близкие по смыслу к тексту (любой язык, любое
     обсуждение). Пусто, пока модель не загружена."""
@@ -3124,7 +3173,7 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         if parent is None:
             raise HTTPException(404, f"connect_to node {body.connect_to} not found")
         root_id = parent.get("topic_root_id") or await db.topic_root_of(body.connect_to)
-        branch = await db.topic_subtree(root_id)
+        branch = await topic_context(root_id, body.connect_to, text)
         positions = await db.list_positions(root_id)
         declared = body.edge_type or "support"
         root_kind = None
@@ -3354,7 +3403,7 @@ async def draft_companion(body: CompanionIn, author=Depends(verified_author)):
         if parent is None:
             raise HTTPException(404, f"connect_to node {body.connect_to} not found")
         root_id = parent.get("topic_root_id") or await db.topic_root_of(body.connect_to)
-        branch = await db.topic_subtree(root_id)
+        branch = await topic_context(root_id, body.connect_to, text)
     neighbours = await suggest_problems(
         text, limit=8 if body.scope == "map" else 4,
         exclude_id=parent.get("topic_root_id") if parent else None)
