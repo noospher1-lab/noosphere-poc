@@ -8,6 +8,7 @@ const REL_COLOR = {
   QUALIFIES: 0x5aa9e6,
   QUESTION:  0xb98cff,
   CONCLUDES: 0xd8af6e,
+  CAUSES:    0xe0b878,  // «порождает»: связь между ПРОБЛЕМАМИ, корень → корень
 };
 const TYPE_COLOR = {
   proposal: 0x7fe3d4, // teal — central
@@ -98,6 +99,9 @@ let NODES = [], EDGES = [];
 // discussions are its connected components; currentTopicId is the root node of
 // the visible one. topicPoi maps author name -> their PoI in THIS topic (lens).
 let liveNorm = null, discussions = [], currentTopicId = null, currentSource = 'live';
+// «Все ветви»: одна сцена со всеми обсуждениями, деревья соединены связями
+// «порождает». Это и есть граф проблем — по умолчанию он, а не одна ветка.
+let viewAll = true;
 let topicPoi = {}, topicPoiRows = [], lensOn = false, poolsOn = false;
 const nodeById = new Map();
 const nodeMeshes = new Map();   // id -> { mesh, glow, baseScale, labelEl, node }
@@ -142,7 +146,8 @@ function normalize(data) {
       id: n.id,
       label: n.text,
       type,
-      topic: n.topic || (bd && bd.topic) || '',          // short theme, shown on the node
+      // у корня-проблемы заголовок лежит в title — им и подписываем узел
+      topic: n.title || n.topic || (bd && bd.topic) || '', // short theme, shown on the node
       turn: n.turn ?? (bd && bd.turn) ?? 0,              // dialogue order -> X position
       source: n.source || (bd && bd.source) || 'context', // alex / gemini / claude / live
       poi_score: score01,                       // 0..1 for the HUD bar
@@ -162,7 +167,12 @@ function normalize(data) {
     thesis: l.thesis || '',                    // the main thesis carried on the edge
   }));
 
-  return { nodes, edges };
+  // связи между проблемами: причина → следствие, оба — корни обсуждений
+  const links = (data.problem_links || []).map((l) => ({
+    cause: l.cause_id, effect: l.effect_id, node: l.node_id ?? null,
+  }));
+
+  return { nodes, edges, links };
 }
 
 // Position a set of nodes/edges and build the scene for them.
@@ -329,8 +339,20 @@ async function loadLive() {
     currentTopicId = discussions.length ? discussions[0].rootId : null;
   }
   populateTopicMenu();
-  if (poolsOn) await buildPoolGraph(false);
-  else await renderDiscussion();
+  await renderCurrent();
+}
+
+async function renderCurrent() {
+  if (poolsOn) return buildPoolGraph(false);
+  if (viewAll) return renderAll();
+  return renderDiscussion();
+}
+
+// Корень обсуждения, в котором стоит узел, — в режиме «все ветви»
+// currentTopicId не отвечает на этот вопрос.
+function rootOf(nodeId) {
+  const d = discussions.find((x) => x.ids.has(nodeId));
+  return d ? d.rootId : currentTopicId;
 }
 
 // Connected components of the (undirected) graph. The root of each is the node
@@ -368,9 +390,111 @@ function computeDiscussions(norm) {
 function populateTopicMenu() {
   const sel = document.getElementById('topicsel');
   if (!sel) return;
-  sel.innerHTML = discussions.map((d) =>
-    `<option value="${d.rootId}">${d.title} · ${d.ids.size}</option>`).join('');
-  if (currentTopicId != null) sel.value = String(currentTopicId);
+  sel.innerHTML = `<option value="all">Все ветви · ${discussions.length}</option>` +
+    discussions.map((d) =>
+      `<option value="${d.rootId}">${d.title} · ${d.ids.size}</option>`).join('');
+  sel.value = viewAll ? 'all' : String(currentTopicId);
+}
+
+// ВСЕ ветви в одной сцене. Каждое обсуждение раскладывается своим деревом
+// (layoutTree: время слева направо, ветки по строкам), а деревья ставятся
+// друг относительно друга по связям «порождает»: причина ЛЕВЕЕ следствия —
+// причина появляется раньше, следствие после, та же ось, что и время внутри
+// дерева. Одна причинная цепочка — одна плоскость; несвязанные цепочки
+// уходят вглубь по Z, одиночные обсуждения без связей — общей плоскостью
+// сзади. Уровень проблемы нигде не хранится: он здесь ровно столько, сколько
+// шагов «порождает» отделяет её от самой левой.
+const BAND = 170, TREE_GAP_Y = 34, PLANE_GAP_Z = 60;
+async function renderAll() {
+  if (!liveNorm) { installGraph([], []); return; }
+  const trees = new Map();                       // rootId -> {nodes, edges, minY, maxY}
+  for (const d of discussions) {
+    const nodes = liveNorm.nodes.filter((n) => d.ids.has(n.id)).map((n) => ({ ...n }));
+    const edges = liveNorm.edges.filter((e) => d.ids.has(e.source) && d.ids.has(e.target)).map((e) => ({ ...e }));
+    layoutTree(nodes, edges, d.rootId);
+    const ys = nodes.map((n) => n.y);
+    trees.set(d.rootId, { nodes, edges, minY: Math.min(0, ...ys), maxY: Math.max(0, ...ys) });
+  }
+  // связи только между живыми корнями
+  const links = (liveNorm.links || []).filter((l) => trees.has(l.cause) && trees.has(l.effect));
+  const causesOf = new Map(), effectsOf = new Map();
+  for (const l of links) {
+    (causesOf.get(l.effect) || causesOf.set(l.effect, []).get(l.effect)).push(l.cause);
+    (effectsOf.get(l.cause) || effectsOf.set(l.cause, []).get(l.cause)).push(l.effect);
+  }
+  // цепочки = связные компоненты по связям (без направления)
+  const seen = new Set(), chains = [];
+  for (const rootId of trees.keys()) {
+    if (seen.has(rootId)) continue;
+    const ids = [], stack = [rootId];
+    while (stack.length) {
+      const x = stack.pop();
+      if (seen.has(x)) continue;
+      seen.add(x); ids.push(x);
+      for (const y of [...(causesOf.get(x) || []), ...(effectsOf.get(x) || [])]) if (!seen.has(y)) stack.push(y);
+    }
+    chains.push(ids);
+  }
+  // глубина = самый длинный путь от корней без причин (при цикле — как дошли)
+  const depth = new Map();
+  for (const ids of chains) {
+    const q = ids.filter((id) => !(causesOf.get(id) || []).length);
+    for (const id of q) depth.set(id, 0);
+    let guard = ids.length * ids.length + 1;
+    while (q.length && guard--) {
+      const x = q.shift();
+      for (const y of effectsOf.get(x) || []) {
+        const dY = depth.get(x) + 1;
+        if ((depth.get(y) ?? -1) < dY && dY <= ids.length) { depth.set(y, dY); q.push(y); }
+      }
+    }
+    for (const id of ids) if (!depth.has(id)) depth.set(id, 0);
+  }
+  // расстановка: связанные цепочки — каждая своей плоскостью спереди, все
+  // одиночки — одной плоскостью сзади (иначе десять проблем — десять слоёв)
+  const linked = chains.filter((c) => c.length > 1).sort((a, b) => b.length - a.length);
+  const singles = chains.filter((c) => c.length === 1).flat();
+  const planes = [...linked, ...(singles.length ? [singles] : [])];
+  const allNodes = [], allEdges = [];
+  planes.forEach((ids, pi) => {
+    // каждая следующая плоскость глубже И выше: при взгляде спереди слои
+    // читаются лесенкой, а не накладываются друг на друга
+    const z = -pi * PLANE_GAP_Z, yPlane = pi * PLANE_GAP_Z * 0.6;
+    const cols = new Map();                      // depth -> [rootId]
+    for (const id of ids) (cols.get(depth.get(id)) || cols.set(depth.get(id), []).get(depth.get(id))).push(id);
+    for (const [dep, roots] of cols) {
+      roots.sort((a, b) => a - b);
+      const heights = roots.map((r) => trees.get(r).maxY - trees.get(r).minY);
+      const total = heights.reduce((s, h) => s + h, 0) + TREE_GAP_Y * (roots.length - 1);
+      let yTop = total / 2;
+      roots.forEach((r, i) => {
+        const t = trees.get(r);
+        const dy = yTop - t.maxY + yPlane;       // верх дерева на текущей высоте
+        for (const n of t.nodes) { n.x += dep * BAND; n.y += dy; n.z = z; allNodes.push(n); }
+        allEdges.push(...t.edges);
+        yTop -= heights[i] + TREE_GAP_Y;
+      });
+    }
+  });
+  links.forEach((l, i) => allEdges.push({
+    id: 'pl' + i, source: l.cause, target: l.effect, relation: 'CAUSES', thesis: '',
+  }));
+  installGraph(allNodes, allEdges, true);
+  fitCamera(allNodes);
+}
+
+// Камера отъезжает так, чтобы вся сцена была в кадре; иначе после первой
+// ширины экрана правые цепочки просто не видны.
+function fitCamera(nodes) {
+  if (!nodes.length) return;
+  const xs = nodes.map((n) => n.x), ys = nodes.map((n) => n.y), zs = nodes.map((n) => n.z);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  const cz = (Math.min(...zs) + Math.max(...zs)) / 2;
+  const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
+  const dist = Math.max(122, w * 0.75, h * 1.3) + (Math.max(...zs) - cz);
+  controls.target.set(cx, cy, cz);
+  camera.position.set(cx, cy + 18, cz + dist);
+  controls.update();
 }
 
 // Filter the full live graph down to the current discussion and build it.
@@ -496,7 +620,27 @@ function buildEdges() { for (const e of EDGES) addEdgeObj(e); }
 // A faint baseline running along the time axis, with phase markers projected
 // as DOM labels (GEMINI review · CLAUDE stress-test · time →).
 function buildAxis() {
-  const y = -28, x0 = timeX(0), x1 = timeX(TURN_MAX);
+  // «все ветви»: ось тянется под всей сценой и подписана как причинная —
+  // причина раньше следствия, и это та же ось, что время внутри дерева
+  const all = viewAll && currentSource === 'live' && !poolsOn && NODES.length;
+  const y = all ? Math.min(...NODES.map((n) => n.y)) - 14 : -28;
+  const x0 = all ? Math.min(...NODES.map((n) => n.x)) : timeX(0);
+  const x1 = all ? Math.max(...NODES.map((n) => n.x), x0 + 1) : timeX(TURN_MAX);
+  if (all) {
+    const base = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.1, 0.1, x1 - x0, 6, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0x3a4366, transparent: true, opacity: 0.45 }),
+    );
+    base.position.set((x0 + x1) / 2, y, 0);
+    base.rotation.z = Math.PI / 2;
+    graphGroup.add(base);
+    const el = document.createElement('div');
+    el.className = 'axis-label t';
+    el.textContent = 'причины → следствия · время →';
+    document.body.appendChild(el);
+    axisLabels.push({ el, world: new THREE.Vector3(x1, y - 4, 0) });
+    return;
+  }
   const base = new THREE.Mesh(
     new THREE.CylinderGeometry(0.1, 0.1, x1 - x0, 6, 1, true),
     new THREE.MeshBasicMaterial({ color: 0x3a4366, transparent: true, opacity: 0.45 }),
@@ -974,9 +1118,10 @@ async function loadReactions(nodeId) {
   const hist = document.getElementById('rx-hist');
   const summary = document.getElementById('rx-summary');
   if (!hist) return;
-  if (currentTopicId == null) { hist.innerHTML = ''; summary.textContent = ''; return; }
+  const topic = rootOf(nodeId);
+  if (topic == null) { hist.innerHTML = ''; summary.textContent = ''; return; }
   let d;
-  try { d = await (await fetch(`/api/reactions/${nodeId}?topic=${currentTopicId}`)).json(); }
+  try { d = await (await fetch(`/api/reactions/${nodeId}?topic=${topic}`)).json(); }
   catch (e) { return; }
   // Показываем СКОЛЬКО отреагировало и их СРЕДНИЙ PoI, а не сумму: сумма
   // поощряет накрутку числом. Вес голоса восстановлен (poi-weight-restored,
@@ -1123,7 +1268,7 @@ function setFormChrome(c) {
 // Граф остаётся тем, для чего он хорош: посмотреть форму спора.
 function goWriteInTree(note) {
   hud.classList.remove('open');
-  const root = currentTopicId;
+  const root = selectedId != null ? rootOf(selectedId) : currentTopicId;
   setArgStatus(note || '', 'busy');
   location.href = root ? ('/?topic=' + root) : '/';
 }
@@ -1226,9 +1371,11 @@ async function togglePools(on) {
   document.getElementById('poolspanel').classList.toggle('open', poolsOn);
   hud.classList.remove('open');
   if (poolsOn) {
+    // пулы считаются по одному обсуждению — из «всех ветвей» уходим в текущее
+    if (viewAll) { viewAll = false; populateTopicMenu(); }
     await buildPoolGraph(false);
   } else {
-    await renderDiscussion();
+    await renderCurrent();
   }
 }
 
@@ -1366,9 +1513,10 @@ function initPanels() {
 
   // topic (discussion) switcher — stub for the future topics menu
   document.getElementById('topicsel').onchange = async (e) => {
-    currentTopicId = parseInt(e.target.value);
-    if (poolsOn) await buildPoolGraph(false);
-    else await renderDiscussion();
+    viewAll = e.target.value === 'all';
+    if (!viewAll) currentTopicId = parseInt(e.target.value);
+    if (viewAll && poolsOn) await togglePools(false);
+    else await renderCurrent();
   };
 
   // Pools (Layer 2): AI-composed reading view, rendered as graph nodes

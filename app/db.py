@@ -3105,6 +3105,19 @@ async def get_graph():
             "SELECT e.* FROM edges e "
             "JOIN nodes s ON s.id = e.source_id AND s.deleted_at IS NULL "
             "JOIN nodes t ON t.id = e.target_id AND t.deleted_at IS NULL")
+        # связи между проблемами — отдельно от рёбер: в 3D-графе они соединяют
+        # ДЕРЕВЬЯ обсуждений между собой (причина слева, следствие справа), а
+        # не делают проблему-причину «ответом» внутри дерева следствия
+        link_rows = await conn.fetch(
+            """
+            SELECT l.cause_id, l.effect_id, l.node_id
+            FROM problem_links l
+            JOIN nodes c ON c.id = l.cause_id AND c.deleted_at IS NULL
+            JOIN nodes e ON e.id = l.effect_id AND e.deleted_at IS NULL
+            LEFT JOIN nodes j ON j.id = l.node_id
+            WHERE l.deleted_at IS NULL AND (l.node_id IS NULL OR j.deleted_at IS NULL)
+            ORDER BY l.id
+            """)
     nodes = [dict(r) for r in node_rows]
     for n in nodes:
         if n.get("poi_breakdown"):
@@ -3115,6 +3128,7 @@ async def get_graph():
             {"source": e["source_id"], "target": e["target_id"], "type": e["type"]}
             for e in edge_rows
         ],
+        "problem_links": [dict(r) for r in link_rows],
     }
 
 
