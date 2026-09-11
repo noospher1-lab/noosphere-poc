@@ -613,10 +613,15 @@ function addNodeMesh(n) {
   nodeMeshes.set(n.id, { mesh, glow, baseScale: base, pulse: 0, labelEl, node: n });
 }
 
-// The graphic label is the short thesis (LLM topic, else a trimmed claim).
+// Подпись узла — ЦЕЛИКОМ: заголовок (у проблемы — title, у довода — краткий
+// тезис от модели), а без него — первое предложение текста, как в дереве.
+// Обрезка на 28 знаках делала заголовки нечитаемыми; блок переносит строки.
 function nodeLabelText(n) {
   if (n.topic && n.topic.trim()) return n.topic.trim();
-  return truncate(n.label || '', 28);
+  const t = (n.label || '').trim();
+  const m = t.match(/^.*?[.!?](?=\s|$)/);
+  const s = m ? m[0] : t;
+  return s.length > 160 ? s.slice(0, 159).trimEnd() + '…' : s;
 }
 
 function addEdgeObj(e) {
@@ -987,6 +992,35 @@ const tmp = new THREE.Vector3();
 const edgeDir = new THREE.Vector3();
 const PIPE_UP = new THREE.Vector3(0, 1, 0);
 let last = performance.now();
+// Подписи не налезают друг на друга: при отъезде камеры узлы сходятся на
+// экране, а блоки текста — нет. Каждый кадр: слева направо, каждая подпись,
+// чей прямоугольник пересёк уже поставленный, поднимается над ним. Подписи
+// проблем (prop) ставятся первыми и не двигаются — они важнее. Размеры
+// берутся из offsetWidth/Height, сотни подписей это выдерживает.
+function layoutLabels(placed) {
+  placed.sort((a, b) => (a.prop === b.prop ? a.x - b.x : (a.prop ? -1 : 1)));
+  const rects = [];
+  const GAP = 3;
+  for (const p of placed) {
+    const w = p.el.offsetWidth || 80, h = p.el.offsetHeight || 16;
+    let bottom = p.y;                          // якорь — нижний край блока
+    let moved = true, guard = 12;
+    while (moved && guard--) {
+      moved = false;
+      for (const r of rects) {
+        const left = p.x - w / 2, right = p.x + w / 2, top = bottom - h;
+        if (left < r.right && right > r.left && top < r.bottom && bottom > r.top) {
+          bottom = r.top - GAP; moved = true;
+        }
+      }
+    }
+    rects.push({ left: p.x - w / 2, right: p.x + w / 2, top: bottom - h, bottom });
+    p.el.style.left = `${p.x}px`;
+    p.el.style.top = `${bottom}px`;
+    p.el.classList.add('show');
+  }
+}
+
 function animate() {
   requestAnimationFrame(animate);
   const now = performance.now();
@@ -1000,6 +1034,7 @@ function animate() {
   updatePulses(dt);
 
   // sync node meshes + pulse decay
+  const placed = [];                 // подписи этого кадра — см. layoutLabels
   for (const n of NODES) {
     const nm = nodeMeshes.get(n.id);
     nm.mesh.position.set(n.x, n.y, n.z);
@@ -1013,16 +1048,17 @@ function animate() {
       nm.mesh.scale.setScalar(nm.baseScale);
       nm.mesh.material.emissiveIntensity = 1;
     }
-    // node label (short thesis), billboarded just above the sphere
+    // node label (full title), billboarded just above the sphere — its screen
+    // position is collected here and applied after collision resolution below
     if (nm.labelEl) {
       tmp.set(n.x, n.y + nm.baseScale + 1.6, n.z).project(camera);
       if (tmp.z < 1) {
-        nm.labelEl.style.left = `${(tmp.x*0.5+0.5)*innerWidth}px`;
-        nm.labelEl.style.top = `${(-tmp.y*0.5+0.5)*innerHeight}px`;
-        nm.labelEl.classList.add('show');
+        placed.push({ el: nm.labelEl, x: (tmp.x*0.5+0.5)*innerWidth,
+                      y: (-tmp.y*0.5+0.5)*innerHeight, prop: n.type === 'proposal' });
       } else nm.labelEl.classList.remove('show');
     }
   }
+  layoutLabels(placed);
 
   // edges as pipes + billboard labels
   for (const e of edgeObjs) {

@@ -85,13 +85,16 @@
   .rel-QUALIFIES { color: var(--blue);   border: 1px solid rgba(90,169,230,0.35); }
 
   /* ---- node labels (short thesis; full text in HUD on click) ---- */
+  /* Подпись показывается ЦЕЛИКОМ, в несколько строк: обрезанный заголовок
+     проблемы «Заборона використання в…» не читается. Якорь — нижний край
+     блока над сферой, поэтому рост в высоту уходит вверх, а не на узел. */
   .node-label {
-    position: absolute; transform: translate(-50%, -50%);
+    position: absolute; transform: translate(-50%, -100%);
     font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em;
-    color: var(--ivory); padding: 2px 7px; border-radius: 3px;
-    background: rgba(5,6,10,0.62); border: 1px solid rgba(216,175,110,0.22);
-    pointer-events: none; white-space: nowrap; max-width: 230px;
-    overflow: hidden; text-overflow: ellipsis;
+    line-height: 1.35; text-align: center;
+    color: var(--ivory); padding: 3px 8px; border-radius: 3px;
+    background: rgba(5,6,10,0.72); border: 1px solid rgba(216,175,110,0.22);
+    pointer-events: none; white-space: normal; width: max-content; max-width: 260px;
     opacity: 0; transition: opacity .3s;
   }
   .node-label.show { opacity: 0.92; }
