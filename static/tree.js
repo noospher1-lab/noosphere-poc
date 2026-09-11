@@ -42,6 +42,21 @@ function toast(msg) {
   toast._t = setTimeout(() => t.classList.remove("show"), 1800);
 }
 
+// Черновик растёт вместе с текстом (потолок — max-height в CSS, дальше прокрутка):
+// в окне на две строки свой же довод не перечитать целиком перед отправкой.
+// Где браузер знает field-sizing, это делает CSS в index.html, здесь — запасной
+// путь. focusin — для черновика, восстановленного из хранилища без ввода.
+if (!CSS.supports("field-sizing", "content")) {
+  const grow = (e) => {
+    const ta = e.target;
+    if (ta.tagName !== "TEXTAREA") return;
+    ta.style.height = "auto";
+    ta.style.height = ta.scrollHeight + ta.offsetHeight - ta.clientHeight + "px";
+  };
+  document.addEventListener("input", grow);
+  document.addEventListener("focusin", grow);
+}
+
 // ---- state
 let TOPICS = [];
 let ME = null;              // the logged-in author (from the session cookie)
@@ -748,12 +763,17 @@ function nodeRow(node, type) {
   // «оценка вот-вот придёт», а она не придёт никогда. То же и с посевом: у
   // посевных доводов PoI не считался, и рисовать им правдоподобное число
   // значило бы повторить болезнь бота — оценку, которую никто не выставлял.
-  const unscored = node.author_is_service || node.author_is_seed;
+  // Проблему не оценивают по замыслу: это постановка вреда с состоянием, а не
+  // довод, у которого есть вес.
+  const unscored = node.author_is_service || node.author_is_seed
+                || node.kind === "problem";
   poi.innerHTML = node.poi_score != null ? "PoI <b>" + node.poi_score + "</b>"
                 : unscored ? "" : "…";
   if (unscored && node.poi_score == null)
     poi.title = node.author_is_service
       ? "Служебная публикация платформы — в ранжировании не участвует"
+      : node.kind === "problem"
+      ? "Проблема не оценивается — у неё состояние, а не PoI"
       : "Посевной довод — PoI не считался";
   row.appendChild(poi);
   // имя автора → его публичный профиль (история голосований). Новая вкладка,
@@ -1034,6 +1054,7 @@ async function selectNode(id) {
   meta.append(
     "автор: ", authorEl, ...(sbDetail ? [" ", sbDetail] : []),
     "  ·  PoI: " + (node.poi_score != null ? node.poi_score
+                    : node.kind === "problem" ? "— (проблема не оценивается: у неё состояние)"
                     : node.atom_group ? "— (атом разбора, живёт реакциями)"
                     : node.author_is_service ? "— (служебная публикация платформы)"
                     : node.author_is_seed ? "— (посевной довод, PoI не считался)"

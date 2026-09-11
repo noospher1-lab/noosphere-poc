@@ -236,7 +236,8 @@
   .stance-conclusion { color: var(--violet); border-color: var(--violet); }
   .stance-mixed   { color: var(--dim); }
   .actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
-  textarea { width: 100%; min-height: 56px; resize: vertical; line-height: 1.5; }
+  textarea { width: 100%; min-height: 56px; max-height: 60vh; resize: vertical;
+    line-height: 1.5; field-sizing: content; }
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,.62);
     display: flex; align-items: center; justify-content: center; z-index: 10; }
   .modal-card { width: 340px; display: flex; flex-direction: column; gap: 9px; }
