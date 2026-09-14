@@ -45,6 +45,12 @@ psql -h 127.0.0.1 -p "$PGPORT" -U noosphere -d postgres -tAc \
 # которые модули читают на импорте.
 [ -f .env ] && set -a && . ./.env && set +a
 
+# Тесты подставляют векторы сами. Настоящая модель эмбеддингов (если fastembed
+# установлен) при старте приложения в фоне пересчитывает векторы узлов и
+# затирает тестовые — тест «разбор ссылается на узел из другого обсуждения»
+# падал, как только 14.09 поставили fastembed. Включить: NOOSPHERE_EMBED=1.
+export NOOSPHERE_EMBED="${NOOSPHERE_EMBED:-0}"
+
 export TEST_DATABASE_URL="postgresql://noosphere@127.0.0.1:$PGPORT/noosphere_test"
 echo "TEST_DATABASE_URL → noosphere_test на порту $PGPORT"
 exec python3 -m pytest "${@:-tests/}" -q

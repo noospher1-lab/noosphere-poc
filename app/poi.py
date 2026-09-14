@@ -215,12 +215,28 @@ def complete_messages(system, messages, max_tokens=1024, timeout=120,
     return "".join(b.get("text", "") for b in data.get("content", []))
 
 
+def topic_language_rule(text):
+    """Последняя строка запроса оценки: на каком языке писать 'topic'.
+
+    Тема — подпись узла в дереве и на 3D-графе. Модель брала её язык из цитаты
+    внутри текста или из родительского узла: русские доводы, цитирующие
+    украинскую реплику, получали украинские подписи (прогон агентов 14.09,
+    узлы #13, #23, #26). Язык определяет код, а не модель.
+    """
+    from .lang import detect_language
+    target = detect_language(text) or "the language of the evaluated text itself"
+    return (f"\n\nLANGUAGE: write 'topic' in {target} — the language the evaluated "
+            f"text is written in, never the language of a fragment it quotes or of "
+            f"the claim it replies to.")
+
+
 def _call_llm(argument_text):
     """Call the Anthropic API through the proxy. Returns raw text content."""
     # temperature=0: the same text must always get the same score — a vote
     # weight that changes on re-submission is unfair by construction
     return complete(SYSTEM_PROMPT + INJECTION_GUARD,
-                    f"Argument to evaluate:\n\n{wrap_user_text(argument_text)}",
+                    f"Argument to evaluate:\n\n{wrap_user_text(argument_text)}"
+                    + topic_language_rule(argument_text),
                     max_tokens=1024, temperature=0)
 
 
@@ -297,7 +313,8 @@ def score_question(question_text, parent_text=None):
                 f"the topic):\n\n{wrap_user_text(question_text)}")
         criteria = QUESTION_CRITERIA_ROOT
 
-    raw = complete(system + INJECTION_GUARD, user, max_tokens=1024, temperature=0)
+    raw = complete(system + INJECTION_GUARD, user + topic_language_rule(question_text),
+                   max_tokens=1024, temperature=0)
     parsed = _parse(raw)
     composite = 0.0
     breakdown = {}
@@ -377,7 +394,8 @@ def score_detail(detail_text, parent_text=None):
         user = f"Detail to evaluate:\n\n{wrap_user_text(detail_text)}"
         criteria = DETAIL_CRITERIA_ROOT
 
-    raw = complete(system + INJECTION_GUARD, user, max_tokens=1024, temperature=0)
+    raw = complete(system + INJECTION_GUARD, user + topic_language_rule(detail_text),
+                   max_tokens=1024, temperature=0)
     parsed = _parse(raw)
     composite = 0.0
     breakdown = {}
@@ -441,7 +459,8 @@ PROPOSAL_SYSTEM_PROMPT = (
 def score_proposal(proposal_text):
     """Returns (composite_score, breakdown_dict) using the proposal rubric."""
     raw = complete(PROPOSAL_SYSTEM_PROMPT + INJECTION_GUARD,
-                   f"Proposal to evaluate:\n\n{wrap_user_text(proposal_text)}",
+                   f"Proposal to evaluate:\n\n{wrap_user_text(proposal_text)}"
+                   + topic_language_rule(proposal_text),
                    max_tokens=1024, temperature=0)
     return _compose(_parse(raw), PROPOSAL_CRITERIA, "proposal")
 
@@ -477,7 +496,8 @@ EXPLORATION_SYSTEM_PROMPT = (
 def score_exploration(exploration_text):
     """Returns (composite_score, breakdown_dict) using the exploration rubric."""
     raw = complete(EXPLORATION_SYSTEM_PROMPT + INJECTION_GUARD,
-                   f"Exploration to evaluate:\n\n{wrap_user_text(exploration_text)}",
+                   f"Exploration to evaluate:\n\n{wrap_user_text(exploration_text)}"
+                   + topic_language_rule(exploration_text),
                    max_tokens=1024, temperature=0)
     return _compose(_parse(raw), EXPLORATION_CRITERIA, "exploration")
 

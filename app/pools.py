@@ -5,7 +5,9 @@ users see distinct positions instead of raw spam. The audit layer (every node)
 stays untouched; pools are a *view* computed on top of it.
 """
 
+import contextvars
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 from . import poi
 from .lang import author_language, detect_language
@@ -142,11 +144,23 @@ SYSTEM = (
 )
 
 
+# Сколько сведений позиций идёт параллельно — каждое отдельным вызовом модели.
+COMPOSE_WORKERS = 4
+# Группировка и сведение пишут длинные ответы: 90 секунд по умолчанию не хватило
+# уже на 15 доводах (прогон агентов 14.09 — пересборка падала по таймауту).
+POOL_TIMEOUT = 180
+
+
 def cluster_arguments(args):
     """
     args: [{id, text}] -> [{headline, composed, stance, member_ids}].
-    `composed` is the maximally-deep merged argument; `headline` is a short title.
-    May call the LLM.
+
+    Два шага. Сначала ГРУППИРОВКА: модель возвращает только заголовки, отношение
+    и состав групп — короткий ответ. Раньше в том же вызове она писала и полный
+    текст каждой позиции: выход рос с обсуждением и уже на 15 доводах не
+    укладывался в таймаут. Затем СВЕДЕНИЕ: группа из нескольких доводов сводится
+    отдельным вызовом, группы параллельно; группа из одного довода — сам довод,
+    без модели.
     """
     if not args:
         return []
@@ -156,21 +170,40 @@ def cluster_arguments(args):
         f"Arguments in one debate, each as [id] then text:\n\n{listing}\n\n"
         "Group them into POOLS, each collecting arguments that make the same or "
         "complementary point. Every id must appear in exactly one pool. For each "
-        "pool produce, in the SAME LANGUAGE as the arguments:\n"
+        "pool give, in the SAME LANGUAGE as the arguments:\n"
         "- 'headline': a short title (3-7 words) of the position;\n"
-        "- 'composed': the FULL merged argument — integrate the deepest version "
-        "plus every complementary point from all members into one coherent, "
-        "maximally deep argument. Do not summarize or shorten; preserve all "
-        "distinct points and nuance, remove only literal repetition;\n"
         "- 'stance': toward the debate's main claim — 'support', 'oppose', or 'mixed';\n"
         "- 'member_ids': the argument ids in this pool.\n"
+        "Do NOT write the merged position text here — it is composed separately.\n"
         "Respond with ONLY JSON, no prose: "
-        '{"pools":[{"headline":"...","composed":"...","stance":"support|oppose|mixed","member_ids":[1,2]}]}'
+        '{"pools":[{"headline":"...","stance":"support|oppose|mixed","member_ids":[1,2]}]}'
     )
-    raw = poi.complete(SYSTEM, user, max_tokens=4096, temperature=0)
+    raw = poi.complete(SYSTEM, user, max_tokens=2048, timeout=POOL_TIMEOUT, temperature=0)
     cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    data = json.loads(cleaned)
-    return data.get("pools", [])
+    groups = json.loads(cleaned).get("pools", [])
+    texts = {a["id"]: a["text"] for a in args}
+
+    def compose(group):
+        members = [texts[i] for i in group.get("member_ids", []) if i in texts]
+        out = dict(group)
+        if len(members) <= 1:
+            out["composed"] = members[0] if members else ""
+            return out
+        try:
+            comp = compose_one(members)
+            out["composed"] = comp.get("composed") or "\n\n".join(members)
+            out["headline"] = group.get("headline") or comp.get("headline", "")
+        except Exception:
+            # одна сорвавшаяся группа не роняет всю пересборку: доводы как есть
+            out["composed"] = "\n\n".join(members)
+        return out
+
+    # Потоки не наследуют contextvars: без копии контекста траты сведения не
+    # попали бы в счётчик автора (poi.current_usage) и пошли бы мимо его ключа
+    # (poi.current_api_key) — та самая дыра учёта, закрытая 10.09.
+    with ThreadPoolExecutor(max_workers=COMPOSE_WORKERS) as ex:
+        futures = [ex.submit(contextvars.copy_context().run, compose, g) for g in groups]
+        return [f.result() for f in futures]
 
 
 def compose_one(texts):
@@ -187,7 +220,8 @@ def compose_one(texts):
         "LANGUAGE as the arguments. Respond with ONLY JSON: "
         '{"headline":"short title (3-7 words)","composed":"the full merged argument"}'
     )
-    raw = poi.complete(SYSTEM, user, max_tokens=2048, temperature=0)
+    raw = poi.complete(SYSTEM, user, max_tokens=2048, timeout=POOL_TIMEOUT,
+                       temperature=0)
     cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     return json.loads(cleaned)
 
@@ -204,8 +238,9 @@ def assign_argument(text, positions):
     Returns {"position_id": int|None, "headline": str, "composed": str, "stance": str}
     — headline/composed/stance describe the NEW position when position_id is None.
     """
-    listing = poi.wrap_user_text("\n".join(
+    listing = (poi.wrap_user_text("\n".join(
         f'[{p["id"]}] {p["headline"]}: {p["composed"]}' for p in positions))
+        if positions else "(none yet — this argument opens the first position)")
     user = (
         f"Existing POSITIONS in a debate, each as [id] headline: full text:\n\n{listing}\n\n"
         f"A NEW argument has arrived:\n\n{poi.wrap_user_text(text)}\n\n"

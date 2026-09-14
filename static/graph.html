@@ -95,9 +95,12 @@
     color: var(--ivory); padding: 3px 8px; border-radius: 3px;
     background: rgba(5,6,10,0.72); border: 1px solid rgba(216,175,110,0.22);
     pointer-events: none; white-space: normal; width: max-content; max-width: 260px;
-    opacity: 0; transition: opacity .3s;
+    opacity: 0; transition: opacity .3s, border-color .15s;
   }
-  .node-label.show { opacity: 0.92; }
+  /* Видимая подпись кликается так же, как шар: попасть по тексту проще, чем по
+     точке узла. Скрытая — нет, иначе невидимый блок перехватывал бы клики. */
+  .node-label.show { opacity: 0.92; pointer-events: auto; cursor: pointer; }
+  .node-label.show:hover { opacity: 1; border-color: rgba(216,175,110,0.7); }
   .node-label.prop {
     color: var(--bronze); font-size: 11px; letter-spacing: 0.14em;
     text-transform: uppercase; border-color: rgba(216,175,110,0.45);
@@ -149,6 +152,9 @@
     border: 1px solid var(--line); border-radius: 10px;
     padding: 16px 18px 14px;
     transform: translateX(calc(100% + 30px)); transition: transform .35s cubic-bezier(.2,.8,.2,1);
+    /* Выше подписей узлов: они добавляются в body позже панели и без z-index
+       рисовались поверх её текста. Ниже шапки (20). */
+    z-index: 8;
   }
   #hud.open { transform: translateX(0); }
   #hud .eyebrow { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;

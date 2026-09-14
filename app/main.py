@@ -395,7 +395,7 @@ async def _assign_position_later(node_id: int, text: str):
     re-composes that one pool to integrate the new point. The assign step is
     bounded by the NUMBER OF POSITIONS (a handful), not by the topic's size; the
     re-compose that follows a join grows with that one pool's membership, not the
-    topic. Full re-cluster stays an explicit, rare op (?recompute=true).
+    topic. Full re-cluster stays an explicit, rare op (POST …/recompute).
     """
     try:
         root = await db.topic_root_of(node_id)
@@ -403,8 +403,10 @@ async def _assign_position_later(node_id: int, text: str):
         # merge candidate, or a new argument could re-enter someone's own pool
         positions = [p for p in await db.list_positions(root)
                      if p.get("stance") != "dissent"]
-        if not positions:
-            return          # first read of the topic runs the initial clustering
+        # Позиций ещё нет — первый довод открывает первую. Раньше здесь был
+        # выход «первое чтение темы запустит кластеризацию», но с 10.09 чтение
+        # модель не зовёт, и у новой темы позиции не появлялись никогда (прогон
+        # агентов 14.09: 30 доводов — ноль позиций).
         result = await asyncio.to_thread(
             pools_mod.assign_argument, text,
             [{"id": p["id"], "headline": p["headline"], "composed": p["composed"]}

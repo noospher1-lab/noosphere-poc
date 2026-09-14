@@ -608,6 +608,13 @@ function addNodeMesh(n) {
   const labelEl = document.createElement('div');
   labelEl.className = 'node-label' + (isProp ? ' prop' : '');
   labelEl.textContent = nodeLabelText(n);
+  // клик по подписи — то же, что клик по шару: открыть узел в панели
+  labelEl.addEventListener('click', () => {
+    const node = nodeById.get(n.id);
+    if (!node) return;
+    openHud(node);
+    triggerNodePulse(n.id, 'SUPPORTS');
+  });
   document.body.appendChild(labelEl);
 
   nodeMeshes.set(n.id, { mesh, glow, baseScale: base, pulse: 0, labelEl, node: n });
@@ -895,6 +902,18 @@ function onEdgeAdded(d) {
 
 // ---------------------------------------------------------------- HUD
 const hud = document.getElementById('hud');
+
+// Строка над заголовком панели. Раньше туда шло n.source, а у узлов из графа
+// это служебное 'context' — панель подписывала любой узел «CONTEXT».
+const REL_RU = { SUPPORTS: 'за', REBUTS: 'возражение', UNDERCUTS: 'не доказывает',
+                 QUALIFIES: 'уточнение', QUESTION: 'вопрос', CONCLUDES: 'вывод' };
+function nodeKindText(n) {
+  if (n.source && n.source !== 'context') return n.source;   // варианты диалога
+  if (n.type === 'proposal') return 'проблема';
+  const out = edgeObjs.find((e) => e.a && e.a.id === n.id && e.relation !== 'CAUSES');
+  const rel = out && REL_RU[out.relation];
+  return rel ? `довод · ${rel}` : 'довод';
+}
 function openHud(n) {
   selectedId = n.id;
   hud.classList.add('open');
@@ -910,7 +929,7 @@ function openHud(n) {
   if (isPlanet) { renderPlanetHud(n); return; }
 
   replyTargetId = n.id;   // an argument node is the reply target
-  document.getElementById('hud-type').textContent = n.source || n.type;
+  document.getElementById('hud-type').textContent = nodeKindText(n);
   // heading = short topic; the full verbatim dialogue text goes in the body
   document.getElementById('hud-label').textContent =
     (n.topic && n.topic.trim()) ? n.topic : truncate(n.label || '', 48);
@@ -992,29 +1011,29 @@ const tmp = new THREE.Vector3();
 const edgeDir = new THREE.Vector3();
 const PIPE_UP = new THREE.Vector3(0, 1, 0);
 let last = performance.now();
-// Подписи не налезают друг на друга: при отъезде камеры узлы сходятся на
-// экране, а блоки текста — нет. Каждый кадр: слева направо, каждая подпись,
-// чей прямоугольник пересёк уже поставленный, поднимается над ним. Подписи
-// проблем (prop) ставятся первыми и не двигаются — они важнее. Размеры
-// берутся из offsetWidth/Height, сотни подписей это выдерживает.
+// Подписи не налезают друг на друга и не уезжают от своих узлов. Раньше при
+// пересечении подпись поднималась над соседней — до 12 раз, и в плотной части
+// графа подписи вставали столбиком далеко над узлами, где уже не понять, чья
+// какая. Теперь у подписи несколько мест рядом с её узлом: над ним, под ним,
+// на ступень выше, на ступень ниже. Все заняты — подпись в этом кадре не
+// показывается и вернётся, когда камера подъедет и места станет больше.
+// Порядок: проблемы, выбранный узел, затем ближние к камере — их прячем последними.
 function layoutLabels(placed) {
-  placed.sort((a, b) => (a.prop === b.prop ? a.x - b.x : (a.prop ? -1 : 1)));
+  placed.sort((a, b) => (b.prop - a.prop) || (b.selected - a.selected) || (a.depth - b.depth));
   const rects = [];
   const GAP = 3;
+  const hits = (left, right, top, bottom) =>
+    rects.some((r) => left < r.right && right > r.left && top < r.bottom && bottom > r.top);
   for (const p of placed) {
     const w = p.el.offsetWidth || 80, h = p.el.offsetHeight || 16;
-    let bottom = p.y;                          // якорь — нижний край блока
-    let moved = true, guard = 12;
-    while (moved && guard--) {
-      moved = false;
-      for (const r of rects) {
-        const left = p.x - w / 2, right = p.x + w / 2, top = bottom - h;
-        if (left < r.right && right > r.left && top < r.bottom && bottom > r.top) {
-          bottom = r.top - GAP; moved = true;
-        }
-      }
-    }
-    rects.push({ left: p.x - w / 2, right: p.x + w / 2, top: bottom - h, bottom });
+    const left = p.x - w / 2, right = p.x + w / 2;
+    // якорь — нижний край блока: над узлом он у p.y, под узлом — у p.yBelow + h
+    const slots = p.prop
+      ? [p.y]                                   // подпись проблемы не двигается
+      : [p.y, p.yBelow + h, p.y - (h + GAP), p.yBelow + 2 * h + GAP];
+    const bottom = slots.find((b) => !hits(left, right, b - h, b));
+    if (bottom === undefined) { p.el.classList.remove('show'); continue; }
+    rects.push({ left, right, top: bottom - h, bottom });
     p.el.style.left = `${p.x}px`;
     p.el.style.top = `${bottom}px`;
     p.el.classList.add('show');
@@ -1053,8 +1072,10 @@ function animate() {
     if (nm.labelEl) {
       tmp.set(n.x, n.y + nm.baseScale + 1.6, n.z).project(camera);
       if (tmp.z < 1) {
-        placed.push({ el: nm.labelEl, x: (tmp.x*0.5+0.5)*innerWidth,
-                      y: (-tmp.y*0.5+0.5)*innerHeight, prop: n.type === 'proposal' });
+        const x = (tmp.x*0.5+0.5)*innerWidth, y = (-tmp.y*0.5+0.5)*innerHeight, depth = tmp.z;
+        tmp.set(n.x, n.y - nm.baseScale - 1.6, n.z).project(camera);
+        placed.push({ el: nm.labelEl, x, y, yBelow: (-tmp.y*0.5+0.5)*innerHeight, depth,
+                      prop: n.type === 'proposal' ? 1 : 0, selected: n.id === selectedId ? 1 : 0 });
       } else nm.labelEl.classList.remove('show');
     }
   }
