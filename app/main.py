@@ -164,6 +164,59 @@ async def suggest_problems(text, limit=5, exclude_id=None):
     return await db.suggest_problems(text, limit=limit, exclude_id=exclude_id, qvec=qvec)
 
 
+# Сколько состояния проблемы класть в промпт разбора и компаньона. Реестр у
+# живой проблемы копится годами: в промпт идут последние записи и сводка
+# исходов по всем, связи — первые по времени.
+PROBLEM_REGISTRY_MAX = 12
+PROBLEM_LINKS_MAX = 8
+
+
+async def problem_context(root_id):
+    """Карточка состояния проблемы и её связи с другими проблемами — для промпта
+    разбора и компаньона. Без этого ИИ читал только дерево ответов: не знал, что
+    уже пробовали и чем кончилось, и не знал, что причина, о которой пишет
+    автор, уже заведена отдельной проблемой. None — корень не проблема или
+    прочитать не вышло (разбор от этого не падает)."""
+    if root_id is None:
+        return None
+    try:
+        root = await db.get_node(root_id)
+        if not root or root.get("kind") != "problem":
+            return None
+        state = await db.get_problem(root_id)
+        registry = await db.list_interventions(root_id)
+        links = await db.problem_links_of(root_id)
+    except Exception:
+        log.warning("состояние проблемы %s не прочиталось", root_id, exc_info=True)
+        return None
+
+    def link(row, other):
+        pid = row[other]
+        # у новой причины обоснование — её же постановка: второй раз не кладём
+        just = (row.get("node_text")
+                if row.get("node_id") not in (None, pid) and not row.get("node_retracted_at")
+                else None)
+        return {"id": pid, "title": row.get("problem_title") or "",
+                "text": row.get("problem_text") or "", "justification": just,
+                "supported": row.get("supported") or 0,
+                "disputed": row.get("disputed") or 0}
+
+    return {
+        "causes_text": state.get("causes"),
+        "gap": state.get("gap"),
+        "scale_note": state.get("scale_note"),
+        "scale": [{"region": r.get("region"), "figure": r.get("figure")}
+                  for r in state.get("scale") or []][:8],
+        "outcomes": state.get("outcomes") or {},
+        "registry_total": len(registry),
+        "registry": [{k: i.get(k) for k in ("what", "actor", "geo", "when_text", "outcome",
+                                             "outcome_kind", "conditions")}
+                     for i in registry[-PROBLEM_REGISTRY_MAX:]],
+        "causes": [link(r, "cause_id") for r in links["causes"]][:PROBLEM_LINKS_MAX],
+        "effects": [link(r, "effect_id") for r in links["effects"]][:PROBLEM_LINKS_MAX],
+    }
+
+
 app = FastAPI(title="Noosphere PoC", version="0.2.0", lifespan=lifespan)
 
 
@@ -3196,12 +3249,14 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         # «уровня выше» нет — им нечего порождать
         root_node = parent if parent["id"] == root_id else await db.get_node(root_id)
         in_problem = bool(root_node and root_node.get("kind") == "problem")
+        problem = await problem_context(root_id) if in_problem else None
     else:
         # Вид корня, заявленный автором. У проблемы сравнивать не с чем — там
         # тест на вред; у остальных видов сравнение обычное, как у ответа.
         root_kind = body.kind if body.kind in _ROOT_KINDS else "problem"
         declared = None if root_kind == "problem" else root_kind
         in_problem = False
+        problem = None
     # Соседние проблемы — то, без чего компаньон не может сказать «ты пишешь не
     # туда»: иначе он видит только ту тему, в которой автор уже стоит. Поиск
     # триграммный (suggest_problems), без LLM, поэтому дёшев; "map" лишь берёт
@@ -3237,7 +3292,7 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
                 [{"id": p["id"], "headline": p["headline"], "composed": p["composed"]}
                  for p in positions],
                 neighbours, root_kind=root_kind, in_problem=in_problem,
-                similar=similar, lang=lang)
+                similar=similar, lang=lang, problem=problem)
         except Exception:
             return dict(_REVIEW_CLEAN)    # fail-open: never stand in the way
         _review_cache_set(cache_key, result)
@@ -3270,6 +3325,10 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
     # РАЗМЕЩЕНИЕ. id проверяется по списку, который мы сами и передали: LLM не
     # должна уметь отправить автора к произвольному узлу графа.
     known_near = {n["id"]: n for n in neighbours}
+    # связанные проблемы (причины и следствия) модель тоже видела — к ним
+    # отправить можно: «это уже причина #4, пиши там»
+    for linked in (problem or {}).get("causes", []) + (problem or {}).get("effects", []):
+        known_near.setdefault(linked["id"], linked)
     placement = result.get("placement")
     place_id = result.get("place_id")
     if placement == "elsewhere" and place_id in known_near:
@@ -3415,13 +3474,14 @@ async def draft_companion(body: CompanionIn, author=Depends(verified_author)):
         raise HTTPException(
             400, f"разговор дошёл до потолка в {COMPANION_MAX_TURNS} ходов — "
                  f"публикуй или начни заново")
-    parent, branch = None, []
+    parent, branch, problem = None, [], None
     if body.connect_to is not None:
         parent = await db.get_node(body.connect_to)
         if parent is None:
             raise HTTPException(404, f"connect_to node {body.connect_to} not found")
         root_id = parent.get("topic_root_id") or await db.topic_root_of(body.connect_to)
         branch = await topic_context(root_id, body.connect_to, text)
+        problem = await problem_context(root_id)
     neighbours = await suggest_problems(
         text, limit=8 if body.scope == "map" else 4,
         exclude_id=parent.get("topic_root_id") if parent else None)
@@ -3433,7 +3493,8 @@ async def draft_companion(body: CompanionIn, author=Depends(verified_author)):
             pools_mod.companion_reply, text,
             [h.model_dump() for h in body.history], parent, branch, neighbours,
             turns_left=max(0, COMPANION_MAX_TURNS - turns_used), similar=similar,
-            lang=await _author_lang(author, text, [h.model_dump() for h in body.history]))
+            lang=await _author_lang(author, text, [h.model_dump() for h in body.history]),
+            problem=problem)
     except Exception as e:
         # молчаливого компаньона автор принял бы за «всё в порядке» — а это не
         # проверка, это разговор, и его обрыв надо назвать вслух

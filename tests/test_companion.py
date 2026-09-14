@@ -460,3 +460,51 @@ def test_short_draft_takes_language_from_authors_past_texts(client, monkeypatch)
     # появился явный украинский черновик — черновики важнее узлов
     assert ask("Треба зробити щось краще, бо так далі не можна") == "Ukrainian"
     assert ask("проблема в коррупции") == "Ukrainian"
+
+
+@needs_db
+def test_review_and_companion_get_problem_state_and_links(client, monkeypatch):
+    """Сервер кладёт в разбор и компаньона карточку проблемы, реестр и связанные
+    проблемы; к связанной проблеме разбор может отправить автора, хотя в
+    соседях её не было (vault: decisions/2026-09-14-ai-reads-problem-state)."""
+    from app import db, pools as pools_mod
+    root, cause, uid = client.ids["root"], client.ids["other"], client.ids["author"]
+
+    async def fill():
+        await db.set_problem(root, causes="Город растёт быстрее дорог",
+                             gap="Нет данных по пригородам", author_id=uid)
+        await db.add_intervention(root, "Платные парковки в центре", geo="Рига",
+                                  outcome_kind="failure", author_id=uid)
+        await db.add_problem_link(cause, root, author_id=uid)   # «загрязнение» порождает «пробки»
+
+    client.portal.call(fill)
+    seen = {}
+
+    def fake_review(*a, **kw):
+        seen["review"] = kw.get("problem")
+        return {"actual_type": "support", "verdict": "new", "placement": "elsewhere",
+                "place_id": cause, "place_note": "это про причину"}
+
+    def fake_companion(text, history, *a, **kw):
+        seen["companion"] = kw.get("problem")
+        return {"reply": "ок", "suggestion": None}
+
+    monkeypatch.setattr(pools_mod, "review_draft", fake_review)
+    monkeypatch.setattr(pools_mod, "companion_reply", fake_companion)
+
+    r = client.post("/api/draft/review", json={
+        "text": "Выхлопы машин в час пик", "connect_to": root, "edge_type": "support"})
+    assert r.status_code == 200, r.text
+    p = seen["review"]
+    assert p["causes_text"] == "Город растёт быстрее дорог"
+    assert p["gap"] == "Нет данных по пригородам"
+    assert p["registry_total"] == 1 and p["registry"][0]["what"] == "Платные парковки в центре"
+    assert p["outcomes"] == {"failure": 1}
+    assert [c["id"] for c in p["causes"]] == [cause] and p["effects"] == []
+    # отправить к связанной причине можно — её модель видела
+    assert r.json()["placement"] == "elsewhere" and r.json()["place_id"] == cause
+
+    r = client.post("/api/draft/companion", json={
+        "text": "Выхлопы машин в час пик", "connect_to": root, "history": []})
+    assert r.status_code == 200, r.text
+    assert [c["id"] for c in seen["companion"]["causes"]] == [cause]

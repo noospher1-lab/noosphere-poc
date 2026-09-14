@@ -26,6 +26,70 @@ DATA_GUARD = (
 # модель отвечает на языке окружения (узел, ветка, соседи). Язык определяет код
 # (app/lang.py), а правило идёт ПОСЛЕДНИМ блоком запроса и называет язык.
 
+_OUTCOME_ORDER = ("success", "partial", "mixed", "failure", "unclear")
+
+
+def _problem_parts(problem):
+    """Карточка состояния и связанные проблемы — блоки запроса разбора и
+    компаньона (собирает main.problem_context). Пусто, если корень не проблема."""
+    if not problem:
+        return []
+    parts = []
+    card = []
+    if problem.get("causes_text"):
+        card.append("Causes, as the problem's participants frame them: "
+                    + problem["causes_text"])
+    if problem.get("gap"):
+        card.append("What is still missing (not covered by any attempt so far): "
+                    + problem["gap"])
+    if problem.get("scale"):
+        card.append("Scale: " + "; ".join(f'{s["region"]}: {s["figure"]}'
+                                          for s in problem["scale"]))
+    elif problem.get("scale_note"):
+        card.append("Scale: " + problem["scale_note"])
+    total = problem.get("registry_total") or 0
+    if total:
+        outcomes = problem.get("outcomes") or {}
+        summary = ", ".join(f"{k} {outcomes[k]}" for k in _OUTCOME_ORDER if outcomes.get(k))
+        shown = problem.get("registry") or []
+        card.append(f"Registry of what has been tried: {total} entries ({summary})"
+                    + ("; the latest:" if total > len(shown) else ":"))
+        for i in shown:
+            meta = ", ".join(x for x in (i.get("actor"), i.get("geo"), i.get("when_text")) if x)
+            line = f'  - {i.get("what") or ""}' + (f" ({meta})" if meta else "")
+            line += f' — outcome: {i.get("outcome_kind") or "unclear"}'
+            if i.get("outcome"):
+                line += f': {i["outcome"]}'
+            if i.get("conditions"):
+                line += f'; conditions: {i["conditions"]}'
+            card.append(line)
+    if card:
+        parts.append(
+            "STATE OF THE PROBLEM this discussion belongs to — the card its "
+            "participants maintain; registry entries are recorded facts, not "
+            "arguments. Use it: a draft that proposes what was already tried, or "
+            "ignores a recorded failure, should hear so:\n\n"
+            + poi.wrap_user_text("\n".join(card)))
+    links = []
+    for label, key in (("CAUSE (produces this problem)", "causes"),
+                       ("EFFECT (produced by this problem)", "effects")):
+        for link in problem.get(key) or []:
+            line = f'[{link["id"]}] {label}: {link["title"]} — {link["text"]}'
+            if link.get("justification"):
+                line += f' | why linked: {link["justification"]}'
+            if link.get("supported") or link.get("disputed"):
+                line += (f' | the link is supported {link["supported"]}, '
+                         f'disputed {link["disputed"]}')
+            links.append(line)
+    if links:
+        parts.append(
+            "LINKED PROBLEMS — separate discussions tied to this problem by an "
+            "explicit, arguable link; each has its own discussion and registry. "
+            "A point that is really about one of them belongs THERE, not here:\n\n"
+            + poi.wrap_user_text("\n".join(links)))
+    return parts
+
+
 def language_rule(lang):
     """Последний блок запроса к разбору и компаньону."""
     target = lang or ("the language of the author's own draft — judge it by the "
@@ -189,7 +253,7 @@ _ROOT_KINDS_DESC = ("argument (тезис: a standalone claim opening a "
 
 def review_draft(text, parent, branch, positions, neighbours=None,
                  is_root=None, root_kind=None, in_problem=False, similar=None,
-                 lang=None):
+                 lang=None, problem=None):
     """
     The pre-publication draft review (vault: ai-navigator-draft-review) — one
     LLM call that determines the draft's ACTUAL type, suggests ONE quality
@@ -278,6 +342,7 @@ def review_draft(text, parent, branch, positions, neighbours=None,
             "or already makes/objects to its claim, you may name it in the CONTEXT "
             "verdict exactly like a node of this tree:\n\n"
             + poi.wrap_user_text(slist))
+    parts.extend(_problem_parts(problem))
     if problem_root:
         # Автор выбрал вид «проблема» — значит вопрос не «чем это является»
         # (он уже ответил), а «держит ли это состояние»: без заявленного вреда
@@ -375,7 +440,9 @@ def review_draft(text, parent, branch, positions, neighbours=None,
            "5. PLACEMENT: is this the right place for the draft at all? "
            "Default is 'here' — say otherwise ONLY on a clear mismatch:\n"
            "   - 'elsewhere': the draft is really about one of the OTHER "
-           "PROBLEMS listed above (set place_id to that problem's id);\n"
+           "PROBLEMS or LINKED PROBLEMS listed above — a cause or an effect "
+           "of this problem has its own discussion (set place_id to that "
+           "problem's id);\n"
            + ("   - 'cause': the draft names a CAUSE of this problem — a "
               "distinct upstream problem (a harm of its own, with its own "
               "possible solutions) that PRODUCES the one discussed here, e.g. "
@@ -386,7 +453,9 @@ def review_draft(text, parent, branch, positions, neighbours=None,
               "language) for that upstream problem as its own root. Not "
               "'cause' when the draft merely explains a mechanism inside "
               "this problem or blames an actor without naming a separate "
-              "harm;\n" if in_problem else "")
+              "harm. If that cause is already listed among LINKED PROBLEMS as a "
+              "CAUSE, answer 'elsewhere' with its id instead — it exists;\n"
+              if in_problem else "")
            + "   - 'own_problem': the draft states a distinct PROBLEM of its "
            "own rather than arguing inside this one, and deserves its own "
            "root;\n"
@@ -477,6 +546,10 @@ COMPANION_SYSTEM = (
     "that'), or that concedes an objection which is nowhere in the branch. The "
     "concession itself is fine — what it answers has to be visible in the text "
     "or in the node being replied to.\n"
+    "- If the draft proposes what the problem's registry already records as "
+    "tried, or makes a point that is really about a LINKED problem (a cause or "
+    "an effect with its own discussion), say so and name it — the author "
+    "should know before publishing.\n"
     "- You never decide whether something gets published. The author does.\n"
     "Write in the SAME LANGUAGE as the draft itself, never in the language of "
     "the discussion around it." + DATA_GUARD
@@ -484,7 +557,7 @@ COMPANION_SYSTEM = (
 
 
 def companion_reply(text, history, parent=None, branch=None, neighbours=None,
-                    turns_left=None, similar=None, lang=None):
+                    turns_left=None, similar=None, lang=None, problem=None):
     """
     Один ход разговора с автором о ещё не опубликованном черновике.
 
@@ -523,6 +596,7 @@ def companion_reply(text, history, parent=None, branch=None, neighbours=None,
                      "(language may differ) — mention one only if it genuinely "
                      "answers or contradicts what the author is writing:\n\n"
                      + poi.wrap_user_text(slist))
+    parts.extend(_problem_parts(problem))
     parts.append("The author's current draft:\n\n" + poi.wrap_user_text(text))
     if history:
         convo = "\n".join(
