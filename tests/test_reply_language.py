@@ -133,3 +133,56 @@ def test_unknown_language_rule_warns_about_the_discussion(monkeypatch):
                           UK_BRANCH)
     last = _last_block(seen["user"])
     assert "Russian and Ukrainian are different languages" in last
+
+
+def _scripted(monkeypatch, answers):
+    """Заглушка модели, отдающая ответы по очереди; запоминает запросы."""
+    calls = []
+
+    def fake_complete(system, user, **kw):
+        calls.append(user)
+        return json.dumps(answers[min(len(calls), len(answers)) - 1])
+
+    monkeypatch.setattr(pools.poi, "complete", fake_complete)
+    return calls
+
+
+def test_companion_answer_in_wrong_language_is_asked_again(monkeypatch):
+    # живой случай 14.09: процитировав украинский реестр, компаньон ушёл в украинский
+    calls = _scripted(monkeypatch, [
+        {"reply": "Це вже зафіксовано в реєстрі як невдала спроба: мовний омбудсмен "
+                  "запроваджувався у 2019 році.", "suggestion": ""},
+        {"reply": "Это уже записано в реестре как неудачная попытка: языковой "
+                  "омбудсмен вводился в 2019 году.", "suggestion": ""},
+    ])
+    out = pools.companion_reply("предлагаю ввести языкового омбудсмена", [],
+                                {"id": 1, "text": UK_PROBLEM}, UK_BRANCH, lang="Russian")
+    assert len(calls) == 2
+    assert "LANGUAGE CHECK FAILED" in calls[1] and "written in Ukrainian" in calls[1]
+    assert out["reply"].startswith("Это уже записано")
+
+
+def test_review_answer_in_wrong_language_is_asked_again(monkeypatch):
+    calls = _scripted(monkeypatch, [
+        {"actual_type": "proposal", "verdict": "new",
+         "think": "Який саме механізм зв'язує склад депутатського корпусу з цими штрафами?"},
+        {"actual_type": "proposal", "verdict": "new",
+         "think": "Какой именно механизм связывает состав депутатского корпуса с этими штрафами?"},
+    ])
+    out = pools.review_draft("предлагаю уволить всех депутатов",
+                             {"id": 1, "text": UK_PROBLEM}, UK_BRANCH, [], in_problem=True)
+    assert len(calls) == 2
+    assert out["think"].startswith("Какой именно")
+
+
+def test_right_language_is_not_asked_twice(monkeypatch):
+    calls = _scripted(monkeypatch, [
+        {"reply": "Хороший пример, но его нет в тексте черновика.", "suggestion": ""}])
+    pools.companion_reply(RU_DRAFT, [], {"id": 1, "text": UK_PROBLEM}, UK_BRANCH)
+    assert len(calls) == 1
+
+
+def test_rule_asks_to_restate_quotes(monkeypatch):
+    seen = _capture(monkeypatch, {"reply": "ok", "suggestion": ""})
+    pools.companion_reply(RU_DRAFT, [], {"id": 1, "text": UK_PROBLEM}, UK_BRANCH)
+    assert "restate it in Russian" in _last_block(seen["user"])

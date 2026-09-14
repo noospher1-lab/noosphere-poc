@@ -8,7 +8,7 @@ stays untouched; pools are a *view* computed on top of it.
 import json
 
 from . import poi
-from .lang import author_language
+from .lang import author_language, detect_language
 
 # Injection guard for the non-scoring calls (clustering, navigator, atomizer):
 # here a smuggled instruction doesn't fake a score, it fakes the MAP — where an
@@ -101,8 +101,34 @@ def language_rule(lang):
         f"every text meant for the author (replies, notes, questions, titles, "
         f"rewordings) in {target}, even when the node being answered, the "
         f"discussion, related nodes or earlier turns of this conversation — "
-        f"your own included — are in another language. Never translate the "
-        f"author's text: a rewording stays in {target}.")
+        f"your own included — are in another language. When you quote or "
+        f"mention something written in another language (the problem, the "
+        f"registry, other nodes), restate it in {target} — never copy it in its "
+        f"original language. Never translate the author's text: a rewording "
+        f"stays in {target}.")
+
+
+# Живая проверка 14.09: даже с правилом последним блоком компаньон, процитировав
+# украинскую запись реестра, ответил по-украински целиком. Поэтому ответ ещё и
+# проверяется кодом, и при уверенном промахе модель переспрашивается один раз.
+_REVIEW_TEXT_FIELDS = ("type_note", "quality_note", "note", "place_note", "think",
+                       "cause_title")
+_COMPANION_TEXT_FIELDS = ("reply", "suggestion")
+
+
+def _wrong_language(out, fields, lang):
+    """Язык, на котором модель ответила вместо языка автора, или None."""
+    if not lang or not isinstance(out, dict):
+        return None
+    got = detect_language(" ".join(str(out.get(f) or "") for f in fields))
+    return got if got and got != lang else None
+
+
+def language_retry(lang, got):
+    return (f"LANGUAGE CHECK FAILED: your previous answer was written in {got}, "
+            f"but the author writes in {lang}. Answer again with the same content, "
+            f"every text field in {lang}, restating anything quoted from another "
+            f"language in {lang}.")
 
 SYSTEM = (
     "You merge a debate into a few strong POSITIONS. You are given the arguments "
@@ -493,11 +519,23 @@ def review_draft(text, parent, branch, positions, neighbours=None,
         '"place_note": "one sentence or empty", '
         '"think": "one question to the author or empty"}'
     )
-    parts.append(language_rule(lang or author_language(text)))
-    raw = poi.complete(REVIEW_SYSTEM, "\n\n---\n\n".join(parts),
-                       max_tokens=1024, temperature=0)
-    cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-    return json.loads(cleaned)
+    lang = lang or author_language(text)
+    parts.append(language_rule(lang))
+
+    def _ask(extra=()):
+        raw = poi.complete(REVIEW_SYSTEM, "\n\n---\n\n".join([*parts, *extra]),
+                           max_tokens=1024, temperature=0)
+        cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        return json.loads(cleaned)
+
+    out = _ask()
+    got = _wrong_language(out, _REVIEW_TEXT_FIELDS, lang)
+    if got:
+        try:
+            out = _ask([language_retry(lang, got)])
+        except json.JSONDecodeError:
+            pass                      # переспрос сломался — отдаём первый ответ
+    return out
 
 
 # Потолок ответа компаньона. Держит целый переписанный черновик, а не только
@@ -616,7 +654,8 @@ def companion_reply(text, history, parent=None, branch=None, neighbours=None,
         "own register); otherwise leave 'suggestion' empty. Never put the "
         "rewording inside 'reply' as well.\n"
         'Respond with ONLY JSON: {"reply": "...", "suggestion": "..." }')
-    parts.append(language_rule(lang or author_language(text, history)))
+    lang = lang or author_language(text, history)
+    parts.append(language_rule(lang))
     # 3000, а не 900: с тех пор как компаньон обязан не просить дважды, а
     # вписывать сказанное в текст сам, его 'suggestion' — это ЦЕЛЫЙ черновик
     # автора. В 900 токенов он не влезал, ответ обрывался на полуслове, JSON
@@ -634,6 +673,13 @@ def companion_reply(text, history, parent=None, branch=None, neighbours=None,
         out = _ask(COMPANION_MAX_TOKENS)
     except json.JSONDecodeError:
         out = _ask(COMPANION_MAX_TOKENS * 2)
+    got = _wrong_language(out, _COMPANION_TEXT_FIELDS, lang)
+    if got:
+        parts.append(language_retry(lang, got))
+        try:
+            out = _ask(COMPANION_MAX_TOKENS)
+        except json.JSONDecodeError:
+            pass                      # переспрос сломался — отдаём первый ответ
     return {"reply": str(out.get("reply") or "").strip(),
             "suggestion": str(out.get("suggestion") or "").strip() or None}
 
