@@ -59,8 +59,12 @@ class Poc:
         return self.get(f"/api/nodes/{node_id}")
 
     def positions(self, root_id, recompute=False):
-        return self.get(f"/api/positions/{root_id}",
-                        **({"recompute": "true"} if recompute else {}))
+        # С 10.09 чтение позиций модель не зовёт: пересборку заказывает вошедший,
+        # со своего баланса, отдельным POST. Старый ?recompute=true сервер молча
+        # игнорировал — прогон 14.09 закончился без единой позиции.
+        if recompute:
+            self.post(f"/api/positions/{root_id}/recompute")
+        return self.get(f"/api/positions/{root_id}")
 
     # ---------------------------------------------------------------- письмо
     def companion(self, text, connect_to=None, history=(), scope="near"):

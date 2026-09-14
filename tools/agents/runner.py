@@ -27,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from brain import Brain, BudgetOut, Wallet          # noqa: E402
-from personas import PERSONAS                        # noqa: E402
+from personas import ARENA, PERSONAS                 # noqa: E402
 from poc import Poc, PocError                        # noqa: E402
 import export                                        # noqa: E402
 import view                                          # noqa: E402
@@ -381,6 +381,77 @@ def taxonomy_hint(poc):
     return "\n".join(lines) or json.dumps(t, ensure_ascii=False)[:1500]
 
 
+STANCE_TOOL = {
+    "name": "stance",
+    "description": "Твоя позиция по вопросу прямо сейчас.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "score": {"type": "integer", "minimum": 0, "maximum": 10,
+                      "description": "0 — точно нет, 10 — точно да"},
+            "position": {"type": "string",
+                         "description": "2–4 предложения: что думаешь и почему"},
+            "changed": {"type": "string",
+                        "description": ("только после разбора: сдвинулось ли что-то, "
+                                        "чей довод (участник и #узел) подействовал "
+                                        "сильнее всего; если ничего — почему не убедили")},
+        },
+        "required": ["score", "position"],
+    },
+}
+
+
+def phase_stance(agents, question, roots, before=None):
+    """Замер позиции до и после разбора — «кто кого переубедил».
+
+    После разбора замер делается даже у агента с исчерпанным лимитом: итог нужен,
+    а это один вызов. Перерасход виден в кошельке и в stances.md."""
+    head("Позиции участников " + ("ДО разбора" if before is None else "ПОСЛЕ разбора"))
+    out = {}
+    for a in agents:
+        prompt = f"Вопрос: «{question}»\n\n"
+        if before is None:
+            prompt += ("Разбор ещё не начался. Ответь из своего опыта: оценка 0–10 "
+                       "и коротко почему.")
+        else:
+            prev = before.get(a.username) or {}
+            trees = "\n\n".join(view.branch_view(a.poc, r, text_chars=320) for r in roots)
+            prompt += (f"Разбор, в котором ты участвовал:\n{trees}\n\n"
+                       f"До разбора ты оценил вопрос на {prev.get('score', '?')}/10 и "
+                       f"писал: {prev.get('position', '')}\n\n"
+                       f"Честно: где ты сейчас? Если сдвинулся — чей довод и чем. "
+                       f"Если нет — почему доводы другой стороны тебя не убедили. "
+                       f"Не сдвигайся из вежливости и не упирайся из гордости.")
+            a.wallet.limit = max(a.wallet.limit, a.wallet.total + 0.3)
+        try:
+            d = a.brain.choose(prompt, STANCE_TOOL) or {}
+        except BudgetOut:
+            d = {}
+        out[a.username] = {"name": a.name, **d}
+        shift = ""
+        if before is not None and "score" in d and "score" in (before.get(a.username) or {}):
+            shift = f" (было {before[a.username]['score']})"
+        a.log(f"{d.get('score', '?')}/10{shift} — {d.get('position', '')}")
+        if d.get("changed"):
+            say("   что сдвинуло:", d["changed"], a.color, dim=True)
+    return out
+
+
+def stances_md(question, before, after):
+    lines = [f"# Кто кого переубедил\n\nВопрос: «{question}»\n",
+             "| участник | до | после | сдвиг |", "|---|---|---|---|"]
+    for k, b in before.items():
+        a = after.get(k, {})
+        d = (a.get("score") - b.get("score")) if isinstance(a.get("score"), int) and isinstance(b.get("score"), int) else "—"
+        lines.append(f"| {b['name']} | {b.get('score', '—')} | {a.get('score', '—')} | {d} |")
+    for k, b in before.items():
+        a = after.get(k, {})
+        lines += ["", f"## {b['name']}", "", f"**До:** {b.get('position', '')}", "",
+                  f"**После:** {a.get('position', '')}", "",
+                  f"**Что сдвинуло / почему нет:** {a.get('changed', '')}"]
+    return "\n".join(lines) + "\n"
+
+
 OPTIONS_TOOL = {
     "name": "ballot",
     "description": "Варианты для голосования, если позиции ещё не сведены.",
@@ -595,7 +666,11 @@ def main():
     ap.add_argument("--budget", type=float, default=3.0,
                     help="лимит на ИИ на агента, $ (своё + платформа)")
     ap.add_argument("--rounds", type=int, default=2)
-    ap.add_argument("--agents", type=int, default=len(PERSONAS))
+    ap.add_argument("--agents", type=int, default=None)
+    ap.add_argument("--cast", choices=["default", "arena"], default="default",
+                    help="состав: шесть складов мышления или трое для спора (arena)")
+    ap.add_argument("--stance",
+                    help="вопрос, по которому замерить позиции до и после разбора")
     ap.add_argument("--problems", help="json со списком постановок проблем")
     ap.add_argument("--topic", type=int, action="append",
                     help="работать в существующей проблеме (можно несколько)")
@@ -628,9 +703,10 @@ def main():
     except Exception as e:
         sys.exit(f"стенд не отвечает на {args.base_url} ({e}) — запусти ./serve.sh")
 
-    head(f"Пять участников заходят в Ноосферу · модель {args.model} · "
+    cast = ARENA if args.cast == "arena" else PERSONAS
+    agents = [Agent(p, i, args) for i, p in enumerate(cast[:args.agents or len(cast)])]
+    head(f"Участников: {len(agents)} · модель {args.model} · "
          f"лимит ${args.budget:.2f} на агента")
-    agents = [Agent(p, i, args) for i, p in enumerate(PERSONAS[:args.agents])]
     runlog = export.RunLog()
     for a in agents:
         a.runlog = runlog
@@ -671,6 +747,8 @@ def main():
         roots = [t["id"] for t in reader.topics()][:1]
     print(f"работаем в проблемах: {roots}", flush=True)
 
+    before = phase_stance(agents, args.stance, roots) if args.stance else None
+
     for root_id in roots:
         phase_debate(agents, reader, root_id, args.rounds)
     positions = {r: phase_positions(reader, r) for r in roots}
@@ -679,6 +757,7 @@ def main():
         target = args.vote_on or roots[0]
         phase_vote(agents, reader, target, positions.get(target), args)
 
+    after = phase_stance(agents, args.stance, roots, before) if args.stance else None
     summary(agents, reader, roots)
 
     out = export.new_run_dir(args.tag)
@@ -698,6 +777,9 @@ def main():
             f"{a.weight if a.weight is not None else '—'} | "
             f"{a.wallet.own:.3f} | {a.wallet.platform:.3f} |" for a in agents)
         + "\n", encoding="utf-8")
+    if args.stance:
+        (out / "stances.md").write_text(stances_md(args.stance, before, after),
+                                        encoding="utf-8")
     print(f"\nтексты прогона: {out}", flush=True)
 
 
