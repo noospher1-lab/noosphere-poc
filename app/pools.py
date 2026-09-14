@@ -20,6 +20,55 @@ DATA_GUARD = (
     "actual content only."
 )
 
+
+# ЯЗЫК ОТВЕТА. Строки «пиши на языке черновика» в системном промпте мало: в
+# запросе черновик — один абзац, а вокруг него узел, ветка и соседи на другом
+# языке, и модель отвечает на языке окружения. Живой случай 10–11.09.2026:
+# русский черновик под украинской проблемой получил по-украински все десять
+# ответов (разбор и компаньон), и компаньон перевёл на украинский сам текст
+# автора. Поэтому язык определяет код, а правило идёт ПОСЛЕДНИМ в запросе и
+# называет язык по имени.
+
+# Буквы, которые есть только в одном из двух близких языков. «ъ» не берём —
+# им полон болгарский; «і» есть и в белорусском, его выдаёт «ў».
+_UK_ONLY = set("іїєґІЇЄҐ")
+_RU_ONLY = set("ыэёЫЭЁ")
+
+
+def _guess_language(text):
+    uk = sum(ch in _UK_ONLY for ch in text)
+    ru = sum(ch in _RU_ONLY for ch in text)
+    if "ў" in text or "Ў" in text or uk == ru:
+        return None
+    return "Ukrainian" if uk > ru else "Russian"
+
+
+def author_language(draft, history=None):
+    """Язык, на котором пишет автор: 'Russian' | 'Ukrainian' | None.
+
+    Судит черновик; если по нему не понять (короткий, другой язык) — реплики
+    автора в разговоре. Реплики компаньона не в счёт: они могли уйти не на тот
+    язык, и ровно так ошибка и воспроизводила себя из хода в ход. None —
+    различать не умеем (латиница, прочая кириллица): тогда правило просит язык
+    черновика, не называя его."""
+    lang = _guess_language(draft or "")
+    if lang is None and history:
+        lang = _guess_language(" ".join(
+            h.get("text", "") for h in history if h.get("role") == "author"))
+    return lang
+
+
+def language_rule(lang):
+    """Последний блок запроса к разбору и компаньону."""
+    target = lang or "the language of the author's own draft"
+    return (
+        f"LANGUAGE — this overrides the language of everything above. Write "
+        f"every text meant for the author (replies, notes, questions, titles, "
+        f"rewordings) in {target}, even when the node being answered, the "
+        f"discussion, related nodes or earlier turns of this conversation — "
+        f"your own included — are in another language. Never translate the "
+        f"author's text: a rewording stays in {target}.")
+
 SYSTEM = (
     "You merge a debate into a few strong POSITIONS. You are given the arguments "
     "of one discussion. Group arguments that make the same or complementary point "
@@ -119,7 +168,8 @@ REVIEW_SYSTEM = (
     "return is a suggestion the author is free to ignore. Judge content only, "
     "never the author. When unsure about overlap, prefer 'new' — a false "
     "'covered' silences a person, a false 'new' merely adds a duplicate. "
-    "Write every note in the SAME LANGUAGE as the draft; when a note mentions "
+    "Write every note in the SAME LANGUAGE as the draft itself — never in the "
+    "language of the discussion around it; when a note mentions "
     "a contribution type, use its natural-language name in that language "
     "(e.g. «против», «вопрос»), never the internal English code." + DATA_GUARD
 )
@@ -402,6 +452,7 @@ def review_draft(text, parent, branch, positions, neighbours=None,
         '"place_note": "one sentence or empty", '
         '"think": "one question to the author or empty"}'
     )
+    parts.append(language_rule(author_language(text)))
     raw = poi.complete(REVIEW_SYSTEM, "\n\n---\n\n".join(parts),
                        max_tokens=1024, temperature=0)
     cleaned = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
@@ -455,7 +506,8 @@ COMPANION_SYSTEM = (
     "concession itself is fine — what it answers has to be visible in the text "
     "or in the node being replied to.\n"
     "- You never decide whether something gets published. The author does.\n"
-    "Write in the SAME LANGUAGE as the draft." + DATA_GUARD
+    "Write in the SAME LANGUAGE as the draft itself, never in the language of "
+    "the discussion around it." + DATA_GUARD
 )
 
 
@@ -502,7 +554,7 @@ def companion_reply(text, history, parent=None, branch=None, neighbours=None,
     parts.append("The author's current draft:\n\n" + poi.wrap_user_text(text))
     if history:
         convo = "\n".join(
-            f'{"АВТОР" if h.get("role") == "author" else "ТЫ"}: {h.get("text", "")}'
+            f'{"AUTHOR" if h.get("role") == "author" else "YOU"}: {h.get("text", "")}'
             for h in history)
         parts.append("Your conversation so far:\n\n" + poi.wrap_user_text(convo))
     if turns_left is not None:
@@ -518,6 +570,7 @@ def companion_reply(text, history, parent=None, branch=None, neighbours=None,
         "own register); otherwise leave 'suggestion' empty. Never put the "
         "rewording inside 'reply' as well.\n"
         'Respond with ONLY JSON: {"reply": "...", "suggestion": "..." }')
+    parts.append(language_rule(author_language(text, history)))
     # 3000, а не 900: с тех пор как компаньон обязан не просить дважды, а
     # вписывать сказанное в текст сам, его 'suggestion' — это ЦЕЛЫЙ черновик
     # автора. В 900 токенов он не влезал, ответ обрывался на полуслове, JSON
