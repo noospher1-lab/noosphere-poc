@@ -434,3 +434,29 @@ def test_service_account_gets_no_ai_and_no_poi(service_client, monkeypatch):
     # «оценивается…» о тексте, который не будет оценён никогда
     node = service_client.get("/api/nodes/%s" % r.json()["id"]).json()
     assert node["author_is_service"] is True
+
+
+@needs_db
+def test_short_draft_takes_language_from_authors_past_texts(client, monkeypatch):
+    """«проблема в коррупции» не выдаёт язык ни буквами, ни словами. Тогда язык
+    берётся из прошлых текстов автора: сначала его черновиков, без них — узлов
+    (vault: decisions/2026-09-14-reply-language)."""
+    from app import pools as pools_mod
+    seen = []
+
+    def fake(text, history, *a, **kw):
+        seen.append(kw.get("lang"))
+        return {"reply": "ок", "suggestion": None}
+
+    monkeypatch.setattr(pools_mod, "companion_reply", fake)
+
+    def ask(text):
+        r = client.post("/api/draft/companion", json={"text": text, "history": []})
+        assert r.status_code == 200, r.text
+        return seen[-1]
+
+    # черновиков ещё нет — язык из узлов автора («…остаётся высоким»)
+    assert ask("проблема в коррупции") == "Russian"
+    # появился явный украинский черновик — черновики важнее узлов
+    assert ask("Треба зробити щось краще, бо так далі не можна") == "Ukrainian"
+    assert ask("проблема в коррупции") == "Ukrainian"

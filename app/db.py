@@ -4235,6 +4235,29 @@ async def companion_log_authors():
     return [dict(r) for r in rows]
 
 
+async def author_recent_texts(author_id, limit=10):
+    """Последние тексты автора — чтобы понять, на каком языке он пишет, когда сам
+    черновик слишком короток (vault: decisions/2026-09-14-reply-language).
+
+    Сначала черновики из разговоров с ИИ: их автор набирал сам. Узлы — только
+    если черновиков нет: опубликованный текст мог быть взятой формулировкой ИИ,
+    в том числе на чужом языке (так у проблемы #4 на проде)."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT draft AS t FROM companion_log
+            WHERE author_id = $1 AND draft IS NOT NULL AND draft <> ''
+            GROUP BY draft ORDER BY max(created_at) DESC LIMIT $2
+            """, author_id, limit)
+        if not rows:
+            rows = await conn.fetch(
+                "SELECT text AS t FROM nodes WHERE author_id = $1 "
+                "AND deleted_at IS NULL ORDER BY created_at DESC LIMIT $2",
+                author_id, limit)
+    return [r["t"] for r in rows]
+
+
 async def topic_board(topic_root_id):
     """Доска обсуждения: ПРЕДЛОЖЕНИЯ и ВОПРОСЫ отдельными списками.
 

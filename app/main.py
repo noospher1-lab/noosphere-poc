@@ -32,7 +32,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
 
-from . import (auth, db, dialogue as dialogue_mod, embed as embed_mod, mail,
+from . import (auth, db, lang as lang_mod, dialogue as dialogue_mod, embed as embed_mod, mail,
                material, poi, taxonomy, voteweight,
                votedialogue, pools as pools_mod)
 
@@ -3070,7 +3070,7 @@ async def precheck_draft(topic_root_id: int, body: PrecheckIn,
             # is_root=False: родительского узла тут нет, но черновик пишется
             # ВНУТРИ темы. Без этого флага навигатору говорили «это новый
             # корень», и он судил ответ в чужой рамке.
-            None, False)
+            None, False, lang=await _author_lang(author, body.text))
     except Exception:
         return _PRECHECK_NEW              # fail-open: never stand in the way
     pid = result.get("position_id")
@@ -3139,6 +3139,21 @@ _SPLIT_TYPES = {"support", "refute", "qualify", "question", "proposal"}
 # dropdown and resending the same draft compares locally against the same
 # cached actual_type instead of re-asking the LLM — the comparison is what
 # changes, not the classification.
+async def _author_lang(author, text, history=None):
+    """Язык, на котором ИИ отвечает автору (vault: decisions/2026-09-14-reply-language):
+    черновик → реплики автора в разговоре → его прошлые тексты. Последнее — для
+    коротких черновиков, где по словам не понять («проблема в коррупции»): без
+    этого модель отвечала на языке обсуждения вокруг."""
+    lang = lang_mod.author_language(text, history)
+    if lang is None and author and author.get("id"):
+        try:
+            past = await db.author_recent_texts(author["id"])
+        except Exception:
+            past = []
+        lang = lang_mod.detect_language(" ".join(past))
+    return lang
+
+
 _REVIEW_CACHE: dict[tuple, tuple[float, dict]] = {}
 _REVIEW_CACHE_TTL = 300
 _REVIEW_CACHE_MAX = 500
@@ -3205,7 +3220,10 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
     # виды рамку не меняют — там переключение по-прежнему бесплатно.
     frame = "reply" if root_kind is None else (
         "problem" if root_kind == "problem" else "root")
-    cache_key = (body.connect_to, text, body.scope, frame)
+    # Язык — тоже часть ключа: у короткого черновика он берётся из прошлых
+    # текстов автора, и тот же текст у двух авторов может получить разный.
+    lang = await _author_lang(author, text)
+    cache_key = (body.connect_to, text, body.scope, frame, lang)
     result = _review_cache_get(cache_key)
     if result is None:
         # budget is charged only on a real LLM call — cache hits (the author
@@ -3219,7 +3237,7 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
                 [{"id": p["id"], "headline": p["headline"], "composed": p["composed"]}
                  for p in positions],
                 neighbours, root_kind=root_kind, in_problem=in_problem,
-                similar=similar)
+                similar=similar, lang=lang)
         except Exception:
             return dict(_REVIEW_CLEAN)    # fail-open: never stand in the way
         _review_cache_set(cache_key, result)
@@ -3414,7 +3432,8 @@ async def draft_companion(body: CompanionIn, author=Depends(verified_author)):
         out = await asyncio.to_thread(
             pools_mod.companion_reply, text,
             [h.model_dump() for h in body.history], parent, branch, neighbours,
-            turns_left=max(0, COMPANION_MAX_TURNS - turns_used), similar=similar)
+            turns_left=max(0, COMPANION_MAX_TURNS - turns_used), similar=similar,
+            lang=await _author_lang(author, text, [h.model_dump() for h in body.history]))
     except Exception as e:
         # молчаливого компаньона автор принял бы за «всё в порядке» — а это не
         # проверка, это разговор, и его обрыв надо назвать вслух
