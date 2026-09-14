@@ -3280,7 +3280,9 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
     # Язык — тоже часть ключа: у короткого черновика он берётся из прошлых
     # текстов автора, и тот же текст у двух авторов может получить разный.
     lang = await _author_lang(author, text)
-    cache_key = (body.connect_to, text, body.scope, frame, lang)
+    # и автор: пометка «твой узел» в запросе у каждого своя
+    cache_key = (body.connect_to, text, body.scope, frame, lang,
+                 (author or {}).get("id"))
     result = _review_cache_get(cache_key)
     if result is None:
         # budget is charged only on a real LLM call — cache hits (the author
@@ -3294,7 +3296,8 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
                 [{"id": p["id"], "headline": p["headline"], "composed": p["composed"]}
                  for p in positions],
                 neighbours, root_kind=root_kind, in_problem=in_problem,
-                similar=similar, lang=lang, problem=problem)
+                similar=similar, lang=lang, problem=problem,
+                author_id=(author or {}).get("id"))
         except Exception:
             return dict(_REVIEW_CLEAN)    # fail-open: never stand in the way
         _review_cache_set(cache_key, result)
@@ -3371,8 +3374,10 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
     nodes.update({n["id"]: n for n in similar})
     known = {p["id"]: p for p in positions}
     # the parent itself is what the draft replies to — pointing at it is noise
-    if verdict in ("answered", "countered") and nid in nodes and nid != body.connect_to:
+    if verdict in ("answered", "countered", "said") and nid in nodes and nid != body.connect_to:
         out.update(verdict=verdict, node_id=nid,
+                   # «ты это уже писал» и «это уже сказано» — разные подсказки
+                   node_own=bool(author and nodes[nid].get("author_id") == author["id"]),
                    target_text=nodes[nid]["text"],
                    # корень нужен, чтобы UI открыл узел из ДРУГОГО обсуждения
                    node_root=nodes[nid].get("topic_root_id") or root_now,
@@ -3496,7 +3501,7 @@ async def draft_companion(body: CompanionIn, author=Depends(verified_author)):
             [h.model_dump() for h in body.history], parent, branch, neighbours,
             turns_left=max(0, COMPANION_MAX_TURNS - turns_used), similar=similar,
             lang=await _author_lang(author, text, [h.model_dump() for h in body.history]),
-            problem=problem)
+            problem=problem, author_id=author["id"])
     except Exception as e:
         # молчаливого компаньона автор принял бы за «всё в порядке» — а это не
         # проверка, это разговор, и его обрыв надо назвать вслух

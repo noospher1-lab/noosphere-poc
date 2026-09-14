@@ -5,6 +5,7 @@
 он спокойно обходит. Здесь цель задана: агенты обязаны разобрать именно её.
 
     python3 answer.py 59 --who skeptik inzhener polevoy
+    python3 answer.py 35 --cast arena --who institut oksana --base-url http://localhost:8010
 """
 
 import argparse
@@ -16,13 +17,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import export                                        # noqa: E402
 import runner                                        # noqa: E402
 import view                                          # noqa: E402
-from personas import PERSONAS                        # noqa: E402
+from personas import ARENA, PERSONAS                 # noqa: E402
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("node_id", type=int)
     ap.add_argument("--who", nargs="*", default=None, help="ключи персон")
+    ap.add_argument("--cast", choices=["default", "arena"], default="default",
+                    help="из какого состава брать персоны (arena — трое для спора)")
     ap.add_argument("--base-url", default="http://localhost:8000")
     ap.add_argument("--model", default="claude-opus-5")
     ap.add_argument("--effort", default="medium")
@@ -31,8 +34,9 @@ def main():
     args = ap.parse_args()
 
     runner.load_env()
-    chosen = [p for p in PERSONAS
-              if not args.who or p["key"] in args.who] or PERSONAS[:3]
+    cast = ARENA if args.cast == "arena" else PERSONAS
+    chosen = [p for p in cast
+              if not args.who or p["key"] in args.who] or cast[:3]
 
     probe = runner.Poc(args.base_url)
     node = probe.get(f"/api/nodes/{args.node_id}")

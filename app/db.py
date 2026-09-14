@@ -2997,18 +2997,18 @@ async def topic_subtree(topic_root_id, limit=80):
         rows = await conn.fetch(
             """
             WITH RECURSIVE down AS (
-                SELECT n.id, n.text, n.kind,
+                SELECT n.id, n.text, n.kind, n.author_id,
                        NULL::int AS parent_id, NULL::text AS rel, 0 AS depth
                 FROM nodes n WHERE n.id = $1 AND n.deleted_at IS NULL
                 UNION ALL
-                SELECT n.id, n.text, n.kind,
+                SELECT n.id, n.text, n.kind, n.author_id,
                        e.target_id, e.type, down.depth + 1
                 FROM down
                 JOIN edges e ON e.target_id = down.id
                 JOIN nodes n ON n.id = e.source_id AND n.deleted_at IS NULL
                 WHERE down.depth < 50
             )
-            SELECT id, text, kind, parent_id, rel, depth
+            SELECT id, text, kind, author_id, parent_id, rel, depth
             FROM down ORDER BY depth, id LIMIT $2
             """, topic_root_id, limit)
     return [dict(r) for r in rows]
@@ -3594,7 +3594,7 @@ async def semantic_nodes(qvec, model, floor, limit, exclude_ids=()):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT n.id, n.text, n.kind, n.topic_root_id, e.vec,
+            SELECT n.id, n.text, n.kind, n.topic_root_id, n.author_id, e.vec,
                    r.title AS topic_title, left(r.text, 80) AS topic_text,
                    a.name AS author
             FROM node_embeddings e
@@ -3610,6 +3610,7 @@ async def semantic_nodes(qvec, model, floor, limit, exclude_ids=()):
         s = embed_mod.cosine(qvec, list(r["vec"]))
         if s >= floor:
             scored.append({"id": r["id"], "text": r["text"], "kind": r["kind"],
+                           "author_id": r["author_id"],
                            "topic_root_id": r["topic_root_id"],
                            "topic_title": r["topic_title"] or r["topic_text"],
                            "author": r["author"], "sim": round(s, 3)})

@@ -508,3 +508,39 @@ def test_review_and_companion_get_problem_state_and_links(client, monkeypatch):
         "text": "Выхлопы машин в час пик", "connect_to": root, "history": []})
     assert r.status_code == 200, r.text
     assert [c["id"] for c in seen["companion"]["causes"]] == [cause]
+
+
+@needs_db
+def test_review_says_said_and_knows_the_node_is_yours(client, monkeypatch):
+    """Разбор указал на узел с тем же тезисом, что и черновик. Если узел написал сам
+    автор, сервер отдаёт node_own — UI говорит «ты это уже писал», а не
+    «уже есть возражение» (стенд 14.09, vault: decisions/2026-09-14-positions-and-topic-language)."""
+    from app import db, pools as pools_mod
+    root, uid = client.ids["root"], client.ids["author"]
+
+    async def seed():
+        mine = await db.add_node("Выделенные полосы для автобусов разгружают центр",
+                                 author_id=uid, topic_root_id=root)
+        await db.add_edge(mine, root, "support")
+        return mine
+
+    mine = client.portal.call(seed)
+    seen = {}
+
+    def fake_review(*a, **kw):
+        seen["author_id"] = kw.get("author_id")
+        seen["branch"] = a[2] if len(a) > 2 else kw.get("branch")
+        return {"actual_type": "support", "verdict": "said", "node_id": mine,
+                "note": "ты уже писал это в соседнем узле", "placement": "here"}
+
+    monkeypatch.setattr(pools_mod, "review_draft", fake_review)
+    r = client.post("/api/draft/review", json={
+        "text": "Автобусные полосы разгружают центр города", "connect_to": root,
+        "edge_type": "support"})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["verdict"] == "said" and out["node_id"] == mine
+    assert out["node_own"] is True
+    # сервер сказал модели, кто автор черновика, и ветка несёт авторов узлов
+    assert seen["author_id"] == uid
+    assert any(n["id"] == mine and n["author_id"] == uid for n in seen["branch"])

@@ -92,6 +92,12 @@ def _problem_parts(problem):
     return parts
 
 
+def _yours(node, author_id):
+    """Пометка своего узла в листинге. Без неё разбор отправил автора «сначала
+    прочитать узел 38» — его же собственный (стенд 14.09)."""
+    return ", YOURS" if author_id is not None and node.get("author_id") == author_id else ""
+
+
 def language_rule(lang):
     """Последний блок запроса к разбору и компаньону."""
     target = lang or ("the language of the author's own draft — judge it by the "
@@ -314,7 +320,7 @@ _ROOT_KINDS_DESC = ("argument (тезис: a standalone claim opening a "
 
 def review_draft(text, parent, branch, positions, neighbours=None,
                  is_root=None, root_kind=None, in_problem=False, similar=None,
-                 lang=None, problem=None):
+                 lang=None, problem=None, author_id=None):
     """
     The pre-publication draft review (vault: ai-navigator-draft-review) — one
     LLM call that determines the draft's ACTUAL type, suggests ONE quality
@@ -348,7 +354,7 @@ def review_draft(text, parent, branch, positions, neighbours=None,
     (vault: drafts/problem-causal-links).
     branch: rows from db.topic_subtree(). positions: [{id, headline, composed}].
     Returns {"actual_type", "type_note", "quality_note",
-             "verdict": "new|similar|covered|answered|countered",
+             "verdict": "new|similar|covered|answered|countered|said",
              "node_id", "position_id", "note", "split"}
     """
     is_root = (parent is None) if is_root is None else bool(is_root)
@@ -366,10 +372,11 @@ def review_draft(text, parent, branch, positions, neighbours=None,
         listing = "\n".join(
             f'{"  " * n["depth"]}[{n["id"]}] ({n["kind"]}'
             + (f', {n["rel"]} -> {n["parent_id"]}' if n["parent_id"] else ", topic root")
-            + f') {n["text"]}' for n in branch)
+            + _yours(n, author_id) + f') {n["text"]}' for n in branch)
         parts.append(
             "The discussion tree so far, one node per line as "
-            "[id] (kind, relation -> parent id) text. In a large discussion this "
+            "[id] (kind, relation -> parent id[, YOURS]) text — YOURS marks the "
+            "draft author's own earlier nodes. In a large discussion this "
             "is a SELECTION: the root, the chain the draft replies to, its "
             "siblings, and the nodes closest in meaning to the draft — other "
             "nodes exist but are omitted:\n\n"
@@ -394,7 +401,7 @@ def review_draft(text, parent, branch, positions, neighbours=None,
     # только id из этого списка и из дерева
     if similar:
         slist = "\n".join(
-            f'[{n["id"]}] ({n["kind"]}, in discussion «{n.get("topic_title") or ""}») '
+            f'[{n["id"]}] ({n["kind"]}, in discussion «{n.get("topic_title") or ""}»{_yours(n, author_id)}) '
             f'{(n.get("text") or "")[:300]}' for n in similar)
         parts.append(
             "NODES FROM OTHER DISCUSSIONS that are close in MEANING to the draft "
@@ -458,8 +465,14 @@ def review_draft(text, parent, branch, positions, neighbours=None,
         "   - 'answered': the draft is a question and an existing NODE already "
         "answers it (set node_id);\n"
         "   - 'countered': the draft makes a claim and an existing NODE already "
-        "objects to / addresses exactly that claim — the author should read it "
-        "first and perhaps reply there (set node_id);\n"
+        "OBJECTS to exactly that claim — the author should read it first and "
+        "perhaps reply there (set node_id). Never 'countered' for a node that "
+        "agrees with or repeats the draft;\n"
+        "   - 'said': an existing NODE already makes the SAME point as the draft — "
+        "a repeat, not an objection (set node_id). If that node is marked YOURS, "
+        "the note says the author already made this point there and what, if "
+        "anything, the draft adds; never tell the author to go and read their "
+        "own node as if someone else wrote it;\n"
         "   - 'covered': a POSITION already fully makes the point / answers the "
         "question (set position_id);\n"
         "   - 'similar': a POSITION overlaps but the draft may add something "
@@ -540,7 +553,7 @@ def review_draft(text, parent, branch, positions, neighbours=None,
            'exploration", ')
         + '"type_note": "one sentence, see above", '
         '"quality_note": "one concrete suggestion or empty", '
-        '"verdict": "new|similar|covered|answered|countered", '
+        '"verdict": "new|similar|covered|answered|countered|said", '
         '"node_id": <id or null>, "position_id": <id or null>, '
         '"note": "one sentence: what exists and what the draft would add, '
         'empty if verdict is new", '
@@ -630,7 +643,8 @@ COMPANION_SYSTEM = (
 
 
 def companion_reply(text, history, parent=None, branch=None, neighbours=None,
-                    turns_left=None, similar=None, lang=None, problem=None):
+                    turns_left=None, similar=None, lang=None, problem=None,
+                    author_id=None):
     """
     Один ход разговора с автором о ещё не опубликованном черновике.
 
@@ -649,9 +663,10 @@ def companion_reply(text, history, parent=None, branch=None, neighbours=None,
                      + poi.wrap_user_text(parent["text"]))
     if branch:
         listing = "\n".join(
-            f'{"  " * n["depth"]}[{n["id"]}] ({n["kind"]}) {n["text"]}'
+            f'{"  " * n["depth"]}[{n["id"]}] ({n["kind"]}{_yours(n, author_id)}) {n["text"]}'
             for n in branch)
-        parts.append("The discussion so far (in a large discussion — a selection: "
+        parts.append("The discussion so far (YOURS marks the author's own earlier nodes; "
+                     "in a large discussion — a selection: "
                      "the root, the chain the draft replies to, its siblings and "
                      "the nodes closest in meaning to the draft):\n\n"
                      + poi.wrap_user_text(listing))
@@ -663,7 +678,7 @@ def companion_reply(text, history, parent=None, branch=None, neighbours=None,
                      + poi.wrap_user_text(nlist))
     if similar:
         slist = "\n".join(
-            f'[{n["id"]}] (in «{n.get("topic_title") or ""}») {(n.get("text") or "")[:300]}'
+            f'[{n["id"]}] (in «{n.get("topic_title") or ""}»{_yours(n, author_id)}) {(n.get("text") or "")[:300]}'
             for n in similar)
         parts.append("Nodes from OTHER discussions close in meaning to the draft "
                      "(language may differ) — mention one only if it genuinely "

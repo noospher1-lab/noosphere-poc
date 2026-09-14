@@ -1683,10 +1683,12 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
     actions.appendChild(sw);
   }
 
-  if (rev.verdict === "answered" || rev.verdict === "countered") {
+  if (rev.verdict === "answered" || rev.verdict === "countered" || rev.verdict === "said") {
+    // «said» — тот же тезис уже есть (повтор, не возражение); свой узел — своя подпись
     hint.appendChild(el("div", "section-title",
       rev.verdict === "answered" ? "на этот вопрос уже есть ответ"
-                                 : "на этот тезис уже есть возражение"));
+      : rev.verdict === "countered" ? "на этот тезис уже есть возражение"
+      : rev.node_own ? "ты это уже писал" : "это уже сказано в обсуждении"));
     hint.appendChild(el("b", null, rev.target_text || ""));
     // узел может быть из ДРУГОГО обсуждения (найден по смыслу, на любом языке)
     const foreign = rev.node_root && rev.node_root !== root;
