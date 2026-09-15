@@ -145,6 +145,13 @@ class Agent:
         self.published = []          # id узлов, которые он написал
         self.weight = None           # вес голоса после диалога
         self.runlog = None           # копилка разговоров с компаньоном
+        # автопополнение: когда деньги кончаются — один раз добавить сумму и в
+        # кошелёк раннера, и в грант на платформе (иначе платформа ответит 402)
+        self.topup = float(getattr(args, "topup", 0) or 0)
+        self.topups_left = 1 if self.topup > 0 else 0
+        self.lively = bool(getattr(args, "lively", False))
+        self.max_turns = getattr(args, "max_turns", None)   # потолок ходов на агента
+        self.turns_taken = 0
 
     # ------------------------------------------------------------ служебное
     def log(self, text, dim=False):
@@ -158,6 +165,12 @@ class Agent:
         if not self.alive:
             return False
         self.sync_spend()
+        if self.wallet.left <= reserve and self.topups_left:
+            self.topups_left -= 1
+            add_balance(self.username, self.topup)
+            self.wallet.limit += self.topup
+            self.log(f"лимит почти исчерпан — добавлено ${self.topup:.2f}, теперь "
+                     f"${self.wallet.limit:.2f}", dim=True)
         if self.wallet.left <= reserve:
             if self.alive:
                 self.log(f"лимит ${self.wallet.limit:.2f} исчерпан — умолкаю "
@@ -183,8 +196,11 @@ class Agent:
 
     # ------------------------------------------------------------------ ход
     def turn(self, root_id, rounds_left):
+        if self.max_turns is not None and self.turns_taken >= self.max_turns:
+            return None
         if not self.afford(reserve=0.05):
             return None
+        self.turns_taken += 1
         ctx = (f"{view.problem_brief(self.poc, root_id)}\n\n"
                f"РАЗБОР СЕЙЧАС (отступ = ответ на узел выше):\n"
                f"{view.branch_view(self.poc, root_id)}\n\n"
@@ -205,7 +221,8 @@ class Agent:
                f"у тебя есть возражение именно к нему, которого больше никто "
                f"не выскажет. Открыть новую ветку прямо от проблемы — "
                f"нормальный и часто лучший ход.\n\n"
-               f"У тебя осталось ${self.wallet.left:.2f} на ИИ и примерно "
+               + (LIVELY if self.lively else "")
+               + f"У тебя осталось ${self.wallet.left:.2f} на ИИ и примерно "
                f"{rounds_left} ход(ов). Молчание — тоже ход, если добавить "
                f"нечего.\n"
                f"Что ты делаешь сейчас?")
@@ -267,6 +284,10 @@ class Agent:
                       "«согласен, что», ни «как ты заметил». Читатель видит "
                       "твой довод рядом с узлом, на который ты отвечаешь, и "
                       "больше ничего: текст обязан держаться сам.\n"
+                      "Язык — твой, тот, на котором ты пишешь всегда, а не язык "
+                      "узла, на который отвечаешь, и не язык компаньона: прошлый "
+                      "прогон русскоязычный агент переписывал ответ на украинский, "
+                      "отвечая украинскому узлу.\n"
                       "Верни ТОЛЬКО окончательный текст довода — без пояснений, "
                       "без кавычек, без заголовка.")
             except (PocError, BudgetOut) as e:
@@ -322,6 +343,32 @@ class Agent:
 
 
 # ----------------------------------------------------------------- служебное
+# Режим живого спора: прошлый прогон дал 28 уточнений из 30 ходов — агенты
+# вежливо достраивали друг друга. Здесь им прямо сказано спорить.
+LIVELY = (
+    "В ЭТОМ ПРОГОНЕ СПОР ДОЛЖЕН БЫТЬ ЖИВЫМ — это важнее ширины разбора. Найди "
+    "в ветке узел, с которым ты НЕ согласен, лучше свежий или ответ тебе, и "
+    "отвечай его автору прямо: возражением (refute) или острым вопросом "
+    "(question). Уточнение (qualify) — только если ты правда уточняешь, а не "
+    "вежливо споришь. Не повторяй свои прежние доводы — двигай спор дальше. "
+    "Резко по мысли, уважительно к человеку. Молчать можно, только если "
+    "возразить действительно нечего.\n\n")
+
+
+def add_balance(username, amount):
+    """Пополнить грант на платформе — вторая половина автопополнения."""
+    import asyncpg
+
+    async def go():
+        conn = await asyncpg.connect(os.environ["DATABASE_URL"])
+        await conn.execute(
+            "UPDATE authors SET balance_usd = balance_usd + $2 WHERE username = $1",
+            username, Decimal(str(amount)))
+        await conn.close()
+
+    asyncio.run(go())
+
+
 def verify_accounts(usernames, balance):
     """Отметить почту подтверждённой и выставить грант.
 
@@ -669,6 +716,16 @@ def main():
     ap.add_argument("--agents", type=int, default=None)
     ap.add_argument("--cast", choices=["default", "arena"], default="default",
                     help="состав: шесть складов мышления или трое для спора (arena)")
+    ap.add_argument("--topup", type=float, default=0.0,
+                    help="когда лимит кончается — один раз добавить столько $ агенту")
+    ap.add_argument("--lively", action="store_true",
+                    help="живой спор: возражать и спрашивать, а не вежливо уточнять")
+    ap.add_argument("--max-turns", type=int, default=None,
+                    help="потолок ходов на агента за прогон (поверх раундов)")
+    ap.add_argument("--brief", action="append", default=[],
+                    help="ключ=текст — дополнительная задача персоне на этот прогон")
+    ap.add_argument("--only", nargs="*", default=None,
+                    help="ключи персон из состава (по умолчанию все)")
     ap.add_argument("--stance",
                     help="вопрос, по которому замерить позиции до и после разбора")
     ap.add_argument("--problems", help="json со списком постановок проблем")
@@ -704,6 +761,12 @@ def main():
         sys.exit(f"стенд не отвечает на {args.base_url} ({e}) — запусти ./serve.sh")
 
     cast = ARENA if args.cast == "arena" else PERSONAS
+    if args.only:
+        cast = [p for p in cast if p["key"] in args.only]
+    # задача на прогон дописывается к копии персоны, общий список не меняется
+    briefs = dict(b.split("=", 1) for b in args.brief if "=" in b)
+    cast = [dict(p, system=p["system"] + "\n\nЗАДАЧА НА ЭТОТ РАЗБОР:\n" + briefs[p["key"]])
+            if p["key"] in briefs else p for p in cast]
     agents = [Agent(p, i, args) for i, p in enumerate(cast[:args.agents or len(cast)])]
     head(f"Участников: {len(agents)} · модель {args.model} · "
          f"лимит ${args.budget:.2f} на агента")
