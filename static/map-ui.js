@@ -1,17 +1,11 @@
-// Управление экраном для всех вариантов карты (map-v1 / v2 / v3).
-//
-// Два независимых режима, потому что это разные потребности:
-//   • полный экран — убрать хром браузера (Fullscreen API);
-//   • «чистый режим» — убрать НАШИ панели, отдав максимум площади карте.
-// Их часто путают, но нужны они по отдельности: на большом мониторе
-// чистый режим полезен и без фуллскрина, а на проекторе — наоборот.
-//
-// Каждая страница сама решает, что прячет чистый режим: она описывает это
-// правилами для body.lean. Здесь только переключение и уведомление о смене
-// размера — canvas обязан перерисоваться, иначе останется в старом разрешении.
+// Фильтры и поиск каталога обсуждений (index.html, вид «каталог»): совпадение
+// темы с запросом и выбранными фасетами, счётчики, панель фильтров.
+// Раньше здесь же жили форма создания темы на карте и полноэкранный режим для
+// прототипов map-v1…v3 — удалены вместе с ними 15.09
+// (vault: decisions/2026-09-15-catalog-only).
 
 // ============================================================ ФИЛЬТРЫ
-// Общий компонент для всех трёх вариантов: 196 стран и 120 подветвей нельзя
+// Панель фильтров каталога: 196 стран и 120 подветвей нельзя
 // показать плоским списком чипов — получится стена. Поэтому дерево, свёрнутое
 // по умолчанию, с поиском внутри фасета и счётчиками.
 //
@@ -101,13 +95,19 @@ function buildFacets(host, onChange) {
     // ---- направления: домен → подветви
     const g1 = document.createElement("div");
     g1.className = "fx-group";
-    g1.innerHTML = `<h3>Направления</h3>`;
+    // Направления видны ВСЕ, и пустые тоже (серым, с нулём): это единственное,
+    // что осталось от «пейзажа» (vault: decisions/2026-09-15-catalog-only) —
+    // видно, где обсуждений пока нет совсем, а это подсказка, что засевать.
+    g1.innerHTML = `<h3>Направления</h3>` +
+      `<div class="fx-note" style="font-size:11.5px;color:var(--dim2,#6f7688);margin:-2px 0 6px 8px">` +
+      `0 — по направлению пока нет ни одного обсуждения</div>`;
     for (const d of DOMAINS) {
       const n = countBy("dom", t => t.domain === d.id);
       const subsHit = d.subs.filter(s => hit(s));
       const self = hit(d.name);
       if (!self && !subsHit.length) continue;
-      if (!n && !showEmpty && !needle) continue;
+      // «без рубрики» с нулём — не направление, а служебная корзина: её прячем
+      if (!n && !needle && d === UNSORTED) continue;
       const key = "d:" + d.id, opened = OPEN.has(key) || (needle && subsHit.length);
       g1.appendChild(row({
         label:d.name, count:n, on:SEL.domains.has(d.id), depth:0, color:d.color,
@@ -208,220 +208,4 @@ function buildFacets(host, onChange) {
 
   render();
   return { render };
-}
-
-// ============================================================ ПЕРЕКЛЮЧАТЕЛЬ
-// Переход между вариантами прямо из шапки, без возврата на map.html.
-// Режим данных переносится вместе с переходом: демо, потерянное на первом же
-// переключении, сделало бы сравнение вариантов невозможным — они показывали бы
-// разное, и разница читалась бы как разница навигации.
-
-const SCREENS = [
-  { file:"map-v1.html", short:"пейзаж",  title:"Карта по направлениям" },
-  { file:"map-v2.html", short:"каталог", title:"Список с фильтрами" },
-  { file:"map-v3.html", short:"связи",   title:"Граф связей по тегам" },
-];
-
-function mountNav(host) {
-  const here = location.pathname.split("/").pop() || "map-v1.html";
-  const q = DEMO ? "?demo=1" : "";
-  host.innerHTML =
-    `<span class="seg">` +
-    SCREENS.map(s =>
-      s.file === here
-        ? `<b class="seg-i on" title="${s.title}">${s.short}</b>`
-        : `<a class="seg-i" href="/${s.file}${q}" title="${s.title}">${s.short}</a>`
-    ).join("") +
-    `</span><a class="seg-out" href="/" title="Дерево обсуждений — там пишут">обсуждения →</a>`;
-}
-
-// ============================================================ СОЗДАНИЕ ТЕМЫ
-// Форма живёт прямо на карте: человек видит, где пусто, и заводит тему туда же.
-// Рубрика выбирается ЗДЕСЬ, а не после публикации — иначе тема рождается вне
-// навигации, и её потом никто не находит.
-
-function mountComposer(host, { onCreated } = {}) {
-  host.innerHTML = `
-    <div class="cmp-back"></div>
-    <div class="cmp">
-      <div class="cmp-head"><b>Новая проблема</b><span class="cmp-x">×</span></div>
-      <div class="cmp-body">
-        <label>Заголовок <span class="req">обязательно</span></label>
-        <input class="cmp-title" maxlength="120" placeholder="Коротко, одной строкой" />
-
-        <label>Постановка <span class="req">обязательно</span></label>
-        <textarea class="cmp-text" rows="4"
-          placeholder="В чём вред, кого касается, каков масштаб. Вид можно сменить на следующем шаге — вопрос, предложение, тезис, разбор"></textarea>
-
-        <div class="cmp-row">
-          <div>
-            <label>Направление</label>
-            <select class="cmp-dom"></select>
-          </div>
-          <div>
-            <label>Подветвь</label>
-            <select class="cmp-sub"></select>
-          </div>
-        </div>
-
-        <label>География <span class="opt">необязательно</span></label>
-        <input class="cmp-geo-find" placeholder="Начни печатать страну, регион или союз…" />
-        <div class="cmp-geo-hits"></div>
-        <div class="cmp-chosen cmp-geo-chosen"></div>
-
-        <label>Теги <span class="opt">через запятую, до 8</span></label>
-        <input class="cmp-tags" placeholder="климат, атом" />
-
-        <div class="cmp-err"></div>
-      </div>
-      <div class="cmp-foot">
-        <button class="cmp-cancel">Отмена</button>
-        <button class="cmp-send">Создать проблему</button>
-      </div>
-    </div>`;
-
-  const $ = s => host.querySelector(s);
-  const geoChosen = new Set();
-
-  const domSel = $(".cmp-dom"), subSel = $(".cmp-sub");
-  DOMAINS.filter(d => d.subs.length).forEach(d => {
-    const o = document.createElement("option");
-    o.value = d.id; o.textContent = d.name; domSel.appendChild(o);
-  });
-  function fillSubs() {
-    const d = DOM_BY_ID[domSel.value];
-    subSel.innerHTML = `<option value="">— не уточнять —</option>`;
-    (d ? d.subs : []).forEach(s => {
-      const o = document.createElement("option");
-      o.value = s; o.textContent = s; subSel.appendChild(o);
-    });
-  }
-  domSel.onchange = fillSubs;
-  fillSubs();
-
-  // Гео — поиск, а не выпадающий список: в нём 196 стран плюс регионы и союзы.
-  const geoAll = () => [
-    ...GEO_UNIONS.map(u => u.name),
-    ...GEO_TREE.map(c => c.name),
-    ...GEO_TREE.flatMap(c => c.regions.map(r => r.name)),
-    ...ALL_COUNTRIES,
-  ];
-  function renderGeoHits(q) {
-    const box = $(".cmp-geo-hits");
-    q = q.trim().toLowerCase();
-    if (!q) { box.innerHTML = ""; return; }
-    const hits = [...new Set(geoAll())]
-      .filter(n => n.toLowerCase().includes(q) && !geoChosen.has(n)).slice(0, 8);
-    box.innerHTML = hits.map(n => `<span class="cmp-hit">${n}</span>`).join("");
-    box.querySelectorAll(".cmp-hit").forEach(el => {
-      el.onclick = () => {
-        geoChosen.add(el.textContent);
-        $(".cmp-geo-find").value = ""; box.innerHTML = ""; renderChosen();
-      };
-    });
-  }
-  function renderChosen() {
-    $(".cmp-geo-chosen").innerHTML = [...geoChosen]
-      .map(n => `<span class="cmp-chip">${n}<i>×</i></span>`).join("");
-    $(".cmp-geo-chosen").querySelectorAll(".cmp-chip i").forEach(el => {
-      el.onclick = () => { geoChosen.delete(el.parentElement.firstChild.textContent); renderChosen(); };
-    });
-  }
-  $(".cmp-geo-find").addEventListener("input", e => renderGeoHits(e.target.value));
-
-  const close = () => host.classList.remove("open");
-  $(".cmp-x").onclick = close;
-  $(".cmp-cancel").onclick = close;
-  $(".cmp-back").onclick = close;
-
-  $(".cmp-send").onclick = async () => {
-    const err = $(".cmp-err");
-    const title = $(".cmp-title").value.trim();
-    const text = $(".cmp-text").value.trim();
-    if (!title || !text) { err.textContent = "нужны и заголовок, и текст"; return; }
-    const tags = $(".cmp-tags").value.split(",").map(s => s.trim()).filter(Boolean);
-    const btn = $(".cmp-send");
-    btn.disabled = true; err.textContent = "";
-    // Отсюда проблема больше не публикуется напрямую: корень проходит разбор
-    // (тест на вред) и разговор с компаньоном, а они живут в дереве. Черновик
-    // не теряется — он уезжает вместе с человеком и подставляется в форму там.
-    try {
-      sessionStorage.setItem("noo_draft_problem", JSON.stringify({
-        title, text, domain: domSel.value, sub: subSel.value || null,
-        geo: [...geoChosen], tags }));
-      location.href = "/?newproblem=1";
-      return;
-    } catch (e) {
-      err.textContent = "не получилось перенести черновик: " + e.message;
-      btn.disabled = false; return;
-    }
-  };
-
-  return { open: () => { host.classList.add("open"); $(".cmp-title").focus(); } };
-}
-
-function setupScreen({ onResize } = {}) {
-  const inFs = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
-
-  const fsBtn = document.getElementById("fsBtn");
-  const leanBtn = document.getElementById("leanBtn");
-
-  function syncLabels() {
-    if (fsBtn) {
-      fsBtn.textContent = inFs() ? "⤡ свернуть" : "⤢ во весь экран";
-      fsBtn.classList.toggle("on", inFs());
-    }
-    if (leanBtn) {
-      const lean = document.body.classList.contains("lean");
-      leanBtn.textContent = lean ? "▣ вернуть панели" : "▢ скрыть панели";
-      leanBtn.classList.toggle("on", lean);
-    }
-  }
-
-  // Размер меняется не мгновенно: браузер перекладывает layout уже после
-  // события. Двойной прогон через rAF надёжнее одного setTimeout наугад.
-  function afterLayout() {
-    requestAnimationFrame(() => requestAnimationFrame(() => onResize && onResize()));
-  }
-
-  async function toggleFullscreen() {
-    try {
-      if (inFs()) {
-        await (document.exitFullscreen?.() ?? document.webkitExitFullscreen?.());
-      } else {
-        const el = document.documentElement;
-        await (el.requestFullscreen?.() ?? el.webkitRequestFullscreen?.());
-      }
-    } catch (_) {
-      // Фуллскрин могут запретить политикой или отсутствием жеста —
-      // не повод ронять страницу: чистый режим остаётся рабочим запасом.
-    }
-    syncLabels();
-    afterLayout();
-  }
-
-  function toggleLean() {
-    document.body.classList.toggle("lean");
-    syncLabels();
-    afterLayout();
-  }
-
-  fsBtn && (fsBtn.onclick = toggleFullscreen);
-  leanBtn && (leanBtn.onclick = toggleLean);
-
-  // Выход по Esc и системным способом происходит мимо нашей кнопки —
-  // подписка обязательна, иначе подпись врёт о текущем состоянии.
-  document.addEventListener("fullscreenchange", () => { syncLabels(); afterLayout(); });
-  document.addEventListener("webkitfullscreenchange", () => { syncLabels(); afterLayout(); });
-
-  document.addEventListener("keydown", e => {
-    const el = document.activeElement, tag = el && el.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || (el && el.isContentEditable)) return;
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
-    const k = e.key.toLowerCase();
-    if (k === "f" || k === "а") { e.preventDefault(); toggleFullscreen(); }   // f / ф-раскладка
-    if (k === "h" || k === "р") { e.preventDefault(); toggleLean(); }
-  });
-
-  syncLabels();
 }

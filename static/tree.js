@@ -848,7 +848,7 @@ function nodeRow(node, type) {
       // хотя убирает её только из ЛИЧНОЙ подборки и ни на кого не влияет.
       const drop = el("span", "ws", "убрать у себя");
       drop.title = "Убрать проблему из своего рабочего дерева. " +
-        "В графе она остаётся — её видят все и найдёшь на карте";
+        "В графе она остаётся — её видят все и найдёшь в каталоге";
       drop.onclick = (e) => { e.stopPropagation(); workspaceToggle(node.id, false); };
       row.appendChild(drop);
     }
@@ -1923,7 +1923,7 @@ function companionThread(hint, { getText, setText, connectTo, opening, restore }
 
   const acts = el("div", "actions");
   const send = el("button", "mini", "ответить");
-  const wider = el("button", "mini", "поискать шире по карте");
+  const wider = el("button", "mini", "поискать шире по каталогу");
   wider.title = "Компаньон посмотрит не только эту проблему, но и остальные";
   let scope = "near";
 
@@ -3415,7 +3415,7 @@ function newTopicForm(prefill) {
       // страницу, которой там нет.
       const noun = KIND_RU[kindSel.value] || "узел";
       toast(!domSel.value
-        ? noun + " создан(а), но без рубрики — на карте найдут только поиском"
+        ? noun + " создан(а), но без рубрики — в каталоге найдут только поиском"
         : kindSel.value === "problem"
         ? "проблема создана — заполни состояние ниже"
         : noun + " создан(а) — PoI оценивается в фоне…");
@@ -3491,7 +3491,7 @@ function newTopicForm(prefill) {
     other.style.fontSize = "12.5px";
     other.appendChild(document.createTextNode(
       "Это про проблему, которая уже стоит? Ответ внутри неё прочитают скорее. "));
-    const toMap = el("a", "", "Найти проблему на карте →");
+    const toMap = el("a", "", "Найти проблему в каталоге →");
     toMap.href = "#";
     toMap.onclick = (e) => {
       e.preventDefault();
@@ -3729,7 +3729,7 @@ function showView(v) {
   const map = v === "map";
   $("#mapView").style.display = map ? "" : "none";
   $("#wrap").style.display = map ? "none" : "";
-  $("#tagline").textContent = map ? "карта обсуждений" : "дерево обсуждений";
+  $("#tagline").textContent = map ? "каталог обсуждений" : "дерево обсуждений";
   document.querySelectorAll("#viewSeg .seg-i").forEach(b =>
     b.classList.toggle("on", b.dataset.view === v));
   if (map) {
