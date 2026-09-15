@@ -21,6 +21,7 @@ def rebuild_state(events):
     st = {
         "nodes": {},          # id -> {kind, poi_score, author_id}
         "edges": set(),       # (source, target, type)
+        "concessions": set(), # (node, target, quote)
         "reactions": {},      # (author, node) -> stance
         "position_votes": {}, # (author, position) -> stance
         "topic_poi": {},      # (author, topic_root) -> poi
@@ -43,6 +44,8 @@ def rebuild_state(events):
                 st["nodes"][p["node_id"]]["poi_score"] = p["poi_score"]
         elif t == "edge_added":
             st["edges"].add((p["source_id"], p["target_id"], p["edge_type"]))
+        elif t == "concession_added":
+            st["concessions"].add((p["node_id"], p["target_id"], p.get("anchor_quote")))
         elif t == "reaction_set":
             st["reactions"][(a, p["node_id"])] = p["stance"]
         elif t == "position_vote_set":
@@ -111,6 +114,8 @@ async def read_table_state():
         nodes = await conn.fetch(
             "SELECT id, kind, poi_score, author_id, atom_group FROM nodes")
         edges = await conn.fetch("SELECT source_id, target_id, type FROM edges")
+        concessions = await conn.fetch(
+            "SELECT node_id, target_id, anchor_quote FROM concessions")
         reactions = await conn.fetch("SELECT author_id, node_id, stance FROM reactions")
         pvotes = await conn.fetch(
             "SELECT author_id, position_id, stance FROM position_reactions")
@@ -121,6 +126,8 @@ async def read_table_state():
                             "author_id": r["author_id"],
                             "atom_group": r["atom_group"]} for r in nodes},
         "edges": {(r["source_id"], r["target_id"], r["type"]) for r in edges},
+        "concessions": {(r["node_id"], r["target_id"], r["anchor_quote"])
+                        for r in concessions},
         "reactions": {(r["author_id"], r["node_id"]): r["stance"] for r in reactions},
         "position_votes": {(r["author_id"], r["position_id"]): r["stance"] for r in pvotes},
         "topic_poi": {(r["author_id"], r["topic_root_id"]): r["poi"] for r in tpoi},
@@ -147,7 +154,8 @@ async def verify():
     actual = await read_table_state()
 
     problems = []
-    for key in ("nodes", "edges", "reactions", "position_votes", "topic_poi", "authors"):
+    for key in ("nodes", "edges", "concessions", "reactions", "position_votes",
+                "topic_poi", "authors"):
         if replayed[key] != actual[key]:
             problems.append(
                 f"{key}: replay {len(replayed[key])} items != tables {len(actual[key])}")

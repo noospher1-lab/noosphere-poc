@@ -32,7 +32,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
 
-from . import (auth, db, lang as lang_mod, dialogue as dialogue_mod, embed as embed_mod, mail,
+from . import (alignment, auth, db, dialectic, graphview, schemes,
+               values as values_mod, value_candidates, lang as lang_mod, dialogue as dialogue_mod, embed as embed_mod, mail,
                material, poi, taxonomy, voteweight,
                votedialogue, pools as pools_mod)
 
@@ -1072,15 +1073,33 @@ class AnchorIn(BaseModel):
     quote: str
 
 
+class ConcedeIn(BaseModel):
+    """Что признано: дословная цитата из узла-цели или ничего (признание
+    без уточнения). Смещения и хеш сервер находит сам по тексту цели."""
+    quote: str | None = None
+
+
+class ValueIn(BaseModel):
+    """Ценность довода: id из списка app/values.py и формулировка своими словами."""
+    id: str
+    phrase: str | None = None
+
+
 class ArgumentIn(BaseModel):
     text: str
     connect_to: int | None = None         # optional: target node id (None = new branch / root)
-    edge_type: str | None = "support"     # support / refute / qualify / undercut / question
+    edge_type: str | None = "support"     # support / refute / qualify / restate / undercut / question
     kind: str | None = "argument"         # "question" marks a question node (a root can be one)
     title: str | None = None              # required when this opens a new topic (connect_to is None)
     # Ответ на фрагмент: якорь на участок текста цели (только с connect_to).
     # None = ответ на весь узел. undercut («не доказывает») без якоря не берётся.
     anchor: AnchorIn | None = None
+    # Уступка: ответ признаёт часть узла, на который отвечает (только с
+    # connect_to и не с «за» — «за» и так согласие). Отдельно от якоря: якорь
+    # говорит, НА ЧТО отвечаем, уступка — что при этом признаём.
+    concedes: ConcedeIn | None = None
+    # на какую ценность опирается довод — предлагает разбор, автор видит
+    value: ValueIn | None = None
     # Рубрика — только для новой темы (connect_to is None). Ответу внутри
     # ветки она не нужна: он наследует рубрику корня.
     domain: str | None = None
@@ -1179,6 +1198,21 @@ async def public_stats():
 @app.get("/api/graph")
 async def get_graph():
     return await db.get_graph()
+
+
+# Плоский граф (vault: decisions/2026-09-15-flat-graph): данные для картинки,
+# раскладку считает страница. Открыто без входа, как и /api/graph.
+@app.get("/api/graph/map")
+async def graph_map():
+    return graphview.map_view(await db.get_graph())
+
+
+@app.get("/api/graph/topic/{root_id}")
+async def graph_topic(root_id: int):
+    view = graphview.topic_view(await db.get_graph(), root_id)
+    if view is None:
+        raise HTTPException(404, "такого обсуждения нет — ветка строится от корня")
+    return view
 
 
 @app.get("/api/topics")
@@ -1526,6 +1560,15 @@ async def get_node(node_id: int, author=Depends(optional_author)):
     node["fragment_replies"] = await db.node_anchors(node_id)
     # авторские примечания: единственное, что можно добавить к зафиксированному
     node["addenda"] = await db.node_addenda(node_id)
+    node["value_name"] = values_mod.name(node.get("value"))
+    # одно название на всех экранах (vault: decisions/2026-09-15-one-label)
+    node["label"] = graphview.node_label(
+        node, is_root=node.get("topic_root_id") in (None, node_id))
+    # кто признал часть этого довода — сближение видно на самом доводе
+    node["conceded_by"] = await db.node_concessions(node_id)
+    # выдержал ли довод спор — по ветке под ним, без модели (vault:
+    # decisions/2026-09-15-dialectic-strength)
+    node["dialectic"] = dialectic.verdict(await db.dialectic_rows(node_id), node_id)
     # своё ли это высказывание и можно ли его ещё снять — UI рисует по этому
     # кнопки и остаток времени; чужому читателю знать нечего
     if author and node.get("author_id") == author["id"]:
@@ -1672,13 +1715,119 @@ async def topic_board(topic_root_id: int):
     return await db.topic_board(topic_root_id)
 
 
+# векторы формулировок ценностей: считаются локальной моделью один раз на текст
+_PHRASE_VECTORS: dict[str, list] = {}
+_PHRASE_VECTORS_MAX = 5000
+
+
+@app.get("/api/values/overview")
+async def values_overview():
+    """Страница «Ценности» (vault: decisions/2026-09-15-value-candidates): живой
+    список с числом доводов и людей на каждом пункте и кандидаты в новые
+    ценности — похожие формулировки без дома в списке, набранные разными людьми
+    в разных обсуждениях. Без имён. Модель выключена или не загрузилась —
+    кандидатов нет, и страница говорит об этом прямо (embed: false)."""
+    items = await db.value_marks()
+    counts = value_candidates.value_counts(items)
+    listing = [{**v, **counts.get(v["id"], {"nodes": 0, "people": 0})}
+               for v in values_mod.as_list()]
+    phrases = sorted({it["phrase"] for it in items if it.get("phrase")})
+    embed_on = embed_mod.ENABLED
+    cands = []
+    if embed_on and phrases:
+        missing = [p for p in phrases if p not in _PHRASE_VECTORS]
+        if missing:
+            if len(_PHRASE_VECTORS) + len(missing) > _PHRASE_VECTORS_MAX:
+                _PHRASE_VECTORS.clear()
+                missing = phrases
+            vecs = await embed_mod.embed(missing)
+            if len(vecs) == len(missing):
+                _PHRASE_VECTORS.update(zip(missing, vecs))
+        if all(p in _PHRASE_VECTORS for p in phrases):
+            vectors = {it["node_id"]: _PHRASE_VECTORS[it["phrase"]]
+                       for it in items if it.get("phrase")}
+            cands = value_candidates.candidates(items, vectors)
+        else:
+            embed_on = False
+    for c in cands:
+        c["values"] = [{"id": k, "name": values_mod.name(k), "count": n}
+                       for k, n in c["values"].items()]
+    return {"version": values_mod.VERSION, "values": listing, "candidates": cands,
+            "embed": embed_on,
+            "thresholds": {"min_people": value_candidates.MIN_PEOPLE,
+                           "min_topics": value_candidates.MIN_TOPICS}}
+
+
+@app.get("/api/values")
+async def get_values():
+    """Живой список ценностей (vault: decisions/2026-09-15-values) — для форм."""
+    return {"version": values_mod.VERSION, "values": values_mod.as_list()}
+
+
+class NodeValueIn(BaseModel):
+    id: str | None = None                 # None — снять метку
+
+
+@app.put("/api/nodes/{node_id}/value")
+async def put_node_value(node_id: int, body: NodeValueIn, author=Depends(verified_author)):
+    """Автор меняет или снимает ценность своего довода. Текст неизменен, а это
+    метка: её предлагает ИИ, и автор должен иметь возможность не согласиться и
+    после публикации. Формулировка ИИ относилась к прежней ценности — при смене
+    на другую она снимается."""
+    node = await db.get_node_full(node_id)
+    if node is None:
+        raise HTTPException(404, f"node {node_id} not found")
+    if node.get("author_id") != author["id"]:
+        raise HTTPException(403, "ценность довода меняет только его автор")
+    if node.get("kind") == "problem":
+        raise HTTPException(400, "у постановки проблемы ценности нет")
+    vid = None
+    if body.id:
+        vid = values_mod.clean(body.id)
+        if vid is None:
+            raise HTTPException(400, "такой ценности нет в списке")
+    phrase = node.get("value_phrase") if vid and vid == node.get("value") else None
+    await db.set_node_value(node_id, vid, phrase, values_mod.VERSION if vid else None,
+                            author_id=author["id"])
+    return {"ok": True, "value": vid, "value_name": values_mod.name(vid),
+            "value_phrase": phrase}
+
+
 @app.get("/api/nodes/{node_id}/children")
 async def get_children(node_id: int, limit: int = 20, offset: int = 0):
     if await db.get_node(node_id) is None:
         raise HTTPException(404, f"node {node_id} not found")
     limit = max(1, min(100, limit))
     offset = max(0, offset)
-    return await db.get_children(node_id, limit, offset)
+    page = await db.get_children(node_id, limit, offset)
+    # название — то же, что в графе и в заголовке панели; сырой разбор оценки
+    # строке дерева не нужен, в панели он приходит отдельно
+    for c in page["children"]:
+        c["label"] = graphview.node_label(c)
+        c.pop("poi_breakdown", None)
+    return page
+
+
+def _concession_span(parent_text, quote):
+    """Участок уступки в тексте цели: {anchor_*} для add_concession, либо None,
+    если цитаты там нет. Пустая цитата — признание без уточнения, что именно.
+    Пробелы сравниваются мягко: модель и копирование из браузера схлопывают
+    переносы строк, а участок всё равно должен указывать в настоящий текст."""
+    t = parent_text or ""
+    q = " ".join((quote or "").split())
+    if not q:
+        return {"anchor_hash": None, "anchor_start": None,
+                "anchor_end": None, "anchor_quote": None}
+    start = t.find(q)
+    if start < 0:
+        m = re.search(r"\s+".join(re.escape(w) for w in q.split(" ")), t)
+        if m is None:
+            return None
+        start, end = m.start(), m.end()
+    else:
+        end = start + len(q)
+    return {"anchor_hash": db.text_hash(t), "anchor_start": start,
+            "anchor_end": end, "anchor_quote": t[start:end]}
 
 
 @app.post("/api/argument", dependencies=[Depends(verified_author)])
@@ -1750,6 +1899,25 @@ async def add_argument(arg: ArgumentIn, author=Depends(verified_author)):
             raise HTTPException(
                 400, "«не доказывает» целится в участок — нужен якорь")
 
+    # уступка — тоже до создания узла: цитата должна стоять в тексте цели
+    concession = None
+    if arg.concedes is not None:
+        if arg.connect_to is None:
+            raise HTTPException(400, "уступка бывает только у ответа")
+        if edge_type == "support":
+            raise HTTPException(400, "«за» и так согласие — уступка не нужна")
+        concession = _concession_span(parent_text, arg.concedes.quote)
+        if concession is None:
+            raise HTTPException(400, "признанной цитаты нет в тексте, на который отвечаешь")
+
+    # ценность — только из списка; у постановки проблемы её нет (как и схемы)
+    value = None
+    if arg.value is not None and kind != "problem":
+        vid = values_mod.clean(arg.value.id)
+        if vid is None:
+            raise HTTPException(400, "такой ценности нет в списке")
+        value = (vid, values_mod.clean_phrase(arg.value.phrase) or None)
+
     # 1. persist the node RIGHT AWAY, unscored (poi_score = NULL)
     node_id = await db.add_node(arg.text, author_id=author["id"], kind=kind,
                                 topic_root_id=root_id, title=title)
@@ -1769,6 +1937,11 @@ async def add_argument(arg: ArgumentIn, author=Depends(verified_author)):
     # потерял ветку, потому что забыл подписаться.
     await db.workspace_add(author["id"], root_id or node_id)
 
+    # 1d. ценность довода — метка рядом с узлом, с версией списка
+    if value is not None:
+        await db.set_node_value(node_id, value[0], value[1], values_mod.VERSION,
+                                author_id=author["id"])
+
     # 2. optional typed edge to an existing node (None = a new root branch).
     #    edge_type + anchor were resolved and validated above.
     edge = None
@@ -1784,6 +1957,11 @@ async def add_argument(arg: ArgumentIn, author=Depends(verified_author)):
             "anchor_end": anchor_end,
             "anchor_quote": anchor_quote,
         }
+        if concession is not None:
+            await db.add_concession(node_id, arg.connect_to, author_id=author["id"],
+                                    **concession)
+            edge["concedes"] = True
+            edge["concede_quote"] = concession["anchor_quote"]
 
     # 3. scoring AND pool assignment happen in the background
     # (questions get the QUESTION rubric and never join position pools;
@@ -1922,6 +2100,11 @@ class TopicPoiIn(BaseModel):
 class ReactionIn(BaseModel):
     node_id: int
     stance: str                          # 'agree' | 'disagree'
+    # необязательное «почему передумал» — учитывается только при смене стороны
+    why: str | None = None
+
+
+WHY_MAX = 280
 
 
 # Ten PoI buckets (0–10, 11–20, …, 91–100) plus a "no data" slot.
@@ -2011,15 +2194,73 @@ async def post_reaction(r: ReactionIn, author=Depends(verified_author)):
     # Реакция — сигнал «согласен/не согласен», одна голова. PoI автора она больше
     # не двигает (накопительный слой отключён 2026-07-22): вес реактора не
     # замораживается и не пересчитывает ничей PoI.
-    await db.set_reaction(author["id"], r.node_id, r.stance, reactor_weight=None)
-    return {"ok": True}
+    why = " ".join((r.why or "").split())[:WHY_MAX] or None
+    prev = await db.set_reaction(author["id"], r.node_id, r.stance,
+                                 reactor_weight=None, why=why)
+    return {"ok": True, "prev": prev,
+            "changed": prev is not None and prev != r.stance}
+
+
+def _alignment_items(keys, labels):
+    return [{"item": k, "kind": "node" if k.startswith("n:") else "position",
+             "id": int(k.split(":", 1)[1]), "label": labels.get(k) or ""} for k in keys]
+
+
+@app.get("/api/topics/{root_id}/alignment")
+async def topic_alignment(root_id: int, author=Depends(optional_author)):
+    """Размежевание обсуждения (vault: decisions/2026-09-15-alignment-view).
+
+    Всем — без имён и без id людей: сколько человек с отметками, какие группы
+    (только размеры, от трёх человек) и по каким доводам они расходятся. Самому
+    вошедшему — поле `me`: с кем совпадает ОН, с именами, и к какой группе он
+    ближе. Чужие совпадения не отдаются никому."""
+    node = await db.get_node(root_id)
+    if node is None or node.get("topic_root_id") not in (None, root_id):
+        raise HTTPException(404, "такого обсуждения нет — размежевание считается по корню")
+    rows = await db.topic_marks(root_id)
+    marks = [(r["person_id"], r["item"], r["stance"]) for r in rows]
+    labels = {r["item"]: r["label"] for r in rows}
+    item_values = {r["item"]: r["value"] for r in rows if r.get("value")}
+    view = alignment.summary(marks, me=author["id"] if author else None,
+                             item_values=item_values)
+    public = view["public"]
+    groups = [{"size": g["size"],
+               "values": [{"id": v["id"], "name": values_mod.name(v["id"]), "count": v["count"]}
+                          for v in g.get("values", [])]}
+              for g in public["groups"]]
+    out = {"root": root_id, "people": public["people"], "groups": groups,
+           "unplaced": public["unplaced"],
+           "dividing": [{**_alignment_items([d["item"]], labels)[0],
+                         "agree_share": d["agree_share"], "spread": d["spread"]}
+                        for d in public["dividing"]],
+           "min_common": alignment.MIN_COMMON, "min_group": alignment.MIN_GROUP}
+    if author:
+        names = {r["person_id"]: r["name"] for r in rows}
+        mine = alignment.neighbours(author["id"], marks)
+
+        def person(p):
+            return {"name": names.get(p["person_id"]) or "—", "same": p["same"],
+                    "common": p["common"], "share": p["share"],
+                    "agree_items": _alignment_items(p["agree_items"], labels),
+                    "differ_items": _alignment_items(p["differ_items"], labels)}
+        out["me"] = {"marks": mine["marks"], "group": view["my_group"],
+                     "closest": [person(p) for p in mine["closest"]],
+                     "farthest": [person(p) for p in mine["farthest"]]}
+    return out
 
 
 @app.get("/api/reactions/{node_id}")
-async def get_reactions(node_id: int, topic: int):
+async def get_reactions(node_id: int, topic: int, author=Depends(optional_author)):
     # `topic` is the discussion's root node id — PoI is per topic.
     rows = await db.get_reactions(node_id, topic)
-    return _aggregate_reactions(rows)
+    out = _aggregate_reactions(rows)
+    # своя нынешняя сторона — чтобы интерфейс понял, что клик по другой кнопке
+    # это смена стороны, и спросил «почему» (vault: decisions/2026-09-15-opinion-history)
+    out["mine"] = next((x["stance"] for x in rows
+                        if author and x["author_id"] == author["id"]), None)
+    # история мнений: кто и когда сменил сторону — информирует, ничего не начисляет
+    out["changes"] = await db.reaction_history(node_id)
+    return out
 
 
 # ---------------------------------------------------------------- positions (Layer 2)
@@ -3168,6 +3409,8 @@ _REVIEW_CLEAN = {
     "node_root": None, "node_topic": "",
     "position_id": None, "headline": "", "target_text": "", "note": "",
     "split": None,
+    # уступка: дословная цитата из родителя, которую черновик признаёт
+    "concedes": "",
     # размещение: сюда / в другую проблему / отдельным корнем / причиной
     "placement": "here", "place_id": None, "place_title": "", "place_note": "",
     # «ты называешь причину этой проблемы»: заголовок для проблемы-причины и
@@ -3175,9 +3418,13 @@ _REVIEW_CLEAN = {
     "cause_title": "", "cause_matches": [],
     # один вопрос автору — с него начинается разговор с компаньоном
     "think": "",
+    # схема рассуждения, из проверочных вопросов которой взят этот вопрос
+    "scheme": None, "scheme_name": "",
+    # на какую ценность опирается черновик — из списка и своими словами
+    "value": None, "value_name": "", "value_phrase": "",
 }
 _PLACEMENTS = {"here", "elsewhere", "own_problem", "cause"}
-_REVIEW_TYPES = {"support", "refute", "qualify", "question",
+_REVIEW_TYPES = {"support", "refute", "qualify", "restate", "question",
                  "proposal", "exploration"}
 # У корня снова есть вид (2026-09-09). Проблема судится ТЕСТОМ на заявленный
 # вред (у неё одной есть состояние, которое нечем наполнить без вреда), все
@@ -3327,6 +3574,13 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         if (len(parts) == 2 and all(p["type"] in _SPLIT_TYPES and p["text"] for p in parts)
                 and parts[0]["type"] != parts[1]["type"]):
             out["split"] = parts
+    # уступка: цитата должна стоять в тексте родителя — иначе модель признала
+    # за автора то, чего там не сказано. «За» уступкой не бывает.
+    cq = str(result.get("concedes") or "").strip()
+    if parent is not None and cq and result.get("actual_type") != "support":
+        span = _concession_span(parent["text"], cq)
+        if span and span["anchor_quote"]:
+            out["concedes"] = span["anchor_quote"]
     # РАЗМЕЩЕНИЕ. id проверяется по списку, который мы сами и передали: LLM не
     # должна уметь отправить автора к произвольному узлу графа.
     known_near = {n["id"]: n for n in neighbours}
@@ -3365,6 +3619,14 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
                                   for m in matches],
                    place_note=str(result.get("place_note") or ""))
     out["think"] = str(result.get("think") or "")
+    # схема — только из каталога: модель не должна выдумывать название, которое
+    # интерфейс покажет как «вид рассуждения»
+    sid = schemes.clean(result.get("scheme"))
+    out.update(scheme=sid, scheme_name=schemes.name(sid))
+    # ценность — тоже только из списка
+    vid = values_mod.clean(result.get("value"))
+    out.update(value=vid, value_name=values_mod.name(vid),
+               value_phrase=values_mod.clean_phrase(result.get("value_phrase")) if vid else "")
 
     verdict = result.get("verdict")
     nid, pid = result.get("node_id"), result.get("position_id")
@@ -3617,13 +3879,12 @@ async def events():
 
 
 # Serve the front-ends from static/: index.html is the tree UI, graph.html is
-# the force-directed visualization (an optional mode, kept for later).
+# the flat graph — problem map and branches in layers (vault:
+# decisions/2026-09-15-flat-graph; the 3D force view it replaced is in git).
 #
-# graph.html and dialogue-admin.html are the solo test bench: they carry an
-# author dropdown, "new persona" and "reseed the graph". The server rejects all
-# of that with 403 when DEV_TOOLS is off, but a tester who opens the page still
-# sees admin controls and a screen full of failures. Routes declared before the
-# mount win, so these two are gated here rather than in the pages themselves.
+# dialogue-admin.html is the solo test bench: it shows testers' transcripts.
+# Routes declared before the mount win, so it is gated here rather than in the
+# page itself.
 static_dir = Path(__file__).parent.parent / "static"
 
 
@@ -3635,9 +3896,8 @@ def _dev_page(name: str):
     (app.js, tree.js, index.html).
 
     Only dialogue-admin.html lives here — it shows testers' full transcripts.
-    graph.html stays open to everyone (it is a real view of the graph, and the
-    header links to it); its test-only controls are hidden client-side instead,
-    driven by /api/config.
+    graph.html stays open to everyone: it is a read-only view of the graph,
+    and the header links to it.
     """
     async def handler():
         if not DEV_TOOLS:

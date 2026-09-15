@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Noosphere — ценности</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+<style>
+  /* Страница «Ценности» (vault: decisions/2026-09-15-value-candidates): живой список
+     и кандидаты в новые ценности. Палитра — та же, что в дереве и графе. */
+  :root {
+    --bg: #0e1016; --panel: #161922; --panel2: #1d212c;
+    --line: #272c39; --line2: #333a49;
+    --ivory: #edeef2; --dim: #9aa0b0; --dim2: #6f7688;
+    --bronze: #e0b878; --green: #5fd18f; --red: #ec6b66; --blue: #66b0ea; --violet: #bf98ff;
+    --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--ivory); font-family: var(--sans); font-size: 14px; line-height: 1.5; }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px;
+    padding: 11px 18px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .header-word { font-family: var(--mono); font-weight: 500; letter-spacing: .24em; font-size: 14px; }
+  .header-word .noo { color: var(--blue); } .header-word .sphere { color: var(--bronze); }
+  header .tagline { color: var(--dim2); font-size: 13px; }
+  header .spacer { flex: 1; }
+  header nav a { font-size: 13px; color: var(--dim); margin-left: 14px; }
+  main { max-width: 860px; margin: 0 auto; padding-block: 24px 60px; padding-inline: 18px; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  h2 { font-size: 15px; margin: 30px 0 8px; letter-spacing: .02em; }
+  .lead { color: var(--dim); margin: 0 0 8px; }
+  .muted { color: var(--dim2); }
+  .vrow { display: grid; grid-template-columns: minmax(160px, 1.1fr) 2fr auto; gap: 4px 16px;
+    padding: 9px 0; border-top: 1px solid var(--line); align-items: baseline; }
+  .vrow .n { font-weight: 600; }
+  .vrow .m { color: var(--dim); }
+  .vrow .c { color: var(--dim2); font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  .vrow.zero .n { color: var(--dim); }
+  @media (max-width: 620px) { .vrow { grid-template-columns: 1fr; } }
+  .cand { background: var(--panel); border: 1px solid var(--line2); border-left: 3px solid var(--violet);
+    border-radius: 8px; padding: 12px 14px; margin: 10px 0; }
+  .cand .ph { font-size: 15px; font-weight: 600; }
+  .cand .ph span + span::before { content: " · "; color: var(--dim2); font-weight: 400; }
+  .cand .meta { color: var(--dim); font-size: 13px; margin-top: 4px; }
+  .cand .why { font-size: 13px; margin-top: 4px; }
+  .note { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; color: var(--dim); font-size: 13px; }
+</style>
+</head>
+<body>
+  <header>
+    <a href="/" title="На главную"><span class="header-word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span></a>
+    <span class="tagline">ценности</span>
+    <span class="spacer"></span>
+    <nav>
+      <a href="/">← Дерево</a>
+      <a href="/graph.html">Граф ▸</a>
+    </nav>
+  </header>
+  <main>
+    <h1>Ценности</h1>
+    <p class="lead">Люди часто расходятся не в фактах, а в том, что для них важнее. Поэтому
+      у каждого довода ИИ отмечает, на какую ценность он опирается: пункт из общего списка
+      и формулировку своими словами. Автор видит метку и может её сменить или снять.
+      Ничего не начисляется.</p>
+    <p class="lead">Список живой: общество меняется, и появляются ценности, которых в нём нет.
+      Они проявляются в формулировках раньше, чем в списке, — ниже видны кандидаты.
+      Пункты не удаляются и не меняют смысл, новые добавляются; пока решает основатель,
+      позже — голосование участников.</p>
+
+    <h2 id="list-title">Список</h2>
+    <div id="list" class="muted">загрузка…</div>
+
+    <h2>Кандидаты в новые ценности</h2>
+    <p class="lead" id="cand-lead"></p>
+    <div id="cands" class="muted">загрузка…</div>
+  </main>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (s) => document.querySelector(s);
+  const el = (tag, cls, text) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  };
+
+  function renderList(d) {
+    $("#list-title").textContent = "Список, версия " + d.version;
+    const box = $("#list");
+    box.textContent = "";
+    box.className = "";
+    for (const v of d.values) {
+      const row = el("div", "vrow" + (v.nodes ? "" : " zero"));
+      row.append(el("div", "n", v.name), el("div", "m", v.meaning),
+                 el("div", "c", v.nodes ? `доводов ${v.nodes} · людей ${v.people}` : "пока ни одного"));
+      box.appendChild(row);
+    }
+  }
+
+  function renderCands(d) {
+    const t = d.thresholds;
+    $("#cand-lead").textContent = "Похожие по смыслу формулировки, которым нет дома в списке: "
+      + "они попали в «другое» или расходятся по разным пунктам. Кандидат появляется, когда "
+      + `такие формулировки набирают хотя бы ${t.min_people} человек в ${t.min_topics} и более обсуждениях. `
+      + "Имён здесь нет.";
+    const box = $("#cands");
+    box.textContent = "";
+    box.className = "";
+    if (!d.embed) {
+      box.appendChild(el("div", "note",
+        "На этом сервере поиск кандидатов выключен: нужна локальная модель, которая сравнивает "
+        + "формулировки по смыслу. Формулировки при этом копятся — кандидаты появятся, когда модель включат."));
+      return;
+    }
+    if (!d.candidates.length) {
+      box.appendChild(el("div", "note", "Пока кандидатов нет — список покрывает то, на что опираются доводы."));
+      return;
+    }
+    for (const c of d.candidates) {
+      const card = el("div", "cand");
+      const ph = el("div", "ph");
+      for (const p of c.phrases) ph.appendChild(el("span", null, "«" + p + "»"));
+      card.appendChild(ph);
+      card.appendChild(el("div", "meta",
+        `людей ${c.people} · обсуждений ${c.topics} · доводов ${c.nodes}`));
+      const why = el("div", "why");
+      why.textContent = c.reason === "other"
+        ? "ИИ не нашёл этой ценности места в списке и отметил «другое»."
+        : "Раскладывается по разным пунктам — ни один не держит её уверенно: "
+          + c.values.map((v) => v.name + " " + v.count).join(", ") + ".";
+      card.appendChild(why);
+      const links = el("div", "meta");
+      links.append("доводы: ");
+      c.node_ids.forEach((id, i) => {
+        if (i) links.append(", ");
+        const a = el("a", null, "#" + id);
+        a.href = "/?node=" + id;
+        links.appendChild(a);
+      });
+      card.appendChild(links);
+      box.appendChild(card);
+    }
+  }
+
+  fetch("/api/values/overview")
+    .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then((d) => { renderList(d); renderCands(d); })
+    .catch((e) => {
+      $("#list").textContent = "Не загрузилось: " + e.message;
+      $("#cands").textContent = "";
+    });
+})();
+</script>
+</body>
+</html>

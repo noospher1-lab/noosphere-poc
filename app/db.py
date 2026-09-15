@@ -40,7 +40,10 @@ DATABASE_URL = os.environ.get(
 # а не в узел целиком, чем и отличается от refute («против»). Именно ответ на
 # фрагмент делает различие REBUTS/UNDERCUTS различимым на практике.
 EDGE_TYPES = ("support", "refute", "qualify", "question",
-              "proposal", "exploration", "atom", "undercut")
+              "proposal", "exploration", "atom", "undercut", "restate")
+# restate («пересказ», vault: decisions/2026-09-15-restate) — тезис родителя
+# другими словами, без поддержки, возражения и нового условия. Замер QT30 15.09:
+# перефраз в 53 случаях из 100 уходил в «за» — у повтора не было своего вида.
 
 # Окно, в которое автор ещё распоряжается своим высказыванием: правит текст или
 # снимает его целиком (vault: decisions/edit-delete-window). Час — потолок, а не
@@ -328,19 +331,25 @@ _SCHEMA = [
     # never auto-merged again — neither incremental assignment nor a full
     # re-cluster may fold it back into someone else's composed text (п.10).
     "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS dissented BOOLEAN NOT NULL DEFAULT FALSE",
+    # ЦЕННОСТЬ довода (vault: decisions/2026-09-15-values): id из живого списка
+    # app/values.py, формулировка своими словами и версия списка, по которой её
+    # ставили. Метка, а не текст: автор может сменить её и после публикации.
+    "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS value TEXT",
+    "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS value_phrase TEXT",
+    "ALTER TABLE nodes ADD COLUMN IF NOT EXISTS value_version INTEGER",
     """
     CREATE TABLE IF NOT EXISTS edges (
         id        SERIAL PRIMARY KEY,
         source_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
         target_id INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
         type      TEXT NOT NULL CHECK (type IN
-            ('support','refute','qualify','question','proposal','exploration','atom','undercut'))
+            ('support','refute','qualify','question','proposal','exploration','atom','undercut','restate'))
     )
     """,
     # existing databases carry the older CHECK — recreate it (idempotent pair)
     "ALTER TABLE edges DROP CONSTRAINT IF EXISTS edges_type_check",
     """ALTER TABLE edges ADD CONSTRAINT edges_type_check CHECK (type IN
-       ('support','refute','qualify','question','proposal','exploration','atom','undercut'))""",
+       ('support','refute','qualify','question','proposal','exploration','atom','undercut','restate'))""",
     # ОТВЕТ НА ФРАГМЕНT: якорь ребра на УЧАСТОК текста цели, а не на узел целиком.
     # Все nullable — NULL означает ответ на весь узел (прежнее поведение). Якорь =
     # хеш версии текста + смещения + сохранённая цитата: цитата переживает правку
@@ -762,6 +771,31 @@ _SCHEMA = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS node_addenda_node_idx ON node_addenda (node_id)",
+    # УСТУПКА (vault: decisions/2026-09-15-concession-act). Ответ может сделать
+    # ДВА дела сразу: признать часть довода и возразить остальному — «третий
+    # вариант годится, но скрытую форму отказа он не ловит» (стенд 14.09, #43,
+    # #44). Ребро держит одно отношение, и уступка терялась: в дереве
+    # оставалось голое «против». По Inference Anchoring Theory это разные слои:
+    # ребро — связь между утверждениями, уступка — ДЕЙСТВИЕ реплики. Поэтому
+    # отдельная таблица, а не тип ребра: рёбра держат дерево (одно исходящее у
+    # узла), а действий у одной реплики может быть несколько.
+    # Цель — узел, на который отвечали; участок (цитата) — что именно признано.
+    # Без цитаты — признание без уточнения, что именно.
+    """
+    CREATE TABLE IF NOT EXISTS concessions (
+        id           SERIAL PRIMARY KEY,
+        node_id      INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        target_id    INTEGER NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        author_id    INTEGER REFERENCES authors(id) ON DELETE SET NULL,
+        anchor_hash  TEXT,
+        anchor_start INTEGER,
+        anchor_end   INTEGER,
+        anchor_quote TEXT,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (node_id, target_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS concessions_target_idx ON concessions (target_id)",
     # СВЯЗИ МЕЖДУ ПРОБЛЕМАМИ (vault: drafts/problem-causal-links). «Уровень»
     # проблемы не хранится числом — он ВЫВОДИТСЯ из одного отношения
     # «cause порождает effect»: выше всех та, у которой не названо ни одной
@@ -873,6 +907,9 @@ _INDEXES = [
     "CREATE INDEX IF NOT EXISTS problem_links_cause_idx ON problem_links(cause_id)",
     # «кто онлайн» — запрос по окну последней активности, а не скан всех сессий
     "CREATE INDEX IF NOT EXISTS sessions_last_seen_idx ON sessions(last_seen)",
+    # история мнений по узлу читается из лога — по узлу, а не сканом всех событий
+    "CREATE INDEX IF NOT EXISTS events_reaction_node_idx "
+    "ON events ((payload->>'node_id'), id) WHERE type = 'reaction_set'",
 ]
 
 
@@ -1346,15 +1383,18 @@ async def get_children(node_id, limit=20, offset=0):
         rows = await conn.fetch(
             """
             SELECT n.id, n.text, n.poi_score, n.kind, n.atom_group, e.type AS rel,
+                   n.title, n.poi_breakdown,
                    n.retracted_at, n.retract_note,
                    e.anchor_start, e.anchor_end, e.anchor_quote, n.author_id,
                    a.name AS author, a.color AS author_color,
                    a.is_service AS author_is_service,
                    (a.username IS NULL AND NOT a.is_service) AS author_is_seed,
-                   (SELECT count(*) FROM edges e2 WHERE e2.target_id = n.id) AS reply_count
+                   (SELECT count(*) FROM edges e2 WHERE e2.target_id = n.id) AS reply_count,
+                   (c.id IS NOT NULL) AS concedes, c.anchor_quote AS concede_quote
             FROM edges e
             JOIN nodes n ON n.id = e.source_id
             LEFT JOIN authors a ON a.id = n.author_id
+            LEFT JOIN concessions c ON c.node_id = n.id AND c.target_id = e.target_id
             WHERE e.target_id = $1 AND n.deleted_at IS NULL
             ORDER BY n.created_at, n.id
             LIMIT $2 OFFSET $3
@@ -2810,16 +2850,24 @@ async def get_topic_poi(topic_root_id):
 
 
 # ---------------------------------------------------------------- reactions
-async def set_reaction(author_id, node_id, stance, reactor_weight=None):
+async def set_reaction(author_id, node_id, stance, reactor_weight=None, why=None):
     """
     reactor_weight: the reactor's topic PoI FROZEN at cast time (computed by the
     caller via topic_poi_of). Persisted and logged so the reaction's weight in
     the accrual formula never shifts afterwards. Changing one's stance re-freezes
     at the current weight — flipping a vote is a fresh act of reacting.
+
+    why: необязательное «почему передумал» (vault: decisions/2026-09-15-opinion-
+    history). Пишется в лог вместе с прежней стороной, и только когда сторона
+    правда сменилась: у первой отметки передумывать не о чем. Возвращает
+    прежнюю сторону (None, если отметки не было).
     """
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            prev = await conn.fetchval(
+                "SELECT stance FROM reactions WHERE author_id = $1 AND node_id = $2 "
+                "FOR UPDATE", author_id, node_id)
             await conn.execute(
                 """
                 INSERT INTO reactions (author_id, node_id, stance, reactor_weight)
@@ -2829,9 +2877,67 @@ async def set_reaction(author_id, node_id, stance, reactor_weight=None):
                         reactor_weight = EXCLUDED.reactor_weight
                 """, author_id, node_id, stance, reactor_weight)
             # the log keeps EVERY vote change; the table keeps only the latest
-            await _log(conn, "reaction_set",
-                       {"node_id": node_id, "stance": stance,
-                        "reactor_weight": reactor_weight}, author_id)
+            payload = {"node_id": node_id, "stance": stance,
+                       "reactor_weight": reactor_weight}
+            if prev is not None and prev != stance:
+                payload["prev"] = prev
+                if why:
+                    payload["why"] = why
+            await _log(conn, "reaction_set", payload, author_id)
+    return prev
+
+
+async def topic_marks(topic_root_id):
+    """Отметки «согласен / не согласен» по одному обсуждению — на доводах
+    (reactions) и на позициях (position_reactions). Вход для app/alignment:
+    item — "n:<id>" или "p:<id>", label — подпись для «на чём сходитесь»."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT r.author_id AS person_id, 'n:' || r.node_id AS item, r.stance,
+                   COALESCE(n.title, left(n.text, 90)) AS label, a.name, n.value
+            FROM reactions r
+            JOIN nodes n ON n.id = r.node_id AND n.deleted_at IS NULL
+            JOIN authors a ON a.id = r.author_id
+            WHERE COALESCE(n.topic_root_id, n.id) = $1
+            UNION ALL
+            SELECT pr.author_id, 'p:' || pr.position_id, pr.stance, p.headline, a.name,
+                   NULL::text
+            FROM position_reactions pr
+            JOIN positions p ON p.id = pr.position_id
+            JOIN authors a ON a.id = pr.author_id
+            WHERE p.topic_root_id = $1
+            """, topic_root_id)
+    return [dict(r) for r in rows]
+
+
+async def reaction_history(node_id, limit=1000):
+    """Смены стороны по узлу: кто, с какой на какую, когда и (если написал)
+    почему. Таблица reactions хранит только последнюю отметку — история живёт
+    в логе, и до 15.09 её никто не показывал. Первая отметка человека сменой
+    не считается, повтор той же стороны — тоже."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT e.id, e.ts, e.author_id, e.payload->>'stance' AS stance,
+                   e.payload->>'why' AS why, a.name AS author, a.color AS author_color
+            FROM events e
+            LEFT JOIN authors a ON a.id = e.author_id
+            WHERE e.type = 'reaction_set' AND e.payload->>'node_id' = $1
+            ORDER BY e.id
+            LIMIT $2
+            """, str(node_id), limit)
+    last, out = {}, []
+    for r in rows:
+        prev = last.get(r["author_id"])
+        if prev is not None and prev != r["stance"]:
+            out.append({"author_id": r["author_id"], "author": r["author"],
+                        "author_color": r["author_color"], "from": prev,
+                        "to": r["stance"], "ts": r["ts"].isoformat(), "why": r["why"]})
+        last[r["author_id"]] = r["stance"]
+    return out
 
 
 async def get_reactions(node_id, topic_root_id):
@@ -3008,8 +3114,11 @@ async def topic_subtree(topic_root_id, limit=80):
                 JOIN nodes n ON n.id = e.source_id AND n.deleted_at IS NULL
                 WHERE down.depth < 50
             )
-            SELECT id, text, kind, author_id, parent_id, rel, depth
-            FROM down ORDER BY depth, id LIMIT $2
+            SELECT d.id, d.text, d.kind, d.author_id, d.parent_id, d.rel, d.depth,
+                   c.anchor_quote AS concede_quote, (c.id IS NOT NULL) AS concedes
+            FROM down d
+            LEFT JOIN concessions c ON c.node_id = d.id AND c.target_id = d.parent_id
+            ORDER BY d.depth, d.id LIMIT $2
             """, topic_root_id, limit)
     return [dict(r) for r in rows]
 
@@ -3104,6 +3213,104 @@ async def add_edge(source_id, target_id, edge_type, anchor_hash=None,
     return edge_id
 
 
+async def add_concession(node_id, target_id, author_id=None, anchor_hash=None,
+                         anchor_start=None, anchor_end=None, anchor_quote=None):
+    """Уступка: реплика node_id признаёт (часть) узла target_id. Действие
+    реплики, а не ребро дерева — см. комментарий у таблицы concessions."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            cid = await conn.fetchval(
+                "INSERT INTO concessions (node_id, target_id, author_id, anchor_hash, "
+                "anchor_start, anchor_end, anchor_quote) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+                "ON CONFLICT (node_id, target_id) DO NOTHING RETURNING id",
+                node_id, target_id, author_id, anchor_hash,
+                anchor_start, anchor_end, anchor_quote)
+            if cid is not None:
+                await _log(conn, "concession_added",
+                           {"concession_id": cid, "node_id": node_id,
+                            "target_id": target_id, "anchor_start": anchor_start,
+                            "anchor_end": anchor_end, "anchor_quote": anchor_quote,
+                            "anchor_hash": anchor_hash}, author_id=author_id)
+    return cid
+
+
+async def set_node_value(node_id, value, phrase, version, author_id=None):
+    """Метка ценности у довода. Каждая смена — в лог: по формулировкам потом
+    ищутся кандидаты в новые ценности и прошлое раскладывается по новому списку."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "UPDATE nodes SET value = $1, value_phrase = $2, value_version = $3 "
+                "WHERE id = $4", value, phrase, version, node_id)
+            await _log(conn, "node_value_set",
+                       {"node_id": node_id, "value": value, "phrase": phrase,
+                        "list_version": version}, author_id)
+
+
+async def value_marks():
+    """Все доводы с меткой ценности — для страницы «Ценности»: счётчики по
+    пунктам списка и формулировки, из которых ищутся кандидаты в новые ценности."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id AS node_id, author_id, COALESCE(topic_root_id, id) AS topic,
+                   value, value_phrase AS phrase
+            FROM nodes
+            WHERE value IS NOT NULL AND deleted_at IS NULL
+            ORDER BY id
+            """)
+    return [dict(r) for r in rows]
+
+
+async def dialectic_rows(node_id, limit=2000):
+    """Поддерево ответов под узлом — вход для dialectic.verdict: кто кому
+    отвечает, каким видом связи, с каким PoI и не отозван ли ответ."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH RECURSIVE down AS (
+                SELECT n.id, NULL::int AS parent_id, NULL::text AS rel,
+                       n.poi_score, n.retracted_at, n.author_id, 0 AS depth
+                FROM nodes n WHERE n.id = $1 AND n.deleted_at IS NULL
+                UNION ALL
+                SELECT n.id, e.target_id, e.type, n.poi_score, n.retracted_at,
+                       n.author_id, down.depth + 1
+                FROM down
+                JOIN edges e ON e.target_id = down.id
+                JOIN nodes n ON n.id = e.source_id AND n.deleted_at IS NULL
+                WHERE down.depth < 50
+            )
+            SELECT id, parent_id, rel, poi_score, author_id,
+                   (retracted_at IS NOT NULL) AS retracted
+            FROM down ORDER BY depth, id LIMIT $2
+            """, node_id, limit)
+    return [dict(r) for r in rows]
+
+
+async def node_concessions(node_id):
+    """Кто признал (часть) этого узла — ответы-уступки с цитатой признанного."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT c.node_id AS source_id, c.anchor_quote, c.created_at,
+                   sn.author_id, a.name AS author, a.color AS author_color,
+                   e.type AS rel
+            FROM concessions c
+            JOIN nodes sn ON sn.id = c.node_id AND sn.deleted_at IS NULL
+            LEFT JOIN authors a ON a.id = sn.author_id
+            LEFT JOIN edges e ON e.source_id = c.node_id AND e.target_id = c.target_id
+            WHERE c.target_id = $1
+            ORDER BY c.created_at, c.id
+            """, node_id)
+    return [_row_with_iso(r, "created_at") for r in rows]
+
+
 # ---------------------------------------------------------------- event log
 async def get_events(after_id=0, limit=200):
     """Read the append-only log, ascending — the audit layer's raw feed."""
@@ -3150,6 +3357,10 @@ async def get_graph():
             WHERE l.deleted_at IS NULL AND (l.node_id IS NULL OR j.deleted_at IS NULL)
             ORDER BY l.id
             """)
+        # уступки — плоский граф подсвечивает «признаёт» (graphview)
+        concession_rows = await conn.fetch(
+            "SELECT c.node_id, c.target_id, c.anchor_quote FROM concessions c "
+            "JOIN nodes s ON s.id = c.node_id AND s.deleted_at IS NULL")
     nodes = [dict(r) for r in node_rows]
     for n in nodes:
         if n.get("poi_breakdown"):
@@ -3161,6 +3372,7 @@ async def get_graph():
             for e in edge_rows
         ],
         "problem_links": [dict(r) for r in link_rows],
+        "concessions": [dict(r) for r in concession_rows],
     }
 
 
@@ -3777,8 +3989,17 @@ async def problem_links_of(topic_root_id):
             _LINK_SELECT.format(other="l.cause_id", mine="l.effect_id"), topic_root_id)
         effects = await conn.fetch(
             _LINK_SELECT.format(other="l.effect_id", mine="l.cause_id"), topic_root_id)
-    return {"causes": [_link_dict(r) for r in causes],
-            "effects": [_link_dict(r) for r in effects]}
+    out = {"causes": [_link_dict(r) for r in causes],
+           "effects": [_link_dict(r) for r in effects]}
+    # Сила обоснования в споре: «оспорено · 2» считало и отбитые возражения.
+    # Сырые disputed/supported остаются — их читает ИИ в карточке проблемы.
+    from . import dialectic
+    for d in out["causes"] + out["effects"]:
+        just = d.get("node_id")
+        d["dialectic"] = (dialectic.verdict(await dialectic_rows(just), just)
+                          if just is not None and just not in (d["cause_id"], d["effect_id"])
+                          else None)
+    return out
 
 
 async def open_cause_problem(effect_id, title, text, node_id=None, author_id=None):

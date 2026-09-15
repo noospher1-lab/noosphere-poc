@@ -3,7 +3,7 @@
 // Read contract (scaling draft, principle 3): the client NEVER loads the whole
 // graph. It reads /api/topics (roots) and, per expanded node, a ranked page of
 // children from /api/nodes/{id}/children. Expanding a folder = fetching a page.
-// /api/graph is only used by the force-directed mode (/graph.html).
+// /api/graph feeds the flat graph (/graph.html via /api/graph/map and /topic).
 
 const PAGE = 20; // children per page
 
@@ -682,9 +682,22 @@ function undercutBadge() {
   return b;
 }
 
+// Уступка (vault: decisions/2026-09-15-concession-act): ответ признаёт часть
+// того, на что отвечает, и при этом возражает, уточняет или спрашивает про
+// остальное. Отдельная метка, а не вид связи: у одного ответа их бывает две.
+const CONCEDE_HINT =
+  "Ответ признаёт часть того, на что отвечает. Признанное между ними уже не "
+  + "спорно — спор идёт об остальном.";
+
+function concedeBadge(quote) {
+  const b = el("span", "rel concede", "признаёт");
+  b.title = quote ? CONCEDE_HINT + "\nПризнано: «" + quote + "»" : CONCEDE_HINT;
+  return b;
+}
+
 // ---- tree render
 function relLabel(type) {
-  return { support: "за", refute: "против", qualify: "уточнение", question: "вопрос",
+  return { support: "за", refute: "против", qualify: "уточнение", restate: "пересказ", question: "вопрос",
            proposal: "предложение", exploration: "разбор", atom: "атом",
            root: "обсуждение",
            undercut: "не доказывает", attribution: "атрибуция" }[type] || type;
@@ -745,9 +758,22 @@ function nodeRow(node, type) {
     ? el("span", "rel " + (node.kind || "argument"),
          KIND_RU[node.kind] || "обсуждение")
     : el("span", "rel " + type, relLabel(type)));
+  // уступка — второе действие того же ответа: «против», но часть признаёт
+  if (type !== "root" && node.concedes) row.appendChild(concedeBadge(node.concede_quote));
   // a topic root shows its own short title; replies fall back to a text excerpt
-  const label = type === "root" ? (node.title || shortLabel(node.text)) : shortLabel(node.text);
-  const txt = el("span", "txt", label);
+  // Название — то же, что в графе и в заголовке панели (vault: decisions/
+  // 2026-09-15-one-label). Раньше дерево показывало начало текста, а граф —
+  // короткую тему, и найденное в графе в дереве было не узнать. У ответа с
+  // темой: название, под ним одна тихая строка текста — контекст не теряется.
+  const label = type === "root" ? (node.title || shortLabel(node.text))
+    : (node.label || shortLabel(node.text));
+  let txt;
+  if (type !== "root" && node.label && !node.text.startsWith(node.label.replace(/…$/, ""))) {
+    txt = el("span", "txt named");
+    txt.append(el("span", "lbl", label), el("span", "exc", shortLabel(node.text, 140)));
+  } else {
+    txt = el("span", "txt", label);
+  }
   txt.title = node.text;
   // Связи между проблемами прямо в списке: без этого две проблемы, одна из
   // которых порождает другую, лежат рядом как равные, а уровень виден только
@@ -873,10 +899,12 @@ function renderTree() {
       el("span", "rel support", "за"),
       el("span", "rel refute", "против"),
       el("span", "rel qualify", "уточнение"),
+      el("span", "rel restate", "пересказ"),
       el("span", "rel question", "вопрос"),
       el("span", "rel proposal", "предложение"),
       el("span", "rel exploration", "разбор"),
       undercutBadge(),
+      concedeBadge(),
     );
     tree.append(kinds, rels);
   }
@@ -922,6 +950,213 @@ function retractionBanner(node) {
     "Текст и ответы на него остались: передумавший автор не уносит с собой " +
     "чужие возражения."));
   return b;
+}
+
+// Сила в споре (vault: decisions/2026-09-15-dialectic-strength). Словами, не
+// числом: пороги условны, а число, которое потом поменяется, читается как оценка.
+const DIALECTIC_WORD = {
+  untested: "не оспаривался", holds: "держится",
+  weakened: "ослаблен", shaken: "сильно ослаблен",
+};
+const DIALECTIC_HINT =
+  "Считается по ветке под доводом, без ИИ: возражения ослабляют его, поддержка "
+  + "укрепляет, а возражение, на которое ответили, бьёт слабее. PoI — про сам "
+  + "текст, это — про то, как он выдержал спор.";
+
+function dialecticLine(dx) {
+  const line = el("div", "dstat-line");
+  line.append("в споре: ");
+  const w = el("span", "dstat " + dx.verdict, DIALECTIC_WORD[dx.verdict] || dx.verdict);
+  w.title = DIALECTIC_HINT;
+  line.appendChild(w);
+  if (dx.attacks || dx.supports) {
+    const parts = [];
+    if (dx.attacks) parts.push("возражений: " + dx.attacks);
+    if (dx.supports) parts.push("за: " + dx.supports);
+    line.append(" · " + parts.join(" · "));
+  }
+  if (dx.unanswered && dx.unanswered.length) {
+    line.append(" · без ответа: ");
+    dx.unanswered.forEach((id, i) => {
+      if (i) line.append(", ");
+      const a = el("a", null, "#" + id);
+      a.href = "#";
+      a.title = "возражение, на которое ещё никто не ответил";
+      a.onclick = (e) => { e.preventDefault(); selectNode(id); };
+      line.appendChild(a);
+    });
+  }
+  return line;
+}
+
+// РАЗМЕЖЕВАНИЕ (vault: decisions/2026-09-15-alignment-view). Фракция — похожий
+// набор согласий; в неё не вступают, её считают. Всем — только размеры групп и
+// доводы, по которым они расходятся, без имён: готовый список «кто с кем»
+// становится ярлыком на человеке. С именами — только про себя самого.
+// ЦЕННОСТИ (vault: decisions/2026-09-15-values). Список живой и приходит с
+// сервера — в интерфейсе его не дублируем, иначе новая ценность появилась бы в
+// базе и не появилась в формах.
+let VALUES_CACHE = null;
+function valuesList() {
+  if (!VALUES_CACHE) VALUES_CACHE = api("/api/values").then((r) => r.values).catch(() => []);
+  return VALUES_CACHE;
+}
+
+function valueLine(node, own) {
+  if (!node.value && !own) return null;
+  const line = el("div", "muted value-line");
+  line.append("на что опирается: ");
+  if (own) {
+    const sel = el("select");
+    sel.appendChild(new Option("не указана", ""));
+    valuesList().then((list) => {
+      for (const v of list) sel.appendChild(new Option(v.name, v.id));
+      sel.value = node.value || "";
+    });
+    sel.title = "метка, а не текст — свою можно сменить или снять";
+    sel.onchange = async () => {
+      try {
+        await api(`/api/nodes/${node.id}/value`, {
+          method: "PUT", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: sel.value || null }),
+        });
+        toast(sel.value ? "ценность обновлена" : "ценность снята");
+        selectNode(node.id);
+      } catch (e) { toast("ошибка: " + e.message); }
+    };
+    line.appendChild(sel);
+  } else {
+    line.appendChild(el("b", null, node.value_name));
+  }
+  if (node.value_phrase) line.append(" · «" + node.value_phrase + "»");
+  // что это за список и откуда берутся новые ценности — отдельная страница
+  const about = el("a", null, "список ценностей");
+  about.href = "/values.html";
+  about.target = "_blank";
+  line.append(" · ");
+  line.appendChild(about);
+  return line;
+}
+
+function alignmentItem(it) {
+  if (it.kind === "node") {
+    const a = el("a", null, "«" + shortLabel(it.label, 60) + "»");
+    a.href = "#";
+    a.title = "#" + it.id;
+    a.onclick = (e) => { e.preventDefault(); selectNode(it.id); };
+    return a;
+  }
+  return el("span", null, "позиция «" + shortLabel(it.label, 60) + "»");
+}
+
+function renderAlignment(body, a) {
+  body.textContent = "";
+  body.className = "";
+  const pub = el("div", "al-pub");
+  if (!a.people) {
+    pub.append("Отметок пока мало — картины размежевания нет.");
+  } else {
+    let s = `С отметками: ${a.people} чел.`;
+    if (a.groups.length >= 2) s += ` · групп: ${a.groups.length} (${a.groups.map((g) => g.size).join(", ")})`;
+    else if (a.groups.length === 1) s += ` · одна группа из ${a.groups[0].size} — явного размежевания нет`;
+    else s += ` · групп от ${a.min_group} человек пока нет`;
+    if (a.unplaced) s += ` · вне групп: ${a.unplaced}`;
+    pub.append(s);
+  }
+  body.appendChild(pub);
+
+  // на что опираются группы: ценности доводов, с которыми группа в большинстве
+  // согласна — спор часто не о фактах, а о том, что важнее
+  if (a.groups.length >= 2 && a.groups.some((g) => (g.values || []).length)) {
+    body.appendChild(el("div", "al-sub", "на что опираются группы"));
+    a.groups.forEach((g, i) => {
+      if (!(g.values || []).length) return;
+      body.appendChild(el("div", "al-line",
+        "группа " + (i + 1) + ": " + g.values.map((v) => v.name).join(", ")));
+    });
+  }
+
+  if (a.dividing && a.dividing.length) {
+    body.appendChild(el("div", "al-sub", "сильнее всего расходятся по"));
+    for (const d of a.dividing) {
+      const line = el("div", "al-line");
+      line.appendChild(alignmentItem(d));
+      const shares = d.agree_share.map((x, i) =>
+        "группа " + (i + 1) + ": " + (x == null ? "—" : Math.round(x * 100) + "% за")).join(" · ");
+      line.appendChild(el("span", "muted", "  " + shares));
+      body.appendChild(line);
+    }
+  }
+
+  if (!a.me) return;
+  const me = el("div", "al-me");
+  me.appendChild(el("div", "al-sub", "ты — это видно только тебе"));
+  if (a.me.marks < a.min_common) {
+    me.appendChild(el("div", "muted",
+      `Твоих отметок здесь: ${a.me.marks}. Отметь «согласен / не согласен» хотя бы у `
+      + `${a.min_common} доводов — появится, с кем ты совпадаешь.`));
+    body.appendChild(me);
+    return;
+  }
+  if (a.me.group != null) me.appendChild(el("div", null, "ты ближе к группе " + (a.me.group + 1)));
+  const people = (title, list) => {
+    if (!list.length) return;
+    me.appendChild(el("div", "al-sub2", title));
+    for (const p of list) {
+      const det = el("details", "al-person");
+      det.appendChild(el("summary", null, `${p.name} — сходитесь в ${p.same} из ${p.common}`));
+      const row = (label, items) => {
+        if (!items.length) return;
+        const r = el("div", "al-items");
+        r.append(label + ": ");
+        items.forEach((it, i) => { if (i) r.append(", "); r.appendChild(alignmentItem(it)); });
+        det.appendChild(r);
+      };
+      row("сходитесь", p.agree_items);
+      row("расходитесь", p.differ_items);
+      me.appendChild(det);
+    }
+  };
+  people("чаще всего совпадаешь с", a.me.closest);
+  people("больше всего расходишься с", a.me.farthest);
+  if (!a.me.closest.length && !a.me.farthest.length)
+    me.appendChild(el("div", "muted", `пока ни с кем нет ${a.min_common} общих отметок`));
+  body.appendChild(me);
+}
+
+function alignmentCard(rootId, kind) {
+  const card = el("div", "card align");
+  card.appendChild(el("div", "section-title",
+    "Размежевание в " + (kind === "problem" ? "проблеме" : "обсуждении")));
+  appendHint(card, "Считается по отметкам «согласен / не согласен» у доводов и " +
+    "позиций. Это вид, а не членство: в группу никто не вступает, ничего не " +
+    "начисляется. Всем видны только размеры групп и доводы, по которым они " +
+    "расходятся; с кем совпадаешь ты — видишь только ты.");
+  const body = el("div", "muted");
+  body.textContent = "считаю…";
+  card.appendChild(body);
+  api(`/api/topics/${rootId}/alignment`)
+    .then((a) => renderAlignment(body, a))
+    .catch((e) => { body.textContent = "не посчиталось: " + e.message; });
+  return card;
+}
+
+function concededBlock(list) {
+  const wrap = el("div", "conceded");
+  wrap.appendChild(el("div", "section-title", "признали часть этого довода"));
+  for (const c of list) {
+    const line = el("div");
+    const who = el("a", null, c.author || "—");
+    who.href = "#";
+    who.title = "открыть ответ #" + c.source_id;
+    who.onclick = (e) => { e.preventDefault(); selectNode(c.source_id); };
+    line.append(who, " ");
+    if (c.rel) line.appendChild(el("span", "rel " + c.rel, relLabel(c.rel)));
+    if (c.anchor_quote) line.append(" признаёт: «" + c.anchor_quote + "»");
+    else line.append(" признаёт часть, не уточняя какую");
+    wrap.appendChild(line);
+  }
+  return wrap;
 }
 
 function addendaBlock(addenda) {
@@ -1040,8 +1275,13 @@ async function selectNode(id) {
   // body text; a reply has no title, so the heading is its own text
   const card = el("div", "card");
   let textEl;      // основной текст узла — цель выделения для ответа на фрагмент
-  if (isRoot && node.title) {
-    card.appendChild(el("h2", null, node.title));
+  // Заголовок — то же название, что в графе и в строке дерева: у корня его
+  // заголовок, у ответа — тема от оценки. Пока оценки нет, название совпадает
+  // с началом текста — тогда крупно сам текст, без повтора.
+  const heading = isRoot ? node.title
+    : (node.label && !node.text.startsWith(node.label.replace(/…$/, "")) ? node.label : null);
+  if (heading) {
+    card.appendChild(el("h2", null, heading));
     textEl = el("div", null, node.text);
     textEl.style.marginBottom = "8px";
   } else {
@@ -1094,6 +1334,15 @@ async function selectNode(id) {
   };
   meta.appendChild(idLink);
   card.appendChild(meta);
+  // на что опирается довод — у своего можно сменить (метка, не текст)
+  if (!isRoot || node.kind !== "problem") {
+    const vl = valueLine(node, !!(ME && node.author_id === ME.id));
+    if (vl) card.appendChild(vl);
+  }
+  // В СПОРЕ: выдержал ли довод ветку под собой. У проблемы и вопроса этого нет:
+  // они не утверждение, с которым спорят.
+  if (node.dialectic && !["problem", "question", "exploration"].includes(node.kind))
+    card.appendChild(dialecticLine(node.dialectic));
   appendHint(card, "<b>PoI</b> — насколько довод проработан, а не «правота». " +
     "На порядок в дереве он не влияет: внутри одного родителя доводы идут по " +
     "времени, иначе верхний читался бы как ответ. Вес в голосовании — " +
@@ -1115,6 +1364,8 @@ async function selectNode(id) {
   const ract = el("div", "actions");
   const agree = el("button", "mini", "▲ согласен");
   const dis = el("button", "mini", "▼ не согласен");
+  agree.dataset.rx = "agree";            // loadReactions подсвечивает свою сторону
+  dis.dataset.rx = "disagree";
   agree.onclick = () => react(id, root, "agree");
   dis.onclick = () => react(id, root, "disagree");
   ract.append(agree, dis);
@@ -1123,6 +1374,10 @@ async function selectNode(id) {
   // примечания автора — единственное, что прирастает к зафиксированному тексту
   if (node.addenda && node.addenda.length)
     card.appendChild(addendaBlock(node.addenda));
+  // кто признал часть этого довода: сближение видно на самом доводе, а не
+  // только в ответах, которые ещё надо раскрыть
+  if (node.conceded_by && node.conceded_by.length)
+    card.appendChild(concededBlock(node.conceded_by));
   // принадлежность нескольким проблемам (домашняя + принесённые) и маркеры
   // оспоренных участков — до реакций визуально не мешают, кладём в конец карточки
   if (node.belongings && node.belongings.length > 1)
@@ -1166,6 +1421,9 @@ async function selectNode(id) {
   // проблемы) и ДО формы ответа — сначала видно, что уже предложено и что
   // осталось без ответа, потом пишешь своё.
   if (isRoot) d.appendChild(boardCards(id, node.kind));
+  // Размежевание: как люди разделились и с кем совпадаешь ты. Тоже до формы
+  // ответа — видно, где спор на самом деле идёт, прежде чем писать своё.
+  if (isRoot) d.appendChild(alignmentCard(id, node.kind));
 
   // atomization: the author of an exploration can cut it into atoms
   if (node.kind === "exploration" && ME && node.author_id === ME.id)
@@ -1364,22 +1622,106 @@ function renderAtomPreview(box, node, groups) {
 // bucketRow (PoI-гистограмма поддержки) удалена 2026-07-22: поддержка позиции —
 // число людей, не распределение по PoI-«стоянию».
 
+// ИСТОРИЯ МНЕНИЙ (vault: decisions/2026-09-15-opinion-history). Ценно не только
+// «сколько сейчас за и против», но и кто передумал и почему. История —
+// информация, а не балл: за смену стороны ничего не начисляется.
+// Своя нынешняя сторона по узлу: по ней клик по другой кнопке — смена стороны.
+const REACT_MINE = new Map();
+const STANCE_WORD = { agree: "за", disagree: "против" };
+
+// «#43» в тексте — ссылка на узел: люди и так ссылаются номерами
+function appendWithNodeRefs(parent, text) {
+  for (const part of String(text).split(/(#\d+)/)) {
+    const m = /^#(\d+)$/.exec(part);
+    if (m) {
+      const a = el("a", null, part);
+      a.href = "#";
+      a.onclick = (e) => { e.preventDefault(); selectNode(Number(m[1])); };
+      parent.appendChild(a);
+    } else if (part) parent.append(part);
+  }
+}
+
+function opinionHistory(changes) {
+  const wrap = el("div", "ophist");
+  wrap.appendChild(el("div", "section-title", "история мнений"));
+  for (const c of changes.slice().reverse()) {          // свежие сверху
+    const line = el("div", "oph-line");
+    line.append((c.author || "—") + ": " + STANCE_WORD[c.from] + " → " + STANCE_WORD[c.to]);
+    const when = new Date(c.ts).toLocaleString("ru-RU",
+      { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    line.appendChild(el("span", "muted", " · " + when));
+    if (c.why) {
+      const w = el("div", "oph-why");
+      w.append("«");
+      appendWithNodeRefs(w, c.why);
+      w.append("»");
+      line.appendChild(w);
+    }
+    wrap.appendChild(line);
+  }
+  return wrap;
+}
+
 async function loadReactions(id, root, target) {
   try {
     const r = await api(`/api/reactions/${id}?topic=${root}`);
+    REACT_MINE.set(id, r.mine || null);
+    // своя отметка видна на кнопке: без этого непонятно, что нажатие другой — смена
+    const box = target.parentNode;
+    if (box) box.querySelectorAll("[data-rx]").forEach((b) => {
+      const on = b.dataset.rx === r.mine;
+      b.classList.toggle("on", on);
+      b.title = on ? "твоя отметка сейчас" : "";
+    });
+    target.textContent = "";
     // простые счётчики — формула веса ещё открыта (poi-weight-restored)
     if (!r.agree.count && !r.disagree.count) {
-      target.textContent = "Пока нет реакций — будь первым.";
-      return;
+      target.append("Пока нет реакций — будь первым.");
+    } else {
+      const a = el("span"); a.style.color = "var(--green)";
+      a.textContent = `▲ ${r.agree.count} согласны`;
+      const sep = el("span", "muted", "   ·   ");
+      const dsp = el("span"); dsp.style.color = "var(--red)";
+      dsp.textContent = `▼ ${r.disagree.count} не согласны`;
+      target.append(a, sep, dsp);
     }
-    target.innerHTML = "";
-    const a = el("span"); a.style.color = "var(--green)";
-    a.textContent = `▲ ${r.agree.count} согласны`;
-    const sep = el("span", "muted", "   ·   ");
-    const dsp = el("span"); dsp.style.color = "var(--red)";
-    dsp.textContent = `▼ ${r.disagree.count} не согласны`;
-    target.append(a, sep, dsp);
+    if ((r.changes || []).length) target.appendChild(opinionHistory(r.changes));
   } catch (e) { target.textContent = "ошибка: " + e.message; }
+}
+
+// Смена стороны: одно необязательное «почему». null — человек передумал менять.
+function askWhy(stance) {
+  return new Promise((resolve) => {
+    const back = el("div", "modal");
+    back.style.display = "flex";
+    const card = el("div", "card modal-card");
+    card.appendChild(el("div", "section-title", "Меняешь сторону на «" + STANCE_WORD[stance] + "»"));
+    card.appendChild(el("div", "muted",
+      "Почему — необязательно, можно оставить пустым. Строка попадёт в историю " +
+      "мнений у этого довода; на довод можно сослаться номером, например #43. " +
+      "Ничего не начисляется."));
+    const ta = el("textarea");
+    ta.maxLength = 280;
+    ta.rows = 3;
+    ta.placeholder = "что тебя переубедило (необязательно)";
+    ta.style.width = "100%";
+    ta.style.marginTop = "8px";
+    card.appendChild(ta);
+    const act = el("div", "actions");
+    const done = (v) => { back.remove(); resolve(v); };
+    const save = el("button", "primary mini", "сохранить");
+    save.onclick = () => done(ta.value.trim());
+    const skip = el("button", "mini", "без объяснения");
+    skip.onclick = () => done("");
+    const cancel = el("button", "mini", "отмена");
+    cancel.onclick = () => done(null);
+    act.append(save, skip, cancel);
+    card.appendChild(act);
+    back.appendChild(card);
+    document.body.appendChild(back);
+    ta.focus();
+  });
 }
 
 // loadTopicPoi (линза «PoI в теме») удалена 2026-07-22: система не показывает
@@ -1387,12 +1729,19 @@ async function loadReactions(id, root, target) {
 
 async function react(id, root, stance) {
   if (!requireAuth()) return;
+  const mine = REACT_MINE.get(id);
+  const switching = !!mine && mine !== stance;
+  let why = "";
+  if (switching) {
+    why = await askWhy(stance);
+    if (why === null) return;                    // передумал менять
+  }
   try {
     await api("/api/reactions", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ node_id: id, stance }),
+      body: JSON.stringify({ node_id: id, stance, why: why || undefined }),
     });
-    toast("реакция учтена");
+    toast(switching ? "сторона изменена" : "реакция учтена");
     if (selectedId === id) selectNode(id);
   } catch (e) { toast("ошибка: " + e.message); }
 }
@@ -1476,7 +1825,8 @@ async function reviewDraft(payload) {
 
 function reviewHasNotes(rev) {
   return !!rev && (!rev.type_ok || !!rev.quality_note || rev.verdict !== "new"
-                   || (rev.placement && rev.placement !== "here") || !!rev.think);
+                   || (rev.placement && rev.placement !== "here") || !!rev.think
+                   || !!rev.concedes);
 }
 
 // ---- Черновик переживает обновление страницы.
@@ -1638,14 +1988,14 @@ function companionThread(hint, { getText, setText, connectTo, opening, restore }
   return box;
 }
 
-const TYPE_LABEL = { support: "за", refute: "против", qualify: "уточнение",
+const TYPE_LABEL = { support: "за", refute: "против", qualify: "уточнение", restate: "пересказ",
                      question: "вопрос", proposal: "предложение", exploration: "разбор" };
 
 // Renders the navigator's suggestions into `hint`. The author stays in charge:
 // callbacks wire "switch type", "go to the node", "support the position",
 // "post as is" and "cancel"; editing the draft and resending re-reviews it.
 function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
-                                   onCause, switchLabel, getText, setText,
+                                   onCause, onConcede, onValue, switchLabel, getText, setText,
                                    connectTo, rootTest }) {
   hint.innerHTML = "";
   hint.style.display = "";
@@ -1715,6 +2065,28 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
     }
   }
 
+  // УСТУПКА. Разбор нашёл, что черновик признаёт часть родителя. Форма уже
+  // отметила это сама (onConcede) — здесь только видно, что именно попадёт в
+  // граф: опубликованное не правится, и признание за автора без его ведома
+  // было бы хуже, чем потерянное.
+  if (rev.concedes && onConcede) {
+    hint.appendChild(el("div", "section-title", "ты признаёшь часть довода"));
+    hint.appendChild(el("b", null, "«" + rev.concedes + "»"));
+    hint.appendChild(el("div", "muted",
+      "Отмечено в форме: ответ выйдет с меткой «признаёт». Не признаёшь — сними галочку."));
+    onConcede(rev.concedes);
+  }
+
+  // ценность — одной тихой строкой: отмечена в форме, можно сменить
+  if (rev.value && onValue) {
+    onValue(rev.value, rev.value_phrase || "");
+    const v = el("div", "muted");
+    v.textContent = "опирается на ценность «" + rev.value_name + "»"
+      + (rev.value_phrase ? " — " + rev.value_phrase : "")
+      + " · отмечено в форме, можно сменить или снять";
+    hint.appendChild(v);
+  }
+
   // two contributions glued together: editable split preview — the parts are
   // the author's own words, each will be its own node under its own rubric
   if (rev.split && onSplit) {
@@ -1771,6 +2143,13 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
     // к уже существующей: иначе у одной первопричины будет 50 копий.
     hint.appendChild(el("div", "section-title", "ты называешь причину этой проблемы"));
     if (rev.place_note) hint.appendChild(el("div", "muted", rev.place_note));
+    // Памятка схемы «от причины к следствию» — постоянная, без модели: связь
+    // «порождает» потом будут оспаривать ровно этими вопросами.
+    const cq = el("div", "muted");
+    cq.textContent = "перед тем как связать, проверь: не совпадение ли это? "
+      + "нет ли третьей причины, которая порождает обе? не наоборот ли — "
+      + "не эта проблема порождает ту?";
+    hint.appendChild(cq);
     const cbox = el("div", "causebox");
     let pick = null;                                  // id существующей или null = новая
     const rows = [];
@@ -1828,6 +2207,16 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
     q.appendChild(document.createTextNode(rev.quality_note));
     hint.appendChild(q);
     hint.appendChild(el("div", "muted", "поправь текст и нажми «отправить» ещё раз — компаньон перечитает"));
+  }
+
+  // Вид рассуждения (vault: decisions/2026-09-15-argument-schemes): вопрос
+  // компаньона ниже взят из проверочных вопросов этого вида, а не придуман с
+  // нуля. Подпись объясняет, откуда вопрос, — без неё он читается придиркой.
+  if (rev.scheme_name && rev.think) {
+    const s = el("div", "muted");
+    s.textContent = "вид рассуждения: «" + rev.scheme_name + "» — вопрос компаньона "
+      + "ниже из тех, на которых такие доводы обычно ломаются";
+    hint.appendChild(s);
   }
 
   const anyway = el("button", "mini", "отправить как есть");
@@ -2200,7 +2589,18 @@ function problemLinkRow(l, side) {
                + (l.problem_title || shortLabel(l.problem_text, 60)));
   t.onclick = () => selectNode(side === "cause" ? l.cause_id : l.effect_id);
   head.appendChild(t);
-  if (l.disputed) head.appendChild(el("span", "oc failure", "оспорено · " + l.disputed));
+  // Статус связи — по силе обоснования в споре, а не по голому числу
+  // возражений: раньше «оспорено · 2» стояло и тогда, когда оба уже отбиты.
+  const dx = l.dialectic;
+  if (dx && dx.verdict !== "untested") {
+    const open = (dx.unanswered || []).length;
+    const word = dx.verdict === "holds" ? "держится"
+      : (dx.verdict === "weakened" ? "ослаблена" : "сильно ослаблена")
+        + (open ? " · без ответа " + open : "");
+    const s = el("span", "dstat " + dx.verdict, "связь " + word);
+    s.title = DIALECTIC_HINT;
+    head.appendChild(s);
+  } else if (l.disputed) head.appendChild(el("span", "oc failure", "оспорено · " + l.disputed));
   else if (l.supported) head.appendChild(el("span", "oc success", "поддержано · " + l.supported));
   row.appendChild(head);
   const meta = el("div", "pl-meta");
@@ -2333,7 +2733,10 @@ function interventionForm(nodeId, mount) {
   for (const [v, l] of Object.entries(OC_LABEL)) oc.appendChild(new Option(l, v));
   two2.append(when, oc);
   const outcome = el("textarea"); outcome.placeholder = "Что вышло (исход)";
-  const cond = el("input"); cond.placeholder = "От каких условий зависело";
+  // условия — главный проверочный вопрос схемы «по прецеденту»: получится ли
+  // так же в другом месте, зависит от того, похожи ли условия
+  const cond = el("input");
+  cond.placeholder = "От каких условий зависело — чтобы другие поняли, похожи ли их условия";
   const url = el("input"); url.placeholder = "Ссылка на источник (необязательно)";
   const exc = el("textarea"); exc.placeholder = "Выдержка из источника (текст)";
   f.append(what, two1, two2, outcome, cond, url, exc);
@@ -2451,12 +2854,74 @@ function replyForm(parentId) {
   // по-русски читался как диверсия. Здесь спорят не с выводом, а с опорой:
   // вывод может быть верен, но ЭТОТ кусок его не доказывает.
   for (const [v, l] of [["support", "за"], ["refute", "против"], ["qualify", "уточнение"],
+                        ["restate", "пересказ"],
                         ["undercut", "не доказывает этот участок"], ["question", "вопрос"],
                         ["proposal", "предложение"], ["exploration", "разбор"]])
     typeSel.appendChild(new Option(l, v));
   const send = el("button", "primary", "отправить");
   const hint = el("div");                       // the navigator's suggestion box
   hint.style.display = "none";
+
+  // УСТУПКА: «признаю часть этого довода». Ставит автор или разбор (с цитатой
+  // того, что признано). Не для «за» — «за» и так согласие.
+  const concedeOpt = el("label", "concede-opt");
+  const concedeBox = el("input");
+  concedeBox.type = "checkbox";
+  const concedeQ = el("span", "q");
+  const concedeX = el("span", "x", "✕");
+  concedeX.title = "убрать цитату — признание останется без уточнения";
+  let concedeQuote = null;
+  const setConcede = (quote) => {
+    concedeBox.checked = true;
+    concedeQuote = quote || null;
+    concedeQ.textContent = quote ? "«" + shortLabel(quote, 90) + "»" : "";
+    concedeX.style.display = quote ? "" : "none";
+  };
+  const clearConcede = () => {
+    concedeBox.checked = false;
+    concedeQuote = null;
+    concedeQ.textContent = "";
+    concedeX.style.display = "none";
+  };
+  concedeX.onclick = (e) => { e.preventDefault(); setConcede(null); };
+  concedeBox.onchange = () => { if (!concedeBox.checked) clearConcede(); };
+  concedeX.style.display = "none";
+  concedeOpt.append(concedeBox, "признаю часть этого довода", concedeQ, concedeX);
+  concedeOpt.title = CONCEDE_HINT;
+  const syncConcede = () => {
+    const off = typeSel.value === "support";
+    concedeOpt.style.display = off ? "none" : "";
+    if (off) clearConcede();
+  };
+  typeSel.addEventListener("change", syncConcede);
+
+  // ЦЕННОСТЬ (vault: decisions/2026-09-15-values): на что опирается довод.
+  // Ставит разбор черновика, автор видит здесь и может сменить или снять.
+  const valueOpt = el("div", "value-opt");
+  const valueSel = el("select");
+  valueSel.appendChild(new Option("не указана", ""));
+  const valuePh = el("span", "q");
+  let valuePhrase = "", pendingValue = null;
+  valuesList().then((list) => {
+    for (const v of list) {
+      const o = new Option(v.name, v.id);
+      o.title = v.meaning;
+      valueSel.appendChild(o);
+    }
+    if (pendingValue) valueSel.value = pendingValue;
+  });
+  const setValue = (id, phrase) => {
+    pendingValue = id;
+    valueSel.value = id;
+    valuePhrase = phrase || "";
+    valuePh.textContent = valuePhrase ? "«" + shortLabel(valuePhrase, 80) + "»" : "";
+  };
+  const clearValue = () => { pendingValue = null; valueSel.value = ""; valuePhrase = ""; valuePh.textContent = ""; };
+  // формулировка ИИ относилась к его ценности — выбрал другую, она больше не про то
+  valueSel.onchange = () => { pendingValue = valueSel.value || null; valuePhrase = ""; valuePh.textContent = ""; };
+  valueOpt.append("на что опирается: ", valueSel, valuePh);
+  valueOpt.title = "Ценность, на которую опирается довод. Предлагает ИИ-разбор, " +
+    "решаешь ты; поменять можно и после публикации — это метка, а не текст.";
 
   // Черновик, переживший обновление страницы. Подставляется молча, но с
   // видимой пометкой: человек должен понимать, откуда в поле текст.
@@ -2546,11 +3011,19 @@ function replyForm(parentId) {
         body: JSON.stringify({
           text, connect_to: parentId, edge_type: typeSel.value,
           anchor: anchor || undefined,
+          concedes: concedeBox.checked && typeSel.value !== "support"
+            ? { quote: concedeQuote || undefined } : undefined,
+          value: valueSel.value ? { id: valueSel.value, phrase: valuePhrase || undefined } : undefined,
         }),
       });
+      const hadValue = valueSel.value
+        ? valueSel.options[valueSel.selectedIndex].text : "";
       clearAnchor();
+      clearConcede();
+      clearValue();
       draftDrop(parentId);            // опубликовано — хранить больше нечего
-      toast("добавлено — PoI оценивается в фоне…");
+      toast("добавлено — PoI оценивается в фоне…" + (hadValue
+        ? " · опирается на «" + hadValue + "», поменять можно в панели довода" : ""));
       expanded.add(parentId);
       await fetchChildren(parentId);   // refresh just this branch
       await loadTopics();              // reply counts on roots may change
@@ -2575,6 +3048,9 @@ function replyForm(parentId) {
     const root = ROOT.get(parentId) ?? parentId;
     const rev = await reviewDraft({ text, connect_to: parentId, edge_type: typeSel.value });
     reviewedText = text;
+    // ценность из разбора — в форму сразу, даже если больше заметок нет: автор
+    // видит её в форме и в подсказке после публикации, сменить может в панели
+    if (rev && rev.value) setValue(rev.value, rev.value_phrase);
     send.disabled = false; send.textContent = "отправить";
     // nothing to suggest (or the navigator is down) → publish silently
     if (!reviewHasNotes(rev)) { hint.style.display = "none"; await doSend(text); return; }
@@ -2588,6 +3064,9 @@ function replyForm(parentId) {
       // через разбор значит спрашивать его же мнение о собственном тексте
       setText: (t) => { ta.value = t; reviewedText = t.trim(); draftWrite(parentId, { text: t }); },
       connectTo: parentId,
+      // разбор нашёл уступку — отмечаем в форме, автор видит и может снять
+      onConcede: (quote) => { if (typeSel.value !== "support") setConcede(quote); },
+      onValue: (id, phrase) => setValue(id, phrase),
       onSend: async () => { await doSend(ta.value.trim()); },
       // advice on the card already applies to the suggested type — publish
       onSwitch: async (type) => {
@@ -2652,6 +3131,9 @@ function replyForm(parentId) {
   };
   send.onclick = runReview;
   act.append(typeSel, send);
+  syncConcede();
+  card.appendChild(concedeOpt);
+  card.appendChild(valueOpt);
   card.appendChild(act);
   // видно всегда, в отличие от подсказок: их выключают, и тогда о
   // неизменности текста узнать негде

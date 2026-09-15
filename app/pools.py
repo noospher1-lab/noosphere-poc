@@ -98,6 +98,16 @@ def _yours(node, author_id):
     return ", YOURS" if author_id is not None and node.get("author_id") == author_id else ""
 
 
+def _concedes(node):
+    """Пометка уступки в листинге: ответ признал (часть) родителя. Без неё
+    разбор видел под доводом голое «против» и мог советовать спорить с тем,
+    что оппонент уже признал (стенд 14.09, #43 и #44)."""
+    if not node.get("concedes"):
+        return ""
+    quote = " ".join(str(node.get("concede_quote") or "").split())[:120]
+    return f", CONCEDES «{quote}»" if quote else ", CONCEDES"
+
+
 def language_rule(lang):
     """Последний блок запроса к разбору и компаньону."""
     target = lang or ("the language of the author's own draft — judge it by the "
@@ -120,7 +130,7 @@ def language_rule(lang):
 # украинскую запись реестра, ответил по-украински целиком. Поэтому ответ ещё и
 # проверяется кодом, и при уверенном промахе модель переспрашивается один раз.
 _REVIEW_TEXT_FIELDS = ("type_note", "quality_note", "note", "place_note", "think",
-                       "cause_title")
+                       "cause_title", "value_phrase")
 _COMPANION_TEXT_FIELDS = ("reply", "suggestion")
 
 
@@ -278,7 +288,10 @@ REVIEW_SYSTEM = (
 
 _REVIEW_TYPES = ("support (за: supports the parent claim), refute (против: "
                  "argues against it), qualify (уточнение: narrows, conditions "
-                 "or supplements it), question (вопрос: requests information "
+                 "or supplements it), restate (пересказ: says the parent's point "
+                 "again in other words — often to check understanding — adding "
+                 "no support, no objection and no new condition; agreement that "
+                 "gives a reason is support, not restate), question (вопрос: requests information "
                  "exposing a weak point), proposal (предложение: constructs — "
                  "'let's do X' — rather than reacting to a claim), exploration "
                  "(исследование/разбор: a LARGE unsettled investigation mixing "
@@ -372,11 +385,14 @@ def review_draft(text, parent, branch, positions, neighbours=None,
         listing = "\n".join(
             f'{"  " * n["depth"]}[{n["id"]}] ({n["kind"]}'
             + (f', {n["rel"]} -> {n["parent_id"]}' if n["parent_id"] else ", topic root")
-            + _yours(n, author_id) + f') {n["text"]}' for n in branch)
+            + _concedes(n) + _yours(n, author_id) + f') {n["text"]}' for n in branch)
         parts.append(
             "The discussion tree so far, one node per line as "
-            "[id] (kind, relation -> parent id[, YOURS]) text — YOURS marks the "
-            "draft author's own earlier nodes. In a large discussion this "
+            "[id] (kind, relation -> parent id[, CONCEDES «…»][, YOURS]) text — "
+            "YOURS marks the draft author's own earlier nodes; CONCEDES marks a "
+            "reply that grants the quoted part of its parent while doing "
+            "whatever its relation says about the rest, so that part is no "
+            "longer in dispute between them. In a large discussion this "
             "is a SELECTION: the root, the chain the draft replies to, its "
             "siblings, and the nodes closest in meaning to the draft — other "
             "nodes exist but are omitted:\n\n"
@@ -411,6 +427,21 @@ def review_draft(text, parent, branch, positions, neighbours=None,
             "verdict exactly like a node of this tree:\n\n"
             + poi.wrap_user_text(slist))
     parts.extend(_problem_parts(problem))
+    # схемы рассуждения: вопрос автору берётся из проверочных вопросов схемы
+    # (vault: decisions/2026-09-15-argument-schemes). Постановке проблемы схема
+    # не нужна — у неё свой тест на вред.
+    from . import schemes
+    from . import values as values_mod
+    if not problem_root:
+        # Справочники схем и ценностей — одним блоком под явным заголовком
+        # (vault: decisions/2026-09-15-restate). Замер QT30 15.09: в 2 из 300
+        # ответов модель положила в вид связи имя схемы («cause», «evidence») —
+        # справочник читался как ещё один список видов.
+        parts.append(
+            "REFERENCE LISTS — used ONLY to fill the SCHEME and VALUE fields. "
+            "Their names are never contribution types (actual_type) and never "
+            "placements.\n\n"
+            + schemes.prompt_block() + "\n\n" + values_mod.prompt_block())
     if problem_root:
         # Автор выбрал вид «проблема» — значит вопрос не «чем это является»
         # (он уже ответил), а «держит ли это состояние»: без заявленного вреда
@@ -487,7 +518,16 @@ def review_draft(text, parent, branch, positions, neighbours=None,
            "with minimal glue; invent nothing. A long single-type text, "
            "however many points it makes, is NOT a split candidate. When you "
            "provide split, actual_type must be the type of the dominant part "
-           "— NEVER 'exploration' for a short draft.\n")
+           "— NEVER 'exploration' for a short draft.\n"
+           "4b. CONCESSION: independent of the type — does the draft GRANT "
+           "part of the node it replies to while objecting to, qualifying or "
+           "questioning the rest (e.g. «the third option works, but it does "
+           "not catch the hidden refusal»)? If so, set 'concedes' to the part "
+           "that is granted, as an EXACT verbatim quote copied from the node "
+           "being replied to (a phrase or a sentence, not the whole node). "
+           "Empty when the draft grants nothing, when it simply agrees "
+           "(that is 'support', not a concession), or when the granted part "
+           "cannot be quoted verbatim.\n")
         + ("4. PLACEMENT: is this problem already on the board? Default is "
            "'here' — opening your own problem is normal and expected. Say "
            "'elsewhere' ONLY when one of the OTHER PROBLEMS listed above "
@@ -545,12 +585,21 @@ def review_draft(text, parent, branch, positions, neighbours=None,
         "наоборот?»). Not a rhetorical prompt, not a restatement of the "
         "quality note, not homework. Empty string when the draft leaves no "
         "such gap.\n"
+        + ("" if problem_root else
+           "   SCHEME: first name the REASONING SCHEME the draft mainly follows "
+           "(from the list of schemes), or 'none'. When it follows one, the THINK "
+           "question should be the most important of that scheme's critical "
+           "questions that the draft leaves UNANSWERED — phrased concretely for "
+           "this draft and its subject, not as the generic wording. If the draft "
+           "already answers every critical question that matters, THINK stays "
+           "empty.\n")
+        + ("" if problem_root else values_mod.prompt_step())
         + "Respond with ONLY JSON:\n"
         + ('{"actual_type": "problem|not_problem", ' if problem_root else
            '{"actual_type": "argument|question|proposal|exploration", '
            if is_root else
-           '{"actual_type": "support|refute|qualify|question|proposal|'
-           'exploration", ')
+           '{"actual_type": "support|refute|qualify|restate|question|proposal|'
+           'exploration — ONLY one of these, never a scheme, value or placement name", ')
         + '"type_note": "one sentence, see above", '
         '"quality_note": "one concrete suggestion or empty", '
         '"verdict": "new|similar|covered|answered|countered|said", '
@@ -559,13 +608,16 @@ def review_draft(text, parent, branch, positions, neighbours=None,
         'empty if verdict is new", '
         '"split": [{"type": "support|refute|qualify|question|proposal", '
         '"text": "..."}, {...}] or null, '
+        + ('' if is_root else
+           '"concedes": "verbatim quote of the granted part of the parent, or empty", ')
         + ('"placement": "here|elsewhere|own_problem|cause", '
            '"cause_title": "short title of the upstream problem, or empty", '
            if in_problem else
            '"placement": "here|elsewhere|own_problem", ')
         + '"place_id": <problem id or null>, '
         '"place_note": "one sentence or empty", '
-        '"think": "one question to the author or empty"}'
+        + ("" if problem_root else schemes.json_field() + values_mod.json_fields())
+        + '"think": "one question to the author or empty"}'
     )
     lang = lang or author_language(text)
     parts.append(language_rule(lang))
@@ -685,6 +737,14 @@ def companion_reply(text, history, parent=None, branch=None, neighbours=None,
                      "answers or contradicts what the author is writing:\n\n"
                      + poi.wrap_user_text(slist))
     parts.extend(_problem_parts(problem))
+    # те же схемы, что у разбора: «где рассуждение тонкое» компаньон ищет по
+    # проверочным вопросам вида рассуждения, а не на ощупь
+    from . import schemes
+    parts.append(schemes.prompt_block()
+                 + "\nWhen you push on a thin spot, prefer the most important "
+                 "unanswered critical question of the scheme the draft follows, "
+                 "put concretely for this draft. One at a time; drop it once the "
+                 "author has answered it.")
     parts.append("The author's current draft:\n\n" + poi.wrap_user_text(text))
     if history:
         convo = "\n".join(
