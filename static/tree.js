@@ -588,7 +588,12 @@ function MAP_TOPICS_TITLE(id) {
 // Раскрыть путь до узла и показать его. Родителей ищем по ROOT/дереву: узел
 // может лежать глубоко, и без раскрытия предков ссылка приводила бы в
 // свёрнутую ветку, где его не видно.
-async function revealNode(id) {
+async function revealNode(id, rootId) {
+  // Корень узла известен заранее (topic_root_id из карточки) — ставим сразу.
+  // selectNode решает по ROOT, корень перед ним или ответ, и без этой записи
+  // ответ, до которого дерево ещё не дошло, рисовался с карточками корня:
+  // «позиции по обсуждению», размежевание, доска.
+  if (rootId != null) ROOT.set(id, rootId);
   try {
     // Родителя карточка узла не отдаёт, поэтому цепочку предков строим по
     // рёбрам графа: без раскрытия предков ссылка приводила бы в свёрнутую
@@ -596,13 +601,19 @@ async function revealNode(id) {
     const g = await api("/api/graph");
     const parentOf = new Map();
     (g.links || []).forEach((l) => parentOf.set(l.source, l.target));
+    const chain = [];                 // родитель, дед, …, корень
     let cur = id;
     for (let i = 0; i < 50 && parentOf.has(cur); i++) {
       cur = parentOf.get(cur);
-      expanded.add(cur);
+      chain.push(cur);
     }
-    expanded.add(id);
-    await fetchChildren(cur);
+    // Ответы грузим у КАЖДОГО предка сверху вниз и у самого узла, а не только у
+    // корня: раньше промежуточные ветки помечались раскрытыми, но оставались
+    // пустыми — под ними висело «загрузка…», а сам узел в дерево не попадал.
+    for (const a of [...chain.reverse(), id]) {
+      expanded.add(a);
+      await fetchChildren(a);
+    }
     renderTree();
   } catch (e) { /* не смогли раскрыть — узел всё равно откроем в панели */ }
   await selectNode(id);
@@ -625,7 +636,7 @@ async function openDeepLink() {
       const n = await api(`/api/nodes/${wantNode}`);
       const root = n.topic_root_id || wantNode;
       await openTopic(root);
-      await revealNode(wantNode);
+      await revealNode(wantNode, root);
       return;
     } catch (e) { toast("узел #" + wantNode + " не найден"); }
   }
