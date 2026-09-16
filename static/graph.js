@@ -453,7 +453,7 @@
       }
     }
     const open = add("a", "pbtn", "открыть в дереве и ответить →");
-    open.href = "/?node=" + n.id;
+    open.href = "/n/" + n.id;
     $("#panel").hidden = false;
     ensureVisible(id);
   }
@@ -487,7 +487,7 @@
     if (sm.concedes) bits.push("признаёт: " + sm.concedes);
     if (bits.length) c.append(" · " + bits.join(" · "));
     const tree = document.createElement("a");
-    tree.href = "/?node=" + topic.root; tree.className = "totree";
+    tree.href = "/n/" + topic.root; tree.className = "totree";
     tree.textContent = "в дереве →";
     c.append(" ");
     c.appendChild(tree);

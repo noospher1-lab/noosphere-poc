@@ -16,6 +16,7 @@ so it never stalls the event loop.
 
 import asyncio
 import hashlib
+import html as html_mod
 import json
 import logging
 import os
@@ -27,7 +28,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
@@ -3919,6 +3920,74 @@ async def public_profile_page(username: str):
     it cannot collide with a file in static/.
     """
     return FileResponse(static_dir / "u.html")
+
+
+# Кэш index.html для страниц узлов: файл читается с диска один раз и заново —
+# только когда изменился (mtime). Без кэша каждая ссылка на узел стоила бы
+# чтения 40 КБ, а страница узла — самый частый вход извне.
+_INDEX_CACHE: tuple[float, str] | None = None
+
+
+def _index_html() -> str:
+    global _INDEX_CACHE
+    path = static_dir / "index.html"
+    mtime = path.stat().st_mtime
+    if _INDEX_CACHE is None or _INDEX_CACHE[0] != mtime:
+        _INDEX_CACHE = (mtime, path.read_text(encoding="utf-8"))
+    return _INDEX_CACHE[1]
+
+
+def _meta_text(value: str, limit: int = 200) -> str:
+    """Одна строка для описания ссылки: без переносов и с многоточием."""
+    t = " ".join(str(value or "").split())
+    return t if len(t) <= limit else t[:limit].rstrip(" ,.;:—-") + "…"
+
+
+@app.get("/n/{node_id}", include_in_schema=False)
+async def node_page(node_id: str, request: Request):
+    """Постоянный адрес одного узла: /n/123 — ссылка на место в обсуждении.
+
+    Отдаёт то же дерево (index.html), но с подставленными title/description и
+    OG-тегами узла: ссылка, отправленная в чат, должна показывать, о чём спор,
+    а не общее «Noosphere». Те же теги читают внешние ИИ — узел становится
+    адресуемой единицей корпуса, а не куском SPA (vault: публичный корпус).
+
+    Сам показ узла делает фронт: он читает номер из своего же адреса. Здесь —
+    только оболочка, поэтому неизвестный номер отдаёт страницу как есть, а не
+    404: дерево само скажет «узел не найден», и человек остаётся в интерфейсе.
+    """
+    page = _index_html()
+    node = None
+    if node_id.isdigit():
+        node = await db.get_node_full(int(node_id))
+    if node is None:
+        return HTMLResponse(page)
+
+    is_root = node.get("topic_root_id") in (None, node["id"])
+    label = graphview.node_label(node, is_root=is_root)
+    desc = _meta_text(node.get("text"))
+    if node.get("retracted_at"):
+        # Отозванный довод («больше не настаиваю») остаётся читаемым, но
+        # превью не должно выдавать его за живую позицию автора.
+        desc = "Довод отозван автором. " + desc
+    if not is_root:
+        root = await db.get_node_full(node["topic_root_id"])
+        if root:
+            desc = f"{desc} — в обсуждении «{_meta_text(graphview.node_label(root, is_root=True), 90)}»"
+    e = html_mod.escape
+    url = str(request.url).split("?")[0]
+    meta = (
+        f"<title>{e(_meta_text(label, 120))} — Noosphere</title>\n"
+        f'<meta name="description" content="{e(desc)}" />\n'
+        f'<meta property="og:site_name" content="Noosphere" />\n'
+        f'<meta property="og:type" content="article" />\n'
+        f'<meta property="og:url" content="{e(url)}" />\n'
+        f'<meta property="og:title" content="{e(_meta_text(label, 120))}" />\n'
+        f'<meta property="og:description" content="{e(desc)}" />\n'
+        f'<meta name="twitter:card" content="summary" />'
+    )
+    return HTMLResponse(page.replace(
+        "<title>Noosphere — Дерево обсуждений</title>", meta, 1))
 
 
 if static_dir.exists():

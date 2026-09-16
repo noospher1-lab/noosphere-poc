@@ -141,7 +141,7 @@
       c.node_ids.forEach((id, i) => {
         if (i) links.append(", ");
         const a = el("a", null, "#" + id);
-        a.href = "/?node=" + id;
+        a.href = "/n/" + id;
         links.appendChild(a);
       });
       card.appendChild(links);

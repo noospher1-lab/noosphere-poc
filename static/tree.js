@@ -621,6 +621,62 @@ async function revealNode(id, rootId) {
   if (row) row.scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
+// У каждого узла свой постоянный адрес: /n/123. Старое /?node=123 остаётся
+// рабочим — на него ссылаются письма, тексты и прежние ссылки, — но адресная
+// строка нормализуется к /n/123, чтобы скопированный сверху адрес вёл туда же,
+// куда кнопка «ссылка».
+function nodeUrl(id) { return "/n/" + id; }
+
+function urlNodeId() {
+  const m = location.pathname.match(/^\/n\/(\d+)$/);
+  if (m) return Number(m[1]);
+  const q = Number(new URLSearchParams(location.search).get("node"));
+  return q || null;
+}
+
+// Пока идём «назад»/«вперёд» по истории браузера, свои записи в неё не пишем:
+// иначе возврат к родителю тут же добавлял бы его новой записью, и кнопка
+// «назад» упиралась бы в саму себя.
+let urlSync = true;
+
+function syncUrl(id, { replace = false } = {}) {
+  if (!urlSync || id == null) return;
+  const path = nodeUrl(id);
+  if (location.pathname === path && !location.search) return;
+  history[replace ? "replaceState" : "pushState"]({ node: id }, "", path);
+}
+
+// Открыть узел по номеру: найти его проблему, раскрыть ветку, выделить.
+// Одна дорога и для входа по ссылке, и для кнопки «назад».
+async function openNode(id) {
+  // Дорога к узлу лежит через его корень (openTopic), и каждый её шаг — вызов
+  // selectNode. В историю они попадать не должны: человек просил одно место, а
+  // «назад» уводило бы его по нашим внутренним шагам. Пишем один адрес в конце.
+  const was = urlSync;
+  urlSync = false;
+  try {
+    const n = await api(`/api/nodes/${id}`);
+    const root = n.topic_root_id || id;
+    showView("tree");
+    await openTopic(root);
+    await revealNode(id, root);
+    urlSync = was;
+    syncUrl(id, { replace: true });
+    return true;
+  } catch (e) { toast("узел #" + id + " не найден"); return false; }
+  finally { urlSync = was; }
+}
+
+// Кнопки «назад»/«вперёд»: адрес — источник правды о том, что открыто.
+window.addEventListener("popstate", async () => {
+  const id = urlNodeId();
+  urlSync = false;
+  try {
+    if (id) { if (id !== selectedId) await openNode(id); }
+    else if (new URLSearchParams(location.search).get("view") === "map") showView("map");
+  } finally { urlSync = true; }
+});
+
 let deepLinkDone = false;
 async function openDeepLink() {
   if (deepLinkDone) return;
@@ -628,17 +684,14 @@ async function openDeepLink() {
   const p = new URLSearchParams(location.search);
   if (p.get("view") === "map") { showView("map"); return; }
   if (p.get("newproblem")) { newTopicForm(); return; }
-  // ?node=N — прямая ссылка на узел: сами находим его проблему и открываем
-  // ветку. Без этого номер, на который ссылаются в текстах, никуда не ведёт.
-  const wantNode = Number(p.get("node"));
+  // Прямая ссылка на узел: сами находим его проблему и открываем ветку. Без
+  // этого номер, на который ссылаются в текстах, никуда не ведёт.
+  const wantNode = urlNodeId();
   if (wantNode) {
-    try {
-      const n = await api(`/api/nodes/${wantNode}`);
-      const root = n.topic_root_id || wantNode;
-      await openTopic(root);
-      await revealNode(wantNode, root);
-      return;
-    } catch (e) { toast("узел #" + wantNode + " не найден"); }
+    // Вход по ссылке — не новая запись в истории: заменяем текущую, чтобы
+    // «назад» вело туда, откуда человек пришёл, а не по кругу.
+    syncUrl(wantNode, { replace: true });
+    if (await openNode(wantNode)) return;
   }
   const want = Number(p.get("topic"));
   if (!want || !TOPICS.some(t => t.id === want)) return;
@@ -1270,6 +1323,9 @@ function errText(e) {
 async function selectNode(id) {
   const gen = ++detailGen;
   selectedId = id;
+  // Адрес всегда показывает открытый узел: скопированный из строки браузера
+  // ведёт ровно в то место обсуждения, которое человек читал.
+  syncUrl(id);
   renderTree();
   if (!expanded.has(id)) toggleExpand(id);
 
@@ -1335,11 +1391,11 @@ async function selectNode(id) {
   // ([91], [92]), и без ссылки по такому номеру не перейти. Клик копирует
   // прямую ссылку на узел, сам номер ведёт на него же.
   const idLink = el("a", null, "#" + node.id);
-  idLink.href = "/?node=" + node.id;
+  idLink.href = nodeUrl(node.id);
   idLink.title = "ссылка на этот узел — клик копирует её";
   idLink.onclick = (e) => {
     e.preventDefault();
-    const url = location.origin + "/?node=" + node.id;
+    const url = location.origin + nodeUrl(node.id);
     if (navigator.clipboard) navigator.clipboard.writeText(url).then(
       () => toast("ссылка скопирована: " + url), () => {});
   };
@@ -3750,7 +3806,14 @@ function showView(v) {
       onToggleWorkspace: (id, want) => workspaceToggle(id, want),
     });
   }
-  history.replaceState(null, "", map ? "?view=map" : location.pathname);
+  // Каталог — свой адрес; дерево возвращает адрес открытого узла, иначе после
+  // «каталог → дерево» в строке оставалось ?view=map или чужой /n/.
+  // Адрес узла из ссылки не трогаем: showView("tree") бежит раньше, чем узел
+  // выбран, и затёрло бы адрес, по которому человек пришёл, — а при «назад»
+  // (urlSync выключен) переписало бы адрес, который только что дал браузер.
+  const keep = !map && selectedId == null && urlNodeId();
+  if (!keep && urlSync) history.replaceState(null, "",
+    map ? "/?view=map" : (selectedId != null ? nodeUrl(selectedId) : "/"));
 }
 document.querySelectorAll("#viewSeg .seg-i").forEach(b => {
   b.onclick = () => showView(b.dataset.view);
@@ -3820,8 +3883,9 @@ $("#authPass").addEventListener("keydown", (e) => {
     setInterval(loadPresence, 60000);     // «онлайн» с точностью до минуты
     // Гостю показываем карту: рабочего дерева у него нет, а карта честно
     // отвечает «вот что здесь есть» — это лучший первый экран.
-    // Явная ссылка (?topic= / ?view=) сильнее умолчания и уже отработала.
-    if (!ME && !location.search) showView("map");
+    // Явная ссылка (/n/123, ?topic=, ?view=) сильнее умолчания и уже
+    // отработала: гостя, пришедшего по ссылке на узел, каталог бы её и лишил.
+    if (!ME && !location.search && !urlNodeId()) showView("map");
     // Форма — только гостю: у вошедшего сессия уже есть, и модалка поверх его
     // дерева читается как «тебя разлогинили».
     if (AUTH_INTENT && !ME) openAuth(null, AUTH_INTENT);
