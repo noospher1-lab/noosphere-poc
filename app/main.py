@@ -233,6 +233,22 @@ async def healthz():
 # DEV_TOOLS=1 in .env — they must never be reachable through a public tunnel.
 DEV_TOOLS = os.environ.get("DEV_TOOLS") == "1"
 
+# КАКИЕ РАЗДЕЛЫ СТЕНД ПОКАЗЫВАЕТ (vault: decisions/2026-09-21-participation-points).
+# Первым тестерам нужен узкий стенд: граф, голосования, тренажёр и кабинет с
+# баллами. Всё лишнее гасится ЗДЕСЬ, а не удалением кода: тест закрытый и
+# короткий, а вернуть раздел строкой в переменной окружения — секунда против
+# дня на откат миграций. Ключи разделов знает фронт (data-section у ссылок).
+# Полный список ключей: catalog, values, alignment, interventions, workspace,
+# public_profiles, stats, trainer, votes, points.
+# Умолчание — выбор Alex 23.09: на экране только дерево и граф (плюс кабинет,
+# где человек видит свой вклад). Голосования и тренажёр выключены до отдельного
+# решения; страницы живы и открываются по прямой ссылке, из интерфейса в них
+# просто нет входа.
+HIDDEN_SECTIONS = sorted({
+    s.strip() for s in os.environ.get(
+        "NOOSPHERE_HIDE",
+        "trainer,votes,stats,public_profiles").split(",") if s.strip()})
+
 
 def dev_only():
     if not DEV_TOOLS:
@@ -1056,6 +1072,53 @@ async def my_profile(author=Depends(current_author)):
     }
 
 
+# ── Баллы за участие ────────────────────────────────────────────────────────
+# Правила — app/points.py, журнал — db.points_*. Разбор лога запускается на
+# чтении: баллы существуют, только чтобы их видеть, и догонять лог в горячем
+# пути записи (где человек ждёт ответа ИИ) незачем.
+
+_points_synced_at = 0.0
+
+
+async def _points_catch_up():
+    """Догнать лог событий, но не чаще раза в пару секунд.
+
+    Рейтинг открыт без входа, и разбирать лог на каждый запрос значило бы
+    отдать наружу блокировку `points_state FOR UPDATE`. Две секунды человек
+    не замечает: после публикации дерево и так перерисовывается не мгновенно.
+    """
+    global _points_synced_at
+    now = time.monotonic()
+    if now - _points_synced_at < 2.0:
+        return
+    _points_synced_at = now
+    await db.points_sync()
+
+
+@app.get("/api/points/me")
+async def my_points(author=Depends(current_author)):
+    """Свой вклад: сумма, место среди тестеров, последние начисления, вехи."""
+    await _points_catch_up()
+    return await db.points_me(author["id"], hidden=HIDDEN_SECTIONS)
+
+
+@app.get("/api/points/top")
+async def points_top(limit: int = 20):
+    """Рейтинг участников. Открыт намеренно: он и нужен, чтобы его видели.
+
+    Наружу идут имя, логин и сумма — ровно то, что и так публично в графе
+    (/u/<login>). Ни адресов, ни трат, ни разбивки по действиям.
+    """
+    await _points_catch_up()
+    return await db.points_top(max(1, min(limit, 100)))
+
+
+@app.post("/api/dev/points/rebuild", dependencies=[Depends(admin_only)])
+async def points_rebuild():
+    """Пересобрать журнал баллов из лога событий после правки правил."""
+    return {"awarded": await db.points_rebuild()}
+
+
 @app.get("/api/auth/me")
 async def me(request: Request):
     token = request.cookies.get(SESSION_COOKIE)
@@ -1181,7 +1244,8 @@ async def meter_llm_usage(request: Request, call_next):
 async def config():
     """What the front-end needs to know about this instance. Only flags —
     never keys or tokens: this is unauthenticated."""
-    return {"dev_tools": DEV_TOOLS, "terms_version": TERMS_VERSION}
+    return {"dev_tools": DEV_TOOLS, "terms_version": TERMS_VERSION,
+            "hidden": HIDDEN_SECTIONS}
 
 
 @app.get("/api/stats")

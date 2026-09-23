@@ -470,7 +470,7 @@
   <span class="tagline" id="tagline">дерево обсуждений</span>
   <span class="seg" id="viewSeg">
     <b class="seg-i on" data-view="tree">дерево</b>
-    <a class="seg-i" data-view="map">каталог</a>
+    <a class="seg-i" data-view="map" data-section="catalog">каталог</a>
   </span>
   <span class="spacer"></span>
   <!-- Присутствие: сколько людей завело аккаунт и сколько здесь сейчас.
@@ -478,15 +478,16 @@
        пустой комнатой тому, кто зашёл впервые. -->
   <span id="presence" class="muted"></span>
   <span id="poiBadge" class="muted"></span>
+  <span id="pointsBadge" class="muted" data-section="points" style="display:none"></span>
   <span id="user" class="muted"></span>
   <button id="loginBtn" class="mini">Войти</button>
   <button id="logoutBtn" class="mini" style="display:none">Выйти</button>
   <button id="hintsBtn" class="mini">💡 Подсказки: вкл</button>
   <button id="refresh" class="mini">↻ Обновить</button>
   <button id="newTopic" class="primary mini">+ Создать</button>
-  <a href="/dialogue.html" title="Разговор с ИИ по одному вопросу — покажет сильные и слабые стороны твоего рассуждения">Тренажёр ▸</a>
-  <a href="/vote.html" title="Голосования — совещательная карта мнений (по головам и по весу); можно проголосовать или создать своё">Голосования ▸</a>
-  <a href="/profile.html" title="Мой кабинет — вклад в граф и остаток на счёте для работы с ИИ">Кабинет ▸</a>
+  <a href="/dialogue.html" data-section="trainer" title="Разговор с ИИ по одному вопросу — покажет сильные и слабые стороны твоего рассуждения">Тренажёр ▸</a>
+  <a href="/vote.html" data-section="votes" title="Голосования — совещательная карта мнений (по головам и по весу); можно проголосовать или создать своё">Голосования ▸</a>
+  <a href="/profile.html" data-section="profile" title="Мой кабинет — вклад, баллы и остаток на счёте для работы с ИИ">Кабинет ▸</a>
   <a href="/graph.html" title="Карта проблем и ветки обсуждений слоями — где нет ответа, где открытый вопрос, что держится">Граф ▸</a>
 </header>
 
@@ -579,5 +580,6 @@
 <script src="/map-ui.js"></script>
 <script src="/map-view.js"></script>
 <script src="/tree.js"></script>
+<script src="/points.js"></script>
 </body>
 </html>

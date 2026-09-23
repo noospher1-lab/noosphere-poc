@@ -81,6 +81,21 @@
   .rows .r:last-child { border-bottom:0; }
   .rows .r .k { color:var(--dim); }
   .note { color:var(--dim2); font-size:13px; line-height:1.6; }
+  /* Вехи: взятая — бронзой, невзятая — тихой строкой с подсказкой, что для
+     неё сделать. Список читается как маршрут новичка, поэтому невзятые не
+     прячем. */
+  .ms { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:8px; }
+  .ms .m { border:1px solid var(--line); border-radius:8px; padding:8px 10px;
+    background:var(--panel2); }
+  .ms .m.on { border-color:var(--bronze); }
+  .ms .m .t { font-size:13.5px; display:flex; justify-content:space-between; gap:8px; }
+  .ms .m.on .t { color:var(--bronze); }
+  .ms .m .t b { font-family:var(--mono); font-weight:600; font-size:12.5px; }
+  .ms .m .h { color:var(--dim2); font-size:12px; margin-top:3px; line-height:1.45; }
+  .ms .m.on .h { color:var(--dim); }
+  .rows .r .amt { font-family:var(--mono); color:var(--bronze); }
+  .rows .r .amt.neg { color:var(--red); }
+  .rows .r.me { color:var(--bronze); }
   .err { background:rgba(236,107,102,.1); border:1px solid rgba(236,107,102,.35);
     color:#ffb3b0; padding:11px 14px; border-radius:8px; margin:14px 0; }
   .hidden { display:none; }
@@ -116,6 +131,7 @@
   <a class="home" href="/" title="На главную"><span class="header-word"><span class="noo">NOO</span><span class="sphere">SPHERE</span></span></a>
   <span class="tagline">мой кабинет</span>
   <span class="spacer"></span>
+  <span id="pointsBadge" class="muted" data-section="points" style="display:none"></span>
   <a href="/">← к обсуждениям</a>
 </header>
 
@@ -125,6 +141,36 @@
   <div id="content" class="hidden">
     <h1 id="name">—</h1>
     <p class="muted" id="handle"></p>
+
+    <!-- ВКЛАД (баллы за участие). Первая карточка кабинета намеренно: у
+         первых тестеров это единственный видимый след их работы, и искать
+         его под счётом и историей голосований никто не станет. -->
+    <div class="card" id="pointsCard" data-section="points">
+      <div class="section-title">Вклад</div>
+      <div class="grid">
+        <div class="stat"><div class="v bronze" id="ptTotal">—</div><div class="k">баллов</div></div>
+        <div class="stat"><div class="v" id="ptRank">—</div><div class="k">место</div></div>
+        <div class="stat"><div class="v" id="ptStreak">—</div><div class="k">дней подряд</div></div>
+        <div class="stat"><div class="v" id="ptDone">—</div><div class="k">вех взято</div></div>
+      </div>
+      <!-- ЗАГЛУШКА (Alex, 21.09): формулировку про $NOS пишет Alex сам —
+           это юридическое заявление, а не продуктовый текст. Вариант B из
+           разбора: намерение без обязательства + оговорка в том же абзаце. -->
+      <p class="note" id="ptNote">Баллы — журнал участия первых. Когда дойдём до
+        распределения $NOS, вклад ранних участников будет учтён — по этому
+        журналу. Баллы нельзя купить и нельзя передать, они не дают доли, прав
+        и не имеют денежной стоимости; как именно они будут учтены, решается
+        позже.</p>
+
+      <div class="section-title" style="margin-top:18px">Вехи</div>
+      <div id="ptMilestones" class="ms"></div>
+
+      <div class="section-title" style="margin-top:18px">Последние начисления</div>
+      <div id="ptRecent" class="rows"></div>
+
+      <div class="section-title" style="margin-top:18px">Участники</div>
+      <div id="ptTop" class="rows"></div>
+    </div>
 
     <div class="card" id="budgetCard">
       <div class="section-title">Счёт для работы с ИИ</div>
@@ -138,7 +184,7 @@
       <p class="note" id="balanceNote"></p>
     </div>
 
-    <div class="card hidden" id="votesCard">
+    <div class="card hidden" id="votesCard" data-section="votes">
       <div class="section-title">История голосований</div>
       <p class="note" id="votesNote">Как и за что голосует аккаунт — из этого
         складывается доверие к нему. Система репутацию не считает и не хранит:
@@ -400,10 +446,72 @@ async function load() {
   $("#lastAt").textContent = when(act.last_at);
 
   $("#content").classList.remove("hidden");
+  loadPoints(a.id);
   const mine = await loadVotes(a.id);
   if (mine) renderVotes(mine.votes);
   const myActivity = await loadActivity(a.id);
   if (myActivity) renderActivity(myActivity.activity);
+}
+
+// ---- вклад: баллы, вехи, участники
+// Названия начислений живут здесь, а не на сервере: сервер пишет в журнал вид
+// действия ("argument", "mark", …), а как это назвать человеку — вопрос языка
+// интерфейса, и менять его не должно значить пересборку журнала.
+const PT_NAMES = {
+  argument: "довод", question: "вопрос", problem: "заведена проблема",
+  mark: "отметка за/против", stance: "отметка на позиции", vote: "голос",
+  concession: "уступка", problem_link: "связь проблем",
+  intervention: "предложение в реестр", trainer: "сессия тренажёра",
+  milestone: "веха",
+};
+
+function renderPoints(p) {
+  $("#ptTotal").textContent = p.total;
+  // При одном участнике «1 из 1» выглядит издёвкой, но и прочерк на своём
+  // месте неверен: место есть, сравнивать пока не с кем.
+  $("#ptRank").textContent = p.players > 1 ? p.rank + " из " + p.players
+                           : (p.total > 0 ? "1" : "—");
+  $("#ptStreak").textContent = p.streak || 0;
+  const done = p.milestones.filter((m) => m.done).length;
+  $("#ptDone").textContent = done + " / " + p.milestones.length;
+
+  $("#ptMilestones").innerHTML = p.milestones.map((m) =>
+    `<div class="m ${m.done ? "on" : ""}">
+       <div class="t"><span>${m.done ? "✓ " : ""}${esc(m.title)}</span><b>+${m.points}</b></div>
+       <div class="h">${esc(m.hint)}</div>
+     </div>`).join("");
+
+  const box = $("#ptRecent");
+  if (!p.recent.length) {
+    box.innerHTML = '<p class="muted" style="margin:0">Пока пусто. Начисления'
+      + ' появятся после первого действия в графе.</p>';
+  } else {
+    box.innerHTML = p.recent.map((r) => {
+      const key = r.kind === "milestone" && r.payload && r.payload.key;
+      const label = key
+        ? (p.milestones.find((m) => m.key === key) || {}).title || "веха"
+        : PT_NAMES[r.kind] || r.kind;
+      const sign = r.amount > 0 ? "+" : "";
+      return `<div class="r"><span class="k">${esc(label)} · ${when(r.ts)}</span>
+        <span class="amt ${r.amount < 0 ? "neg" : ""}">${sign}${r.amount}</span></div>`;
+    }).join("");
+  }
+}
+
+async function loadPoints(myId) {
+  try {
+    const r = await fetch("/api/points/me");
+    if (!r.ok) { $("#pointsCard").classList.add("hidden"); return; }
+    renderPoints(await r.json());
+  } catch (_) { $("#pointsCard").classList.add("hidden"); return; }
+  try {
+    const top = await (await fetch("/api/points/top?limit=15")).json();
+    $("#ptTop").innerHTML = top.map((t, i) =>
+      `<div class="r ${t.id === myId ? "me" : ""}">
+         <span class="k">${i + 1}. ${esc(t.name || t.username)}</span>
+         <span class="amt">${t.total}</span></div>`).join("")
+      || '<p class="muted" style="margin:0">Пока никто не набрал баллов.</p>';
+  } catch (_) { /* рейтинг — не главное в карточке, без него она живёт */ }
 }
 
 // ---- аккаунт: почта и пароль
@@ -513,5 +621,6 @@ const _pid = new URLSearchParams(location.search).get("id");
 if (_pid) { loadPublic(_pid); $("#accountCard").classList.add("hidden"); }
 else { load(); loadAccount(); }
 </script>
+<script src="/points.js"></script>
 </body>
 </html>

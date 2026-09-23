@@ -24,6 +24,7 @@ import asyncpg
 log = logging.getLogger("noosphere.db")
 
 from . import poiformula
+from . import points as points_rules
 
 
 def text_hash(text):
@@ -867,6 +868,39 @@ _SCHEMA = [
     # DISTINCT author_id, а не по последней перезаписанной отметке.
     # Пишется не на каждый запрос, а не чаще раза в минуту (см. session_author).
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ",
+    # БАЛЛЫ ЗА УЧАСТИЕ (vault: decisions/2026-09-21-participation-points).
+    # Журнал начислений, не счётчик: каждая строка говорит, за что и когда
+    # начислено, и складывается в сумму. Хранить итог отдельным числом нельзя —
+    # правила будут меняться на живых тестерах, а из журнала всё пересобирается
+    # прогоном лога событий заново (app/points.py, points_rebuild).
+    # `ref` — ключ источника: 'event:1234' у действия, 'milestone:<key>' у вехи,
+    # 'undo:5678' у снятия. Уникален на автора, поэтому повторный прогон того же
+    # события ничего не задваивает (ON CONFLICT DO NOTHING).
+    """
+    CREATE TABLE IF NOT EXISTS points_ledger (
+        id        BIGSERIAL PRIMARY KEY,
+        author_id INTEGER NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
+        ts        TIMESTAMPTZ NOT NULL DEFAULT now(),
+        kind      TEXT NOT NULL,
+        ref       TEXT NOT NULL,
+        amount    INTEGER NOT NULL,
+        payload   JSONB NOT NULL DEFAULT '{}'::jsonb
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS points_ledger_ref "
+    "ON points_ledger (author_id, ref)",
+    "CREATE INDEX IF NOT EXISTS points_ledger_author "
+    "ON points_ledger (author_id, ts DESC)",
+    # Докуда лог событий уже разобран. Одна строка на всю базу: начисление —
+    # последовательный проход, а не пересчёт по каждому автору.
+    """
+    CREATE TABLE IF NOT EXISTS points_state (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        last_event_id BIGINT NOT NULL DEFAULT 0
+    )
+    """,
+    "INSERT INTO points_state (id, last_event_id) VALUES (1, 0) "
+    "ON CONFLICT (id) DO NOTHING",
 ]
 
 
@@ -4534,3 +4568,281 @@ async def topic_board(topic_root_id):
         key = "proposals" if d["kind"] == "proposal" else "questions"
         out[key].append(d)
     return out
+
+
+# ── Баллы за участие ────────────────────────────────────────────────────────
+# Правила в app/points.py (чистый модуль). Здесь — только журнал и SQL.
+#
+# Начисление идёт НЕ в момент действия, а проходом по логу событий: запись
+# в `events` уже случилась внутри той же транзакции, что и само действие, и
+# добавлять второй побочный эффект в каждый горячий путь значило бы двадцать
+# новых мест, где начисление может разойтись с фактом. Проход по логу даёт
+# ровно одно место и полную переигрываемость.
+
+_POINTS_BATCH = 500       # сколько событий разбираем за один заход
+_POINTS_ROUNDS = 40       # ...и сколько заходов подряд, чтобы не висеть вечно
+
+
+async def _points_eligible(conn, author_id):
+    """Начисляем только живым людям с аккаунтом.
+
+    Посевные персоны (username IS NULL) и служебный аккаунт NOOSPHERE AI BOT
+    (decisions/service-account) работают в графе, но баллы им ни к чему — они
+    бы стояли первыми в рейтинге тестеров, которого не проходили.
+    """
+    if author_id is None:
+        return False
+    row = await conn.fetchrow(
+        "SELECT username, is_service FROM authors WHERE id = $1", author_id)
+    return bool(row and row["username"] and not row["is_service"])
+
+
+async def _points_award(conn, author_id, kind, ref, amount, ts, payload):
+    """Одна строка журнала. Повтор того же ref — не ошибка, а no-op."""
+    return await conn.fetchval(
+        """
+        INSERT INTO points_ledger (author_id, ts, kind, ref, amount, payload)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (author_id, ref) DO NOTHING
+        RETURNING id
+        """, author_id, ts, kind, ref, amount, json.dumps(payload))
+
+
+async def _points_capped(conn, author_id, kind, ts, cap):
+    """Не исчерпан ли дневной потолок по этому виду действия.
+
+    День считается по дате события, а не по «сегодня»: иначе пересборка
+    журнала через месяц дала бы другие числа, чем начисление вживую. И день
+    берётся в UTC, а не в часовом поясе сессии Postgres: журнал должен
+    пересобираться одинаково на ноутбуке и на Railway.
+    """
+    used = await conn.fetchval(
+        """
+        SELECT count(*) FROM points_ledger
+        WHERE author_id = $1 AND kind = $2 AND amount > 0
+          AND (ts AT TIME ZONE 'UTC')::date = ($3::timestamptz AT TIME ZONE 'UTC')::date
+        """, author_id, kind, ts)
+    return used >= cap
+
+
+async def _points_undo(conn, ev):
+    """Снятие/удаление забирает баллы, начисленные за этот же объект."""
+    field = points_rules.REVERSALS[ev["type"]]
+    payload = ev["payload"] or {}
+    obj_id = payload.get(field)
+    if obj_id is None or ev["author_id"] is None:
+        return None
+    # Начислений у одного узла может быть несколько: ответ с уступкой — это и
+    # довод, и уступка. Снимаем все, каждое своей строкой.
+    rows = await conn.fetch(
+        """
+        SELECT id, kind, amount FROM points_ledger
+        WHERE author_id = $1 AND amount > 0
+          AND payload ->> $2 = $3::text
+        ORDER BY id
+        """, ev["author_id"], field, str(obj_id))
+    undone = 0
+    for row in rows:
+        if await _points_award(
+                conn, ev["author_id"], row["kind"], f"undo:{ev['id']}:{row['id']}",
+                -row["amount"], ev["ts"], {"undo_of": row["id"], field: obj_id}):
+            undone += 1
+    return undone
+
+
+async def _points_stats(conn, author_id):
+    """Счётчики, по которым проверяются вехи (app/points.py: MILESTONES)."""
+    led = await conn.fetch(
+        """
+        SELECT kind, count(*) AS n FROM points_ledger
+        WHERE author_id = $1 AND amount > 0 AND kind <> 'milestone'
+        GROUP BY kind
+        """, author_id)
+    by_kind = {r["kind"]: r["n"] for r in led}
+    days = await conn.fetch(
+        "SELECT DISTINCT (ts AT TIME ZONE 'UTC')::date AS d "
+        "FROM points_ledger WHERE author_id = $1", author_id)
+    # Ответы других людей на твои узлы: то, что нельзя сделать себе сам.
+    replies = await conn.fetchval(
+        """
+        SELECT count(*) FROM edges e
+        JOIN nodes src ON src.id = e.source_id
+        JOIN nodes tgt ON tgt.id = e.target_id
+        WHERE tgt.author_id = $1 AND src.author_id IS DISTINCT FROM $1
+          AND src.deleted_at IS NULL AND src.atom_group IS NULL
+        """, author_id)
+    # ...и доводы других под проблемой, которую завёл ты.
+    problem_replies = await conn.fetchval(
+        """
+        SELECT count(*) FROM nodes n
+        JOIN nodes root ON root.id = n.topic_root_id
+        WHERE root.author_id = $1 AND root.id = root.topic_root_id
+          AND n.id <> root.id AND n.author_id IS DISTINCT FROM $1
+          AND n.deleted_at IS NULL AND n.atom_group IS NULL
+        """, author_id)
+    return {
+        "arguments":     by_kind.get("argument", 0),
+        "questions":     by_kind.get("question", 0),
+        "problems":      by_kind.get("problem", 0),
+        "votes":         by_kind.get("vote", 0) + by_kind.get("stance", 0),
+        "concessions":   by_kind.get("concession", 0),
+        "problem_links": by_kind.get("problem_link", 0),
+        "interventions": by_kind.get("intervention", 0),
+        "trainer":       by_kind.get("trainer", 0),
+        "streak":        points_rules.max_streak([r["d"] for r in days]),
+        "replies_received": replies or 0,
+        "problem_replies":  problem_replies or 0,
+    }
+
+
+async def _points_milestones(conn, author_id, ts):
+    """Выдать вехи, которые уже заслужены и ещё не выданы."""
+    stats = await _points_stats(conn, author_id)
+    for key in points_rules.earned(stats):
+        await _points_award(conn, author_id, "milestone", f"milestone:{key}",
+                            points_rules.MILESTONE_POINTS[key], ts, {"key": key})
+
+
+async def points_sync():
+    """Разобрать новые события лога в начисления. Идемпотентно."""
+    pool = _pool_or_raise()
+    total = 0
+    async with pool.acquire() as conn:
+        for _ in range(_POINTS_ROUNDS):
+            async with conn.transaction():
+                # FOR UPDATE: два параллельных запроса не должны разбирать
+                # один и тот же кусок лога (ON CONFLICT спас бы от дублей,
+                # но не от лишней работы и не от гонки на дневном потолке).
+                cursor = await conn.fetchval(
+                    "SELECT last_event_id FROM points_state WHERE id = 1 FOR UPDATE")
+                if cursor is None:
+                    await conn.execute(
+                        "INSERT INTO points_state (id, last_event_id) VALUES (1, 0) "
+                        "ON CONFLICT (id) DO NOTHING")
+                    cursor = 0
+                rows = await conn.fetch(
+                    """
+                    SELECT id, ts, type, author_id, payload FROM events
+                    WHERE id > $1 ORDER BY id LIMIT $2
+                    """, cursor, _POINTS_BATCH)
+                if not rows:
+                    return total
+                touched = {}
+                for r in rows:
+                    ev = {"id": r["id"], "ts": r["ts"], "type": r["type"],
+                          "author_id": r["author_id"],
+                          "payload": json.loads(r["payload"])
+                                     if isinstance(r["payload"], str)
+                                     else (r["payload"] or {})}
+                    if not await _points_eligible(conn, ev["author_id"]):
+                        continue
+                    if ev["type"] in points_rules.REVERSALS:
+                        if await _points_undo(conn, ev):
+                            touched[ev["author_id"]] = ev["ts"]
+                        continue
+                    hit = points_rules.classify(ev)
+                    if hit is None:
+                        continue
+                    kind, amount, cap, ref = hit
+                    if await _points_capped(conn, ev["author_id"], kind, ev["ts"], cap):
+                        continue
+                    payload = {ref[0]: ref[1]} if ref and ref[1] is not None else {}
+                    if await _points_award(conn, ev["author_id"], kind,
+                                           f"event:{ev['id']}", amount,
+                                           ev["ts"], payload):
+                        total += 1
+                        touched[ev["author_id"]] = ev["ts"]
+                for author_id, ts in touched.items():
+                    await _points_milestones(conn, author_id, ts)
+                await conn.execute(
+                    "UPDATE points_state SET last_event_id = $1 WHERE id = 1",
+                    rows[-1]["id"])
+            if len(rows) < _POINTS_BATCH:
+                break
+    return total
+
+
+async def points_rebuild():
+    """Стереть журнал и пересобрать из лога событий — после правки правил.
+
+    Это и есть смысл журнала: правила баллов на живых тестерах будут меняться,
+    и меняться они должны без миграций и без «а этим оставим как было».
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM points_ledger")
+            await conn.execute("UPDATE points_state SET last_event_id = 0 WHERE id = 1")
+    return await points_sync()
+
+
+async def points_total(author_id):
+    """Сумма баллов автора (быстрый путь для бейджа в шапке)."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT COALESCE(sum(amount), 0) FROM points_ledger WHERE author_id = $1",
+            author_id) or 0
+
+
+async def points_me(author_id, recent=25, hidden=()):
+    """Кабинет: сумма, место, последние начисления и карта вех.
+
+    `hidden` — закрытые разделы стенда: их невзятые вехи в кабинет не идут.
+    """
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval(
+            "SELECT COALESCE(sum(amount), 0) FROM points_ledger WHERE author_id = $1",
+            author_id) or 0
+        rank = await conn.fetchval(
+            """
+            WITH totals AS (
+                SELECT author_id, sum(amount) AS total
+                FROM points_ledger GROUP BY author_id
+            )
+            SELECT count(*) + 1 FROM totals WHERE total > $1
+            """, total)
+        players = await conn.fetchval(
+            "SELECT count(DISTINCT author_id) FROM points_ledger") or 0
+        rows = await conn.fetch(
+            """
+            SELECT ts, kind, amount, payload FROM points_ledger
+            WHERE author_id = $1 ORDER BY id DESC LIMIT $2
+            """, author_id, recent)
+        stats = await _points_stats(conn, author_id)
+        done = [r["payload"]["key"] if isinstance(r["payload"], dict)
+                else json.loads(r["payload"])["key"]
+                for r in await conn.fetch(
+                    "SELECT payload FROM points_ledger "
+                    "WHERE author_id = $1 AND kind = 'milestone'", author_id)]
+    return {
+        "total": int(total),
+        "rank": int(rank or 1),
+        "players": int(players),
+        "streak": stats["streak"],
+        "recent": [{"ts": r["ts"].isoformat(), "kind": r["kind"],
+                    "amount": r["amount"],
+                    "payload": r["payload"] if isinstance(r["payload"], dict)
+                               else json.loads(r["payload"])}
+                   for r in rows],
+        "milestones": points_rules.milestone_view(stats, done, hidden),
+    }
+
+
+async def points_top(limit=20):
+    """Рейтинг тестеров. Только те, у кого есть аккаунт и хоть один балл."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT a.id, a.name, a.username, a.color, sum(l.amount) AS total
+            FROM points_ledger l
+            JOIN authors a ON a.id = l.author_id
+            GROUP BY a.id, a.name, a.username, a.color
+            HAVING sum(l.amount) > 0
+            ORDER BY total DESC, a.id
+            LIMIT $1
+            """, limit)
+    return [{"id": r["id"], "name": r["name"], "username": r["username"],
+             "color": r["color"], "total": int(r["total"])} for r in rows]

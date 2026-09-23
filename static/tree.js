@@ -157,10 +157,16 @@ function guidePanel() {
     ["6", "Тренажёр рассуждения",
       "Короткий разговор с ИИ по одному вопросу. Это не экзамен на «правоту»: " +
       "разговор показывает <b>сильные и слабые стороны твоего рассуждения</b>, " +
-      "чтобы было видно, что стоит подтянуть. Проходить можно с любым мнением."],
+      "чтобы было видно, что стоит подтянуть. Проходить можно с любым мнением.",
+      "trainer"],
   ];
-  for (const [n, title, body] of steps) {
+  // Шаг про закрытый раздел — тупик: он рассказывает о том, чего на экране
+  // нет. Сам шаг об этом не знает: помечаем его разделом, а прячет points.js
+  // (он же гасит ссылки в шапке). Так работает и когда дерево отрисовалось
+  // раньше, чем пришёл /api/config.
+  for (const [n, title, body, section] of steps) {
     const s = el("div", "step");
+    if (section) s.dataset.section = section;
     s.appendChild(el("div", "n", n));
     const col = el("div");
     col.appendChild(el("div", "b", title));
@@ -450,6 +456,10 @@ async function doAuth(path) {
     ME = out;
     renderAuthUI();
     closeAuth();
+    // Вход ничего не перезагружает, а бейдж вклада читается один раз на
+    // загрузке страницы — без этой строки человек входит и не видит своих
+    // баллов до обновления (points.js).
+    if (window.refreshPointsBadge) window.refreshPointsBadge();
     toast("привет, " + ME.name);
   } catch (e) {
     let msg = e.message;
