@@ -714,6 +714,8 @@ async def register(body: RegisterIn, response: Response, request: Request):
         invite_required=INVITE_REQUIRED, terms_version=TERMS_VERSION)
     if author_id == "invite":
         raise HTTPException(403, "нужен действующий код приглашения")
+    if author_id == "invite_used":
+        raise HTTPException(403, "этот код приглашения уже использован — нужен другой")
     # Usernames are public — they appear under every argument — so saying this
     # one is taken reveals nothing that reading the site would not.
     if author_id == "taken":
@@ -1244,8 +1246,10 @@ async def meter_llm_usage(request: Request, call_next):
 async def config():
     """What the front-end needs to know about this instance. Only flags —
     never keys or tokens: this is unauthenticated."""
+    # ai — есть ли общий ключ модели. Без него разбор, оценка и сбор позиций
+    # честно недоступны, и интерфейс должен говорить об этом прямо (Р-2, А4).
     return {"dev_tools": DEV_TOOLS, "terms_version": TERMS_VERSION,
-            "hidden": HIDDEN_SECTIONS}
+            "hidden": HIDDEN_SECTIONS, "ai": bool(os.environ.get("ANTHROPIC_API_KEY"))}
 
 
 @app.get("/api/stats")
@@ -2423,6 +2427,11 @@ async def _position_payload(p):
         "member_texts": [m["text"] for m in members],
         "planets": planets,
         "support": await _position_support(p["id"], p["topic_root_id"]),
+        # Р-1 (Alex 25.09): «быть в позиции» — одна модель, журнал stance_log.
+        # Старый счёт «сторонников» остаётся в ответе для совместимости, в
+        # интерфейсе показывается это число.
+        "in_position": await db.position_in_now(p["id"]),
+        "status": p.get("status"),
     }
 
 
@@ -3621,7 +3630,9 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
                 similar=similar, lang=lang, problem=problem,
                 author_id=(author or {}).get("id"))
         except Exception:
-            return dict(_REVIEW_CLEAN)    # fail-open: never stand in the way
+            # fail-open: never stand in the way — но честно помечаем, что разбора
+            # не было, иначе человек думает, что ИИ «проверил и одобрил» (А4)
+            return dict(_REVIEW_CLEAN, unavailable=True)
         _review_cache_set(cache_key, result)
     out = dict(_REVIEW_CLEAN)
     actual = result.get("actual_type")

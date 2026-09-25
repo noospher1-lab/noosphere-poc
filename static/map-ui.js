@@ -99,7 +99,7 @@ function buildFacets(host, onChange) {
     // что осталось от «пейзажа» (vault: decisions/2026-09-15-catalog-only) —
     // видно, где обсуждений пока нет совсем, а это подсказка, что засевать.
     g1.innerHTML = `<h3>Направления</h3>` +
-      `<div class="fx-note" style="font-size:11.5px;color:var(--dim2,#6f7688);margin:-2px 0 6px 8px">` +
+      `<div class="fx-note" style="font-size:11.5px;color:var(--dim2,#828a9c);margin:-2px 0 6px 8px">` +
       `0 — по направлению пока нет ни одного обсуждения</div>`;
     for (const d of DOMAINS) {
       const n = countBy("dom", t => t.domain === d.id);

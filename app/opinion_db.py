@@ -1158,6 +1158,16 @@ async def topic_view(topic, period="30", sort=None, viewer_id=None, seed=None):
             positions.sort(key=lambda p: (-p.get("in_now", 0), p["id"]))
         cruxes = await _cruxes(conn, topic, None, limit=8, share=cfg["accept_share"],
                                titles=titles) if see else []
+        # Р-2 (Alex 25.09): доводы, которые ИИ ещё не разложил по позициям
+        # (модель была недоступна). Механика прежняя — экран говорит честно.
+        unassigned = await conn.fetchval(
+            """
+            SELECT count(*) FROM nodes n JOIN authors a ON a.id = n.author_id
+            WHERE n.topic_root_id = $1 AND n.id <> n.topic_root_id
+              AND (n.kind = 'argument' OR n.kind IS NULL) AND n.atom_group IS NULL
+              AND n.deleted_at IS NULL AND n.position_id IS NULL AND NOT n.dissented
+              AND NOT a.is_service
+            """, topic)
         # Складывающиеся позиции видны всегда: иначе встать в них не из чего, и
         # позиция никогда не наберёт первых людей (холодный старт замкнулся бы).
         forming_list = [
@@ -1171,6 +1181,7 @@ async def topic_view(topic, period="30", sort=None, viewer_id=None, seed=None):
             "min_positions": cfg["min_positions"], "blind": not see,
             "my_position": mine, "positions": positions, "cruxes": cruxes,
             "forming": forming_list, "min_supporters": om.MIN_SUPPORTERS,
+            "unassigned": unassigned,
             "caption": CAPTION}
 
 
@@ -1195,6 +1206,12 @@ async def position_view(pid, period="30", at=None, viewer_id=None):
                 "merged_into": titles.get(pos["merged_into"]),
                 "split_from": titles.get(pos["split_from"]),
                 "topic": {"id": topic, "title": root["title"] or root["text"][:80]}}
+        # доводы, из которых позиция состоит, — первым блоком экрана (А8)
+        member_ids = [r["node_id"] for r in await conn.fetch(
+            "SELECT pn.node_id FROM position_nodes pn JOIN nodes n ON n.id = pn.node_id "
+            "WHERE pn.position_id = $1 AND n.deleted_at IS NULL ORDER BY n.created_at, n.id", pid)]
+        mcards = await _node_cards(conn, member_ids)
+        head["arguments"] = [mcards[i] for i in member_ids if i in mcards]
         if not see:
             return {"position": head, "blind": True, "caption": CAPTION}
 

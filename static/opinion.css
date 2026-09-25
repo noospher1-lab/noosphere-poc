@@ -5,8 +5,8 @@
 :root {
   --bg: #0e1016; --panel: #161922; --panel2: #1d212c;
   --line: #272c39; --line2: #333a49;
-  --ivory: #edeef2; --dim: #9aa0b0; --dim2: #7d8496;
-  --bronze: #e0b878; --green: #5fd18f; --red: #ec6b66; --blue: #66b0ea; --violet: #bf98ff;
+  --ivory: #edeef2; --dim: #9aa0b0; --dim2: #828a9c;
+  --bronze: #e0b878; --orange: #e8a04e; --green: #5fd18f; --red: #ec6b66; --blue: #66b0ea; --violet: #bf98ff;
   --stood: #5ea3e6; --unchecked: #4a5163; --converted: #e08a4a;
   --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
@@ -34,10 +34,11 @@ h2 { font-size: 16px; margin: 0; font-weight: 600; }
 .muted { color: var(--dim2); }
 .tag { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
   padding: 1px 7px; border-radius: 4px; border: 1px solid var(--line2); color: var(--dim); white-space: nowrap; }
-.tag.refute, .tag.against { color: var(--converted); border-color: #6a4a33; }
-.tag.undercut { color: var(--violet); border-color: #4e4270; }
-.tag.question { color: var(--bronze); border-color: #5f5037; }
-.tag.qualify, .tag.support { color: var(--green); border-color: #2f5a43; }
+.tag.refute, .tag.against { color: var(--red); border-color: #6b3634; }
+.tag.undercut { color: var(--orange); border-color: #6a4f2c; }
+.tag.question { color: var(--violet); border-color: #4e4270; }
+.tag.support { color: var(--green); border-color: #2f5a43; }
+.tag.qualify { color: var(--blue); border-color: #2c4a66; }
 .tag.ok { color: var(--green); border-color: #2f5a43; }
 .tag.open { color: var(--dim); }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; }

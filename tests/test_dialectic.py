@@ -150,3 +150,21 @@ def test_link_status_follows_the_justification_not_the_raw_count():
         finally:
             await db.close_pool()
     asyncio.run(body())
+
+
+def test_answers_under_question_are_not_a_dispute():
+    """Р-3 (Alex 25.09): «нет» под вопросом хранится как refute, но это ответ,
+    а не атака — вопрос не «держится», ответ не «без ответа»."""
+    from app import dialectic
+    rows = [
+        {"id": 1, "parent_id": None, "rel": None, "kind": "question", "poi_score": None, "author_id": 1},
+        {"id": 2, "parent_id": 1, "rel": "refute", "kind": "argument", "poi_score": None, "author_id": 2},
+        {"id": 3, "parent_id": 1, "rel": "support", "kind": "argument", "poi_score": None, "author_id": 3},
+    ]
+    v = dialectic.verdict(rows, 1)
+    assert v["verdict"] == "untested" and v["attacks"] == 0 and v["unanswered"] == []
+    s = dialectic.strengths(rows)
+    assert s[1] == dialectic.NEUTRAL_BASE
+    # обычный довод по-прежнему спорят
+    rows[0]["kind"] = "argument"
+    assert dialectic.verdict(rows, 1)["attacks"] == 1

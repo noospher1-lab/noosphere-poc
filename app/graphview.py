@@ -87,7 +87,7 @@ def _rows(ids, root, nodes, parent, rel):
     return [{"id": i, "parent_id": None if i == root else parent.get(i),
              "rel": None if i == root else rel.get(i),
              "poi_score": nodes[i].get("poi_score"),
-             "author_id": nodes[i].get("author_id"),
+             "author_id": nodes[i].get("author_id"), "kind": nodes[i].get("kind"),
              "retracted": bool(nodes[i].get("retracted_at"))} for i in ids]
 
 
@@ -103,13 +103,16 @@ def _topic(idx, root):
         retracted = bool(n.get("retracted_at"))
         r = None if i == root else rel.get(i)
         live = [c for c in kids.get(i, []) if not nodes[c].get("retracted_at")]
-        attacks = [c for c in live if rel.get(c) in dialectic.ATTACK]
-        supports = [c for c in live if rel.get(c) in dialectic.SUPPORT]
+        # под вопросом ответы, а не спор: ни атак, ни поддержек (Р-3, 25.09)
+        disputing = [] if dialectic.is_question(n) else live
+        attacks = [c for c in disputing if rel.get(c) in dialectic.ATTACK]
+        supports = [c for c in disputing if rel.get(c) in dialectic.SUPPORT]
+        under_question = i != root and dialectic.is_question(nodes.get(parent.get(i)))
         base = dialectic.base_score(n)
         word = dialectic.word(base, strength[i], len(attacks), len(supports))
         is_question = n.get("kind") == "question" or r == "question"
         flags = {
-            "unanswered": (not retracted and r in dialectic.ATTACK
+            "unanswered": (not retracted and r in dialectic.ATTACK and not under_question
                            and not any(dialectic.is_answer(nodes[c], n) for c in live)),
             "open": (not retracted and is_question and not live),
             "holds": (not retracted and word == "holds" and bool(attacks)),

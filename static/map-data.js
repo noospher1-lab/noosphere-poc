@@ -9,7 +9,7 @@ let MAP_TOPICS = [], DOM_BY_ID = {}, ALL_TAGS = [], GEO_PARENT = {};
 // Темы без рубрики не прячем: они существуют, их надо видеть и уметь
 // рубрицировать. Псевдо-направление живёт только на клиенте — на сервере у
 // такой темы просто нет записи в topic_facets.
-const UNSORTED = { id:"__none", name:"Без рубрики", color:"#6f7688", subs:[] };
+const UNSORTED = { id:"__none", name:"Без рубрики", color:"#828a9c", subs:[] };
 
 const DEMO = new URLSearchParams(location.search).get("demo") === "1";
 

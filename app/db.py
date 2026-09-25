@@ -1441,7 +1441,8 @@ async def get_node_full(node_id):
                    p.headline AS position_headline,
                    p.composed AS position_composed,
                    p.stance   AS position_stance,
-                   (SELECT count(*) FROM edges e WHERE e.target_id = n.id) AS reply_count
+                   (SELECT count(*) FROM edges e JOIN nodes rn ON rn.id = e.source_id
+                     WHERE e.target_id = n.id AND rn.deleted_at IS NULL) AS reply_count
             FROM nodes n
             LEFT JOIN authors a ON a.id = n.author_id
             LEFT JOIN positions p ON p.id = n.position_id
@@ -1480,7 +1481,8 @@ async def get_children(node_id, limit=20, offset=0):
                    a.name AS author, a.color AS author_color,
                    a.is_service AS author_is_service,
                    (a.username IS NULL AND NOT a.is_service) AS author_is_seed,
-                   (SELECT count(*) FROM edges e2 WHERE e2.target_id = n.id) AS reply_count,
+                   (SELECT count(*) FROM edges e2 JOIN nodes rn ON rn.id = e2.source_id
+                     WHERE e2.target_id = n.id AND rn.deleted_at IS NULL) AS reply_count,
                    (c.id IS NOT NULL) AS concedes, c.anchor_quote AS concede_quote
             FROM edges e
             JOIN nodes n ON n.id = e.source_id
@@ -1853,8 +1855,10 @@ async def add_user(username, password_hash, name, color=None, invite=None,
                 row = await conn.fetchrow(
                     "SELECT code, used_at FROM invites WHERE code = $1 "
                     "FOR UPDATE", (invite or "").strip())
-                if row is None or row["used_at"] is not None:
+                if row is None:
                     return "invite"
+                if row["used_at"] is not None:
+                    return "invite_used"
 
             # Пришёл по коду — грант инвайтовый. Проверка кода прошла выше,
             # row не None ровно тогда, когда код настоящий и не потрачен.
@@ -3107,6 +3111,15 @@ async def add_position(topic_root_id, headline, composed, stance, author_id=None
     return pid
 
 
+async def position_in_now(position_id):
+    """Сколько людей сейчас стоит в позиции — по журналу (position_stats)."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT coalesce((SELECT in_now FROM position_stats WHERE position_id = $1), 0)",
+            position_id)
+
+
 async def get_position(position_id):
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
@@ -3384,17 +3397,17 @@ async def dialectic_rows(node_id, limit=2000):
             """
             WITH RECURSIVE down AS (
                 SELECT n.id, NULL::int AS parent_id, NULL::text AS rel,
-                       n.poi_score, n.retracted_at, n.author_id, 0 AS depth
+                       n.poi_score, n.retracted_at, n.author_id, n.kind, 0 AS depth
                 FROM nodes n WHERE n.id = $1 AND n.deleted_at IS NULL
                 UNION ALL
                 SELECT n.id, e.target_id, e.type, n.poi_score, n.retracted_at,
-                       n.author_id, down.depth + 1
+                       n.author_id, n.kind, down.depth + 1
                 FROM down
                 JOIN edges e ON e.target_id = down.id
                 JOIN nodes n ON n.id = e.source_id AND n.deleted_at IS NULL
                 WHERE down.depth < 50
             )
-            SELECT id, parent_id, rel, poi_score, author_id,
+            SELECT id, parent_id, rel, poi_score, author_id, kind,
                    (retracted_at IS NOT NULL) AS retracted
             FROM down ORDER BY depth, id LIMIT $2
             """, node_id, limit)
@@ -4375,7 +4388,8 @@ async def intervention_attributions(intervention_id):
             SELECT n.id, n.text, n.poi_score, n.kind, n.created_at,
                    n.retracted_at, n.retract_note,
                    a.name AS author, a.color AS author_color,
-                   (SELECT count(*) FROM edges e WHERE e.target_id = n.id) AS reply_count
+                   (SELECT count(*) FROM edges e JOIN nodes rn ON rn.id = e.source_id
+                     WHERE e.target_id = n.id AND rn.deleted_at IS NULL) AS reply_count
             FROM nodes n
             LEFT JOIN authors a ON a.id = n.author_id
             WHERE n.intervention_id = $1 AND n.deleted_at IS NULL

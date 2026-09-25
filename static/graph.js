@@ -168,7 +168,13 @@
 
   async function getJSON(url) {
     const r = await fetch(url);
-    if (!r.ok) throw new Error(r.status + " " + (await r.text()).slice(0, 200));
+    if (!r.ok) {
+      // сервер отдаёт {"detail": "..."} — человеку текст, а не скобки (QA М-9)
+      const body = await r.text();
+      let msg = body;
+      try { msg = JSON.parse(body).detail || body; } catch (_) { /* как есть */ }
+      throw new Error(String(msg).slice(0, 200) || String(r.status));
+    }
     return r.json();
   }
 
@@ -490,7 +496,8 @@
       return e;
     };
     add("div", "eyebrow", n.parent == null ? (KIND_WORD[n.kind] || "обсуждение")
-        : relWord(n) + " · " + (KIND_WORD[n.kind] || "тезис"));
+        : (n.rel === "question" && n.kind === "question" ? relWord(n)
+           : relWord(n) + " · " + (KIND_WORD[n.kind] || "тезис")));
     add("div", "ptext", n.text);
     const meta = add("div", "pmeta");
     meta.append("автор: " + (n.author || "—"));

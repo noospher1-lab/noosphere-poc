@@ -17,7 +17,7 @@
     --line2: #333a49;
     --ivory: #edeef2;
     --dim: #9aa0b0;
-    --dim2: #6f7688;
+    --dim2: #828a9c;
     --bronze: #e0b878;
     --green: #5fd18f;
     --red: #ec6b66;
@@ -84,6 +84,7 @@
   #tree { width: 42%; min-width: 320px; overflow: auto; padding: 12px 8px;
     border-right: 1px solid var(--line); }
   #detail { flex: 1; overflow: auto; padding: 22px 26px; }
+  .to-tree { display: none; }
 
   /* ---- tree ---- */
   /* управление рабочим деревом: «−» убрать, «оставить у себя» для темы,
@@ -106,19 +107,21 @@
     cursor: default; }
   .rel { flex: none; font-size: 10.5px; padding: 1px 6px; border-radius: 5px;
     letter-spacing: .02em; font-weight: 500; align-self: center; }
+  /* цвета видов связи — как в графе (эталон, Б2 студии 25.09): за зелёный, против
+     красный, уточнение синий, вопрос фиолетовый, не доказывает оранжевый */
   .rel.support { color: var(--green); border: 1px solid var(--green); }
   .rel.refute  { color: var(--red);   border: 1px solid var(--red); }
-  .rel.qualify { color: var(--orange);border: 1px solid var(--orange); }
+  .rel.qualify { color: var(--blue);  border: 1px solid var(--blue); }
   /* пересказ: тезис родителя своими словами — ни за, ни против, поэтому тихий цвет */
   .rel.restate { color: var(--dim); border: 1px solid var(--line2); }
-  .rel.question{ color: var(--blue);  border: 1px solid var(--blue); }
+  .rel.question{ color: var(--violet);border: 1px solid var(--violet); }
   .rel.root    { color: var(--bronze);border: 1px solid var(--bronze); }
   /* виды корня, кроме проблемы: у каждого свой цвет, иначе предложение и
      вопрос сверху выглядят одинаково — ровно та беда, из-за которой выбор
      вида когда-то и убрали */
   .rel.problem { color: var(--bronze);border: 1px solid var(--bronze); }
   .rel.proposal    { color: var(--green); border: 1px solid var(--green); }
-  .rel.exploration { color: var(--violet);border: 1px solid var(--violet); }
+  .rel.exploration { color: var(--dim);   border: 1px solid var(--line2); }
   .rel.argument    { color: var(--dim2); border: 1px solid var(--line2); }
   .txt { flex: 1; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical;
     -webkit-line-clamp: 3; overflow: hidden; }
@@ -330,7 +333,7 @@
   .belong .b:hover:not(.home) { border-color: var(--blue); color: var(--blue); }
 
   /* ответ на фрагмент: всплывающее меню действий + чип «в ответ на …» */
-  .rel.undercut { color: var(--violet); border: 1px solid var(--violet); }
+  .rel.undercut { color: var(--orange); border: 1px solid var(--orange); }
   /* уступка — второе действие ответа, поэтому пунктир: рядом с видом связи, не вместо */
   .rel.concede { color: var(--dim2); border: 1px dashed var(--dim2); margin-left: 4px; }
   /* история мнений: своя отметка на кнопке и смены стороны под счётчиками */
@@ -444,10 +447,16 @@
     header a { font-size: 12.5px; }
     button.mini { padding: 3px 8px; font-size: 11.5px; }
 
-    #wrap { flex-direction: column; }
-    #tree { width: 100%; min-width: 0; flex: 0 0 auto; max-height: 38vh;
+    /* Одна прокрутка страницы вместо двух маленьких окон (А7, 25.09): дерево
+       и панель идут друг за другом, у каждой нет своей прокрутки. После выбора
+       строки страница сама едет к панели, из панели есть «↑ к дереву». */
+    html, body { height: auto; overflow: visible; }
+    body { display: block; }
+    #wrap { display: block; }
+    #tree { width: 100%; min-width: 0; max-height: none; overflow: visible;
       border-right: none; border-bottom: 1px solid var(--line); }
-    #detail { padding: 16px 14px; }
+    #detail { padding: 16px 14px; overflow: visible; }
+    .to-tree { display: inline-block; margin-bottom: 10px; font-size: 13px; }
 
     /* Модальные окна во весь экран — по центру они на телефоне обрезались. */
     .modal-card { width: 94vw; max-width: none; max-height: 88vh; overflow: auto; }
@@ -459,7 +468,6 @@
     header { gap: 6px 8px; }
     #hintsBtn, #poiBadge { display: none; }
     #presence { font-size: 11.5px; }
-    #tree { max-height: 34vh; }
   }
 </style>
 </head>

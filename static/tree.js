@@ -151,7 +151,7 @@ function guidePanel() {
       "— а опубликованный текст уже неизменен, поэтому думать стоит здесь. " +
       "Решаешь всё равно ты."],
     ["5", "Позиции — общая карта по обсуждению",
-      "ИИ группирует близкие доводы в позиции. Их можно поддержать, оспорить, " +
+      "ИИ группирует близкие доводы в позиции. В позицию можно встать, оспорить её, " +
       "развить или сделать вывод. Если тебя свели не туда — можно выйти в свою " +
       "отдельную позицию (дословно твоими словами)."],
     ["6", "Тренажёр рассуждения",
@@ -425,7 +425,14 @@ function requireAuth() {
   return false;
 }
 
+// Двойной клик по «Создать аккаунт» / «Войти» отправлял два запроса (QA М-1).
+let AUTH_BUSY = false;
 async function doAuth(path) {
+  if (AUTH_BUSY) return;
+  AUTH_BUSY = true;
+  try { await doAuthOnce(path); } finally { AUTH_BUSY = false; }
+}
+async function doAuthOnce(path) {
   const body = {
     username: $("#authUser").value.trim(),
     password: $("#authPass").value,
@@ -454,6 +461,7 @@ async function doAuth(path) {
       return;
     }
     ME = out;
+    if (AUTH_NEXT) { location.href = AUTH_NEXT; return; }
     renderAuthUI();
     closeAuth();
     // Вход ничего не перезагружает, а бейдж вклада читается один раз на
@@ -932,7 +940,11 @@ function nodeRow(node, type, parentKind) {
       row.appendChild(drop);
     }
   }
-  row.onclick = () => selectNode(node.id);
+  row.onclick = async () => {
+    await selectNode(node.id);
+    // на телефоне дерево и панель идут друг за другом — едем к панели (А7)
+    if (MOBILE.matches) $("#detail").scrollIntoView({ behavior: "smooth", block: "start" });
+  };
   return row;
 }
 function renderSubtree(container, node, type, parentKind) {
@@ -1336,6 +1348,7 @@ function errText(e) {
 }
 
 // ---- detail panel
+const MOBILE = window.matchMedia("(max-width: 860px)");
 async function selectNode(id) {
   const gen = ++detailGen;
   selectedId = id;
@@ -1353,6 +1366,13 @@ async function selectNode(id) {
   const isRoot = root === id;
   const d = $("#detail");
   d.innerHTML = "";
+  const toTree = el("a", "to-tree", "↑ к дереву");
+  toTree.href = "#tree";
+  toTree.onclick = (e) => {
+    e.preventDefault();
+    document.querySelector(`[data-id="${id}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  };
+  d.appendChild(toTree);
 
   // node card — a topic root has a short title (heading) distinct from its
   // body text; a reply has no title, so the heading is its own text
@@ -1397,6 +1417,7 @@ async function selectNode(id) {
                     : node.atom_group ? "— (атом разбора, живёт реакциями)"
                     : node.author_is_service ? "— (служебная публикация платформы)"
                     : node.author_is_seed ? "— (посевной довод, PoI не считался)"
+                    : scoringStalled(node) ? "— (ИИ недоступен, оценки не будет)"
                     : "оценивается…"),
     "  ·  тип: " + (KIND_RU[node.kind] || node.kind || "тезис"),
     ...(node.atom_group ? ["  ·  из разбора · " + node.atom_group] : []),
@@ -1527,6 +1548,9 @@ async function selectNode(id) {
     d.appendChild(positionMembershipCard(node));
 
   // reply form
+  // У ВОПРОСА ответы — главное содержание: показываем их полным текстом прямо
+  // в панели, над формой (А5 — новичок видел «пока нет реакций», хотя ответ был).
+  if (node.kind === "question" && (node.reply_count ?? 0) > 0) d.appendChild(answersCard(id));
   d.appendChild(replyForm(id, node.kind));
 
   // positions (only for the discussion root)
@@ -1537,7 +1561,7 @@ async function selectNode(id) {
     const pc = el("div", "card");
     pc.appendChild(el("div", "section-title", "Позиции по " + where));
     appendHint(pc, "ИИ сводит близкие доводы в <b>позиции</b> — общую карту " +
-      "мнений по " + where + ". Позицию можно поддержать, оспорить, развить или выйти из " +
+      "мнений по " + where + ". В позицию можно встать (на её экране), оспорить её, развить или выйти из " +
       "неё в свою, если тебя свели не туда.");
     const pbody = el("div"); pbody.textContent = "сборка позиций…";
     pc.appendChild(pbody);
@@ -1914,6 +1938,34 @@ async function reviewDraft(payload) {
   }
 }
 
+// «оценивается…» не должно висеть вечно (А4): без общего ключа ИИ оценки не
+// будет вовсе, а спустя 10 минут без оценки её уже не ждём.
+let AI_OK = true;
+api("/api/config").then((c) => { AI_OK = !!(c && c.ai); }).catch(() => {});
+function scoringStalled(node) {
+  if (!AI_OK) return true;
+  const t = node.created_at ? Date.parse(node.created_at) : NaN;
+  return Number.isFinite(t) && Date.now() - t > 10 * 60 * 1000;
+}
+
+// Разбора не было: модель недоступна или запрос сорвался. Публиковать можно, но
+// человек должен знать, что текст уходит без проверки (А4, UX п.7).
+function reviewUnavailable(rev) { return !rev || !!rev.unavailable; }
+function renderUnavailable(hint, onSend) {
+  hint.innerHTML = "";
+  hint.style.display = "";
+  hint.appendChild(el("div", "section-title", "разбор сейчас недоступен"));
+  hint.appendChild(el("div", "muted",
+    "ИИ не ответил, поэтому текст уйдёт без проверки. Опубликованное не редактируется."));
+  const acts = el("div", "actions");
+  const go = el("button", "primary", "опубликовать без проверки");
+  const back = el("button", null, "вернуться к тексту");
+  go.onclick = async () => { go.disabled = true; hint.style.display = "none"; await onSend(); };
+  back.onclick = () => { hint.style.display = "none"; };
+  acts.append(go, back);
+  hint.appendChild(acts);
+}
+
 function reviewHasNotes(rev) {
   return !!rev && (!rev.type_ok || !!rev.quality_note || rev.verdict !== "new"
                    || (rev.placement && rev.placement !== "here") || !!rev.think
@@ -2150,7 +2202,7 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
     hint.appendChild(el("b", null, rev.headline || ""));
     if (rev.note) hint.appendChild(el("div", "muted", rev.note));
     if (onSupport) {
-      const supp = el("button", "mini", "▲ поддержать её");
+      const supp = el("button", "mini", "это моя позиция");
       supp.onclick = () => onSupport(rev.position_id);
       actions.appendChild(supp);
     }
@@ -2356,7 +2408,10 @@ addEventListener("mousedown", (e) => {
 
 function attachFragmentSelection(textEl) {
   textEl.classList.add("selectable");
-  textEl.addEventListener("mouseup", () => {
+  // На телефоне нет mouseup: выделение ставят пальцем и потом тянут ручки —
+  // слушаем касание и изменение выделения (с паузой, пока ручки двигают). А10.
+  let lastQuote = "";
+  const onSelect = () => {
     setTimeout(() => {                       // дать выделению устояться
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || !sel.rangeCount) return;
@@ -2369,8 +2424,19 @@ function attachFragmentSelection(textEl) {
       pre.selectNodeContents(textEl);
       pre.setEnd(range.startContainer, range.startOffset);
       const start = pre.toString().length;
+      if (quote === lastQuote && fragPopEl) return;
+      lastQuote = quote;
       showFragPop(range, { start, end: start + quote.length, quote });
     }, 0);
+  };
+  textEl.addEventListener("mouseup", onSelect);
+  textEl.addEventListener("touchend", () => setTimeout(onSelect, 350));
+  let st = null;
+  document.addEventListener("selectionchange", () => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    if (!textEl.isConnected || !textEl.contains(sel.getRangeAt(0).commonAncestorContainer)) return;
+    clearTimeout(st); st = setTimeout(onSelect, 600);
   });
 }
 
@@ -2921,6 +2987,31 @@ function attributionForm(interventionId, mount) {
   ta.focus();
 }
 
+function answersCard(qid) {
+  const card = el("div", "card");
+  card.appendChild(el("div", "section-title", "Ответы"));
+  const body = el("div", "muted", "загрузка…");
+  card.appendChild(body);
+  api(`/api/nodes/${qid}/children?limit=100`).then((page) => {
+    body.textContent = "";
+    body.className = "";
+    for (const c of page.children || []) {
+      const row = el("div", "answer");
+      row.style.cssText = "border-top:1px solid var(--line);padding:8px 0;cursor:pointer";
+      row.appendChild(el("span", "rel " + c.rel, relLabel(c.rel, "question")));
+      row.append(" ");
+      row.appendChild(el("span", null, c.text));
+      const meta = el("div", "muted", (c.author || "—") +
+        (c.reply_count ? ` · ответов на это: ${c.reply_count}` : ""));
+      row.appendChild(meta);
+      row.onclick = () => selectNode(c.id);
+      body.appendChild(row);
+    }
+    if (!body.childNodes.length) body.appendChild(el("div", "muted", "ответов пока нет"));
+  }).catch((e) => { body.textContent = "не загрузилось: " + e.message; });
+  return card;
+}
+
 function replyForm(parentId, parentKind) {
   const card = el("div", "card");
   card.appendChild(el("div", "section-title", "Ответить"));
@@ -2933,7 +3024,7 @@ function replyForm(parentId, parentKind) {
     "ИИ-компаньон разберёт черновик — с ним можно спорить и переспрашивать. " +
     "<b>После публикации текст изменить нельзя</b>: на нём строят ответы.");
   const ta = el("textarea");
-  ta.placeholder = "Твой довод…";
+  ta.placeholder = parentKind === "question" ? "Твой ответ…" : "Твой довод…";
   // чип якоря: показывает, на какой участок отвечаем (ответ на фрагмент)
   const chip = el("div", "anchor-chip");
   chip.style.display = "none";
@@ -3118,7 +3209,7 @@ function replyForm(parentId, parentKind) {
       clearConcede();
       clearValue();
       draftDrop(parentId);            // опубликовано — хранить больше нечего
-      toast("добавлено — PoI оценивается в фоне…" + (hadValue
+      toast((AI_OK ? "добавлено — PoI оценивается в фоне…" : "добавлено — ИИ недоступен, оценки не будет") + (hadValue
         ? " · опирается на «" + hadValue + "», поменять можно в панели довода" : ""));
       expanded.add(parentId);
       await fetchChildren(parentId);   // refresh just this branch
@@ -3148,7 +3239,8 @@ function replyForm(parentId, parentKind) {
     // видит её в форме и в подсказке после публикации, сменить может в панели
     if (rev && rev.value) setValue(rev.value, rev.value_phrase);
     send.disabled = false; send.textContent = "отправить";
-    // nothing to suggest (or the navigator is down) → publish silently
+    if (reviewUnavailable(rev)) { renderUnavailable(hint, () => doSend(ta.value.trim())); return; }
+    // nothing to suggest → publish silently
     if (!reviewHasNotes(rev)) { hint.style.display = "none"; await doSend(text); return; }
 
     renderReview(hint, rev, {
@@ -3169,10 +3261,16 @@ function replyForm(parentId, parentKind) {
         typeSel.value = type;
         await doSend(ta.value.trim());
       },
+      // черновик уже сказан в позиции — встать в неё (одна модель, Р-1 25.09)
       onSupport: async (pid) => {
         hint.style.display = "none";
         ta.value = "";
-        await positionVote(pid, root, "agree");
+        try {
+          await api("/api/opinion/stance", { method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ topic_root_id: root, position_id: pid }) });
+          toast("ты в этой позиции — её экран: карта позиций");
+        } catch (e) { toast("не получилось: " + e.message); }
       },
       // ответ назвал причину: публикуем его как обычно, затем связываем
       // проблему-причину (существующую или новую) со следствием — этим
@@ -3548,6 +3646,7 @@ function newTopicForm(prefill) {
     const rev = await reviewDraft({ text, kind: kindSel.value });
     reviewedRoot = text; reviewedKind = kindSel.value;
     send.disabled = false; send.textContent = "опубликовать";
+    if (reviewUnavailable(rev)) { renderUnavailable(hint, () => doCreate(ta.value.trim())); return; }
     if (!reviewHasNotes(rev)) { hint.style.display = "none"; await doCreate(text); return; }
     renderReview(hint, rev, {
       root: null,
@@ -3660,10 +3759,14 @@ function positionCard(p, root, byId, links) {
   box.appendChild(head);
   if (p.composed) box.appendChild(el("div", "muted", p.composed));
   if (p.author) box.appendChild(el("div", "muted", "✍ вывод подписал: " + p.author));
-  const sup = p.support;
-  // сколько ЛЮДЕЙ за позицией — число, без PoI-взвешивания (решение 2026-07-22:
-  // система не показывает постоянное «стояние»)
-  box.appendChild(el("div", "muted meta-poi", `сторонников: ${sup.count}`));
+  // Р-1 (Alex 25.09): «быть в позиции» — одна модель, как на карте позиций.
+  // Сколько людей стоит в ней сейчас — из журнала; встать — на экране позиции.
+  const where = el("div", "muted meta-poi");
+  where.append(`в позиции: ${p.in_position ?? 0} · `);
+  const open = el("a", null, "открыть позицию →");
+  open.href = `/position.html?id=${p.id}`;
+  where.appendChild(open);
+  box.appendChild(where);
 
   // inter-position links, both directions (oppose / conclusion)
   const LINK_OUT = { oppose: "⚔ оспаривает: ", conclusion: "✦ вывод из: " };
@@ -3677,15 +3780,13 @@ function positionCard(p, root, byId, links) {
   }
 
   const act = el("div", "actions");
-  const vote = el("button", "mini", "▲ поддержать");
-  vote.onclick = () => positionVote(p.id, root, "agree");
   const cont = el("button", "mini", "развить");
   cont.onclick = () => positionText(p.id, root, "continue", "чем развить позицию?");
   const opp = el("button", "mini", "оспорить");
   opp.onclick = () => positionText(p.id, root, "oppose", "контр-довод:");
   const q = el("button", "mini", "вопрос");
   q.onclick = () => positionText(p.id, root, "question", "острый вопрос к позиции:");
-  act.append(vote, cont, opp, q);
+  act.append(cont, opp, q);
   const cbox = el("div"); cbox.style.display = "none";
   if (p.stance !== "conclusion") {
     // two steps (п.9): ИИ ПРЕДЛАГАЕТ вывод (ничего не пишет), автор правит и
@@ -3877,6 +3978,13 @@ const AUTH_INTENT = (() => {
   const p = new URLSearchParams(location.search);
   return p.has("register") ? "register" : p.has("login") ? "login" : null;
 })();
+// Куда вернуть после входа (А6): карта позиций шлёт «/?login&next=/opinion.html?…».
+// Только относительный путь этого же сайта — иначе ссылкой можно было бы увести
+// человека на чужой адрес сразу после ввода пароля.
+const AUTH_NEXT = (() => {
+  const n = new URLSearchParams(location.search).get("next") || "";
+  return /^\/(?!\/)[^\s\\]*$/.test(n) ? n : null;
+})();
 // Параметр убирается из адреса сразу, чтобы «назад» и обновление страницы не
 // открывали форму снова у того, кто её закрыл. САМО открытие — в boot(), после
 // loadMe(): здесь, на верхнем уровне, ME ещё null, и вошедшему показывали
@@ -3920,6 +4028,6 @@ $("#authPass").addEventListener("keydown", (e) => {
     if (AUTH_INTENT && !ME) openAuth(null, AUTH_INTENT);
   } catch (e) {
     $("#tree").innerHTML = '<div class="muted" style="padding:10px">' +
-      "не удалось загрузить: " + e.message + "<br>Postgres запущен? seed выполнен?</div>";
+      "не удалось загрузить: " + e.message + "<br>Обнови страницу через минуту.</div>";
   }
 })();

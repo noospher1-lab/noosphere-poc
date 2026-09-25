@@ -24,9 +24,30 @@ async function api(path, opts = {}) {
 }
 
 let ME = null;
+// вход с возвратом сюда же (А6)
+const loginUrl = () => "/?login&next=" + encodeURIComponent(location.pathname + location.search);
+let CFG = {};
+async function loadConfig() {
+  try { CFG = await api("/api/config"); } catch { CFG = {}; }
+  return CFG;
+}
 async function whoami() {
   try { ME = await api("/api/auth/me"); } catch { ME = null; }
+  // в шапке видно, кто вошёл, а гостю — «Войти» с возвратом сюда (А6)
+  const who = $("#who");
+  if (who) {
+    if (ME) { who.textContent = ME.name || ME.username; who.href = "/profile.html"; }
+    else { who.textContent = "Войти"; who.href = loginUrl(); }
+  }
   return ME;
+}
+
+// склонение по числу: plural(1, "довод", "довода", "доводов")
+function plural(n, one, few, many) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
 }
 
 function people(n) {
@@ -88,7 +109,7 @@ const ACTIONS = [
 ];
 
 function composer({ topic, target, action = "refute", anchor = null, note = "" }) {
-  if (!ME) { location.href = "/?login=1"; return; }
+  if (!ME) { location.href = loginUrl(); return; }
   let dlg = $("#composer");
   if (!dlg) {
     dlg = document.createElement("dialog");
@@ -117,15 +138,19 @@ function composer({ topic, target, action = "refute", anchor = null, note = "" }
   const sugg = $("#cmp-sugg", dlg);
   const msg = $("#cmp-msg", dlg);
   $("#cmp-next", dlg).onclick = async () => {
+    const nextBtn = $("#cmp-next", dlg);
+    if (nextBtn.disabled) return;
     const text = $("#cmp-text", dlg).value.trim();
     if (!text) { msg.textContent = "Напишите текст."; return; }
     const act = target ? dlg.querySelector('input[name="act"]:checked').value : "support";
     msg.textContent = "ищу, не сказано ли это уже…";
     let route;
+    nextBtn.disabled = true;
     try {
       route = await api("/api/opinion/route", { method: "POST", body: {
         topic_root_id: topic, target_id: target ? target.id : null, action: act, text } });
     } catch (e) { msg.textContent = e.message; return; }
+    finally { nextBtn.disabled = false; }
     msg.textContent = route.embed ? "" : "Поиск похожего сейчас недоступен — можно публиковать.";
     const dup = route.duplicates || [];
     const place = route.placement;
@@ -139,7 +164,8 @@ function composer({ topic, target, action = "refute", anchor = null, note = "" }
         ${place.alternatives && place.alternatives.length ? `<label class="why" for="cmp-where">Другое место:</label>
           <select class="select" id="cmp-where"><option value="">${esc(short(place.target ? place.target.text : "обсуждение", 70))}</option>
           ${place.alternatives.map((a) => `<option value="${a.id}">${esc(short(a.text, 70))}</option>`).join("")}</select>` : ""}
-        <div class="btns"><button type="button" class="btn primary" id="cmp-publish">Опубликовать</button></div></div>`;
+        <div class="btns"><button type="button" class="btn primary" id="cmp-publish">Опубликовать</button></div>
+        <div class="why">опубликованное не редактируется</div></div>`;
     for (const b of sugg.querySelectorAll("[data-join]")) {
       b.onclick = async () => {
         try {
@@ -150,6 +176,10 @@ function composer({ topic, target, action = "refute", anchor = null, note = "" }
       };
     }
     $("#cmp-publish", dlg).onclick = async () => {
+      const pub = $("#cmp-publish", dlg);
+      if (pub.disabled) return;
+      pub.disabled = true;                    // двойной клик — одна публикация (А2)
+      if (!(await confirmIrreversible(sugg))) { pub.disabled = false; return; }
       const alt = $("#cmp-where", dlg);
       const connect = alt && alt.value ? Number(alt.value) : (place.target ? place.target.id : topic);
       const body = { text, connect_to: connect, edge_type: place.edge_type };
@@ -158,15 +188,42 @@ function composer({ topic, target, action = "refute", anchor = null, note = "" }
       try {
         const r = await api("/api/argument", { method: "POST", body });
         msg.innerHTML = `Опубликовано: <a href="/n/${r.id}">открыть в дереве</a>. В течение часа, пока нет ответов, его можно снять.`;
-        $("#cmp-publish", dlg).disabled = true;
+        $("#cmp-next", dlg).disabled = true;
         setTimeout(refresh, 800);
-      } catch (e) { msg.textContent = e.message; }
+      } catch (e) { pub.disabled = false; msg.textContent = e.message; }
     };
   };
 }
 
+// То же предупреждение, что в дереве (решение edit-delete-window), и тот же флаг:
+// кто согласился в дереве, здесь не переспрашивается (А3).
+function confirmIrreversible(where) {
+  try { if (localStorage.getItem("noo_irrev_ok") === "1") return Promise.resolve(true); } catch {}
+  return new Promise((resolve) => {
+    const box = document.createElement("div");
+    box.className = "sugg";
+    box.innerHTML = `<b>Прежде чем опубликовать</b>
+      <p class="msg">Опубликованный текст нельзя отредактировать — ни сейчас, ни потом. На нём строят ответы, и он остаётся в общем корпусе.
+      Снять свой текст целиком можно в течение часа и только пока никто не ответил; позже — отзыв и примечание сбоку.</p>
+      <div class="btns"><button type="button" class="btn primary">Понятно, публикую</button><button type="button" class="btn">Вернуться к тексту</button></div>`;
+    const [ok, no] = box.querySelectorAll("button");
+    ok.onclick = () => { try { localStorage.setItem("noo_irrev_ok", "1"); } catch {} box.remove(); resolve(true); };
+    no.onclick = () => { box.remove(); resolve(false); };
+    where.appendChild(box);
+    ok.focus();
+  });
+}
+
 // выделение фрагмента в тексте возражения → ответ на фрагмент
 function fragmentable(el, card, topic) {
+  // касание и изменение выделения — для телефона (А10)
+  let st = null;
+  document.addEventListener("selectionchange", () => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount || !el.isConnected) return;
+    if (!el.contains(sel.getRangeAt(0).commonAncestorContainer)) return;
+    clearTimeout(st); st = setTimeout(() => el.dispatchEvent(new Event("mouseup")), 600);
+  });
   el.addEventListener("mouseup", () => {
     const sel = window.getSelection();
     const quote = sel ? sel.toString().trim() : "";
@@ -221,21 +278,21 @@ function drawPosition(d) {
   const head = `
     <div class="crumbs"><a href="opinion.html?root=${topic}">${esc(p.topic.title)}</a><span class="sep">›</span><span>позиция</span></div>
     <h1>${esc(p.title)}</h1>
-    <div class="meta">Позиция собрана из ${fmt(p.members)} доводов · существует с ${since} · держится, пока в ней есть хотя бы один человек</div>
+    <div class="meta">Позиция собрана из ${fmt(p.members)} ${plural(p.members, "довода", "доводов", "доводов")} · существует с ${since} · держится, пока в ней есть хотя бы один человек</div>
     ${status}`;
   if (d.blind) {
-    main.innerHTML = head + `<p class="note">Сначала напишите свой ответ в обсуждении — после этого откроются числа.
+    main.innerHTML = head + membersBlock(p) + `<p class="note">Сначала напишите свой ответ в обсуждении — после этого откроются числа.
       Так ваш ответ не подстраивается под большинство. <a href="/n/${topic}">К обсуждению</a></p>
       <p class="caption">${esc(d.caption)}</p>`;
     return;
   }
   const n = d.numbers;
   const delta = d.delta;
-  main.innerHTML = head + `
+  main.innerHTML = head + membersBlock(p) + `
     <section class="card" style="margin-top:18px" aria-label="Числа позиции">
       <div class="nums">
         <div class="num"><div class="k">Сейчас в позиции</div><div class="v">${fmt(n.in_now)}</div>
-          <div class="d ${delta > 0 ? "up" : delta < 0 ? "down" : ""}">${delta > 0 ? "+" : ""}${fmt(delta)} ${PERIOD_WORD[d.period]}</div></div>
+          <div class="d ${delta > 0 ? "up" : delta < 0 ? "down" : ""}">${delta ? (delta > 0 ? "+" : "") + fmt(delta) + " " + PERIOD_WORD[d.period] : "без изменений " + PERIOD_WORD[d.period]}</div></div>
         <div class="num"><div class="k"><span class="dot stood"></span>Устояли</div><div class="v">${fmt(n.stood)}</div>
           <div class="d">видели главные возражения и ответили «не убедило» или «частично»</div></div>
         <div class="num"><div class="k"><span class="dot unchecked"></span>Не проверены</div><div class="v">${fmt(n.unchecked)}</div>
@@ -270,13 +327,22 @@ function drawPosition(d) {
   drawErrors(d);
 }
 
+// Из каких доводов позиция состоит — чтобы решать, встать ли в неё, прочитав её (А8)
+function membersBlock(p) {
+  const args = p.arguments || [];
+  if (!args.length) return "";
+  return `<section class="card" style="margin-top:18px" aria-labelledby="ar-h"><h2 id="ar-h">Доводы позиции</h2>
+    ${args.map((a) => `<div class="item"><div class="head">${tag(a)}</div><div class="text">${nodeLink(a)}</div></div>`).join("")}
+  </section>`;
+}
+
 function drawPersonal(d) {
   const box = $("#personal");
   const p = d.position;
   const me = d.personal;
   const open = ["forming", "active", "empty"].includes(p.status);
   if (!ME) {
-    box.innerHTML = open ? `<div class="card personal"><span class="lbl">Войдите, чтобы встать в эту позицию или ответить на её возражения.</span></div>` : "";
+    box.innerHTML = open ? `<div class="card personal"><span class="lbl"><a href="${esc(loginUrl())}">Войдите</a>, чтобы встать в эту позицию или ответить на её возражения.</span></div>` : "";
     return;
   }
   if (!me) {
@@ -312,7 +378,7 @@ function drawPersonal(d) {
   box.innerHTML = `<div class="card personal">
     <div class="lbl">Вы в этой позиции · главное возражение, которое вы ещё не видели</div>
     <div class="objection">${tag(o)}<div class="text" id="obj-text">${esc(o.text)}</div></div>
-    <div class="msg">Этот довод увёл отсюда ${fmt(o.led_away)} ${people(o.led_away)}. ${fmt(o.stayed)} прочитали его и остались. <a href="/n/${o.id}">Открыть в графе</a></div>
+    <div class="msg">Этот довод увёл отсюда ${fmt(o.led_away)} ${people(o.led_away)}. ${fmt(o.stayed)} прочитали его и остались. <a href="/n/${o.id}">открыть в дереве</a></div>
     <div class="btns" id="obj-btns">
       <button type="button" class="btn" data-r="not_convinced">Не убедило</button>
       <button type="button" class="btn" data-r="partial">Частично — уточню</button>
@@ -406,13 +472,13 @@ function drawChart(d) {
   box.innerHTML = `
     <div class="legend"><span><span class="dot stood"></span>устояли</span><span><span class="dot unchecked"></span>не проверены</span><span><span class="dot converted"></span>ушли, накопительно</span></div>
     <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Состав позиции по дням: устояли, не проверены, ушли">
-      ${ticks.map((t) => `<line x1="${L}" x2="${W}" y1="${y(t)}" y2="${y(t)}" stroke="#272c39"/><text x="${L - 6}" y="${y(t) + 4}" fill="#7d8496" font-size="11" text-anchor="end">${fmt(t)}</text>`).join("")}
+      ${ticks.map((t) => `<line x1="${L}" x2="${W}" y1="${y(t)}" y2="${y(t)}" stroke="#272c39"/><text x="${L - 6}" y="${y(t) + 4}" fill="#828a9c" font-size="11" text-anchor="end">${fmt(t)}</text>`).join("")}
       <polygon points="${area((p) => p.stood + p.unchecked, (p) => p.stood + p.unchecked + p.converted)}" fill="var(--converted)" opacity=".85"/>
       <polygon points="${area((p) => p.stood, (p) => p.stood + p.unchecked)}" fill="var(--unchecked)"/>
       <polygon points="${area(() => 0, (p) => p.stood)}" fill="var(--stood)"/>
       <line id="cursor" x1="${x(s.length - 1)}" x2="${x(s.length - 1)}" y1="6" y2="${H - B}" stroke="#edeef2" stroke-dasharray="3 3"/>
-      <text x="${L}" y="${H - 5}" fill="#7d8496" font-size="11">${lbl(0)}</text>
-      <text x="${W - 4}" y="${H - 5}" fill="#7d8496" font-size="11" text-anchor="end">${lbl(s.length - 1)}</text>
+      <text x="${L}" y="${H - 5}" fill="#828a9c" font-size="11">${lbl(0)}</text>
+      <text x="${W - 4}" y="${H - 5}" fill="#828a9c" font-size="11" text-anchor="end">${lbl(s.length - 1)}</text>
     </svg>
     <div class="scrub"><label for="scrub">Прокрутить назад по неделям</label>
       <input id="scrub" type="range" min="0" max="${weeks.length - 1}" value="${weeks.length - 1}">
@@ -445,7 +511,7 @@ function cruxBadge(c) {
   if (c.kind !== "question" || !c.question) return "";
   return c.question.status === "found"
     ? `<span class="tag ok">ответ найден</span>`
-    : `<span class="tag open">открыт ${fmt(c.question.open_days || 0)} дн.</span>`;
+    : `<span class="tag open">${c.question.open_days ? "открыт " + fmt(c.question.open_days) + " " + plural(c.question.open_days, "день", "дня", "дней") : "открыт сегодня"}</span>`;
 }
 
 function cruxBar(c) {
@@ -476,7 +542,7 @@ function drawCruxes(d, sel = "#cruxes", topic = d.position && d.position.topic.i
   }
   for (const b of box.querySelectorAll("[data-same]")) {
     b.onclick = async () => {
-      if (!ME) { location.href = "/?login=1"; return; }
+      if (!ME) { location.href = loginUrl(); return; }
       try {
         await api("/api/opinion/join", { method: "POST", body: { node_id: Number(b.dataset.same) } });
         refresh();
@@ -510,7 +576,7 @@ async function renderTopic() {
   const root = Number(qs.get("root"));
   const main = $("main");
   if (!root) { main.innerHTML = `<p class="note">Не указано обсуждение.</p>`; return; }
-  await whoami();
+  await Promise.all([whoami(), loadConfig()]);
   refresh = async () => {
     let d;
     try {
@@ -532,6 +598,7 @@ function drawTopic(d) {
   if (d.cold_start) {
     main.innerHTML = head + `<p class="note">Позиции ещё складываются: на карте ${fmt(d.active_positions)} из ${fmt(d.min_positions)} нужных.
       Позиция выходит на карту, когда в ней встанут ${fmt(d.min_supporters)} человека. Пока главное здесь — <a href="/n/${t.id}">дерево обсуждения</a>.</p>
+      ${unassignedNote(d)}
       ${d.positions.length ? `<div class="plist" id="plist"></div>` : ""}
       ${formingList(d)}
       <div class="btns"><button type="button" class="btn" id="no-pos">Моей позиции здесь нет</button></div>
@@ -539,6 +606,7 @@ function drawTopic(d) {
       <p class="caption">${esc(d.caption)}</p>`;
     if (d.positions.length) drawPositionCards(d);
     if (d.cruxes.length) drawCruxes(d, "#tcruxes", t.id);
+    wireAssign(t.id);
     $("#no-pos").onclick = () => composer({ topic: t.id, target: null });
     return;
   }
@@ -551,7 +619,7 @@ function drawTopic(d) {
     drawPositionCards(d);
     return;
   }
-  main.innerHTML = head + `
+  main.innerHTML = head + unassignedNote(d) + `
     <div class="toolbar"><span id="tabs"></span>
       <label class="meta">Порядок <select class="select" id="sort">
         <option value="size">по размеру</option><option value="movement">по движению</option><option value="random">случайный</option>
@@ -568,6 +636,27 @@ function drawTopic(d) {
   $("#no-pos").onclick = () => composer({ topic: t.id, target: null });
   drawPositionCards(d);
   drawCruxes(d, "#tcruxes", t.id);
+  wireAssign(t.id);
+}
+
+// Р-2 (Alex 25.09): позиции собирает ИИ. Если он был недоступен, часть
+// доводов лежит без позиции — говорим это прямо и даём разложить повторно.
+function unassignedNote(d) {
+  const n = d.unassigned || 0;
+  if (!n) return "";
+  const what = `${fmt(n)} ${n % 10 === 1 && n % 100 !== 11 ? "довод ещё не разложен" : "доводов ещё не разложены"} по позициям`;
+  if (!CFG.ai) return `<p class="note">${what}: их раскладывает ИИ, а он сейчас недоступен. Когда вернётся, их можно будет разложить одной кнопкой.</p>`;
+  if (!ME) return `<p class="note">${what}. <a href="${esc(loginUrl())}">Войди</a>, чтобы разложить.</p>`;
+  return `<p class="note">${what}. <button type="button" class="btn" id="assign-now">Разложить сейчас</button> <span class="muted">(вызов ИИ)</span></p>`;
+}
+function wireAssign(root) {
+  const b = $("#assign-now");
+  if (!b) return;
+  b.onclick = async () => {
+    b.disabled = true; b.textContent = "ИИ раскладывает…";
+    try { await api(`/api/positions/${root}/recompute`, { method: "POST" }); refresh(); }
+    catch (e) { b.disabled = false; b.textContent = "Разложить сейчас"; b.after(" " + e.message); }
+  };
 }
 
 function formingList(d) {

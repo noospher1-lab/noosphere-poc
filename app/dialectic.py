@@ -37,6 +37,15 @@ HOLDS_RATIO = 0.7
 WEAKENED_RATIO = 0.4
 
 
+def is_question(row):
+    """Вопрос — не утверждение: ответы под ним («да / нет / уточнение») не
+    атакуют и не поддерживают его, а отвечают. Решение Alex 25.09 (Р-3 сводки
+    студии): «нет» под вопросом хранится как refute, и сила спора считала его
+    атакой — вопрос о «геноциде» выходил «держится», а ответ «нет» со ссылкой
+    на решение суда — «без ответа». Выглядело как вердикт платформы."""
+    return (row or {}).get("kind") == "question"
+
+
 def base_score(row):
     poi = row.get("poi_score")
     if poi is None:
@@ -74,7 +83,7 @@ def strengths(rows):
         stack.extend(kids[nid])
     for nid in reversed(order):                 # дети раньше родителя
         att, sup = [], []
-        for cid in kids[nid]:
+        for cid in ([] if is_question(by_id[nid]) else kids[nid]):
             c = by_id[cid]
             if c.get("retracted"):
                 continue
@@ -116,6 +125,8 @@ def verdict(rows, node_id):
         return None
     s = strengths(rows)
     live = [r for r in rows if r.get("parent_id") == node_id and not r.get("retracted")]
+    if is_question(by_id[node_id]):
+        live = []                                # ответы на вопрос — не спор с ним
     attacks = [r for r in live if r.get("rel") in ATTACK]
     supports = [r for r in live if r.get("rel") in SUPPORT]
     answered = {r["parent_id"] for r in rows
