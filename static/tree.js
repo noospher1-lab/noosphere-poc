@@ -1415,7 +1415,7 @@ async function selectNode(id) {
   // decisions/2026-09-25-opinion-map). Раньше ссылка жила внизу, в карточке
   // позиций под формой ответа, — Alex: «находится в недосягаемости».
   if (isRoot) {
-    const mapBtn = el("a", "map-btn", "Карта мнений →");
+    const mapBtn = el("a", "map-btn", "Карта позиций →");
     mapBtn.href = `/opinion.html?root=${node.id}`;
     card.appendChild(mapBtn);
   }

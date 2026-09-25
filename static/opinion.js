@@ -525,9 +525,9 @@ async function renderTopic() {
 function drawTopic(d) {
   const main = $("main");
   const t = d.topic;
-  document.title = `${t.title} — карта мнений`;
+  document.title = `${t.title} — карта позиций`;
   TSTATE.sort = d.sort;
-  const head = `<div class="crumbs"><a href="/n/${t.id}">Дерево обсуждения</a><span class="sep">›</span><span>карта мнений</span></div>
+  const head = `<div class="crumbs"><a href="/n/${t.id}">Дерево обсуждения</a><span class="sep">›</span><span>карта позиций</span></div>
     <h1>${esc(t.title)}</h1>`;
   if (d.cold_start) {
     main.innerHTML = head + `<p class="note">Позиции ещё складываются: на карте ${fmt(d.active_positions)} из ${fmt(d.min_positions)} нужных.
