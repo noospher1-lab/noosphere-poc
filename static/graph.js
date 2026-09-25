@@ -5,8 +5,8 @@
 // данных (одни данные — одна картинка), ничего не движется само, двигает и
 // приближает только человек. Два вида:
 //   карта проблем — уровни «порождает»: причина выше, следствие ниже;
-//   ветка        — слои слева направо: колонка = глубина ответа, у каждой
-//                  ветки своя дорожка, цвет линии = вид связи.
+//   ветка        — сверху вниз: строка = глубина ответа, у каждой ветки своя
+//                  колонка, цвет линии = вид связи (Alex 25.09: так читабельнее).
 // Подсвечено своим цветом: возражение без ответа, открытый вопрос, довод,
 // который держится, ответ, который признаёт часть. Остальное — приглушённо.
 (() => {
@@ -100,11 +100,11 @@
   }
   // Ветку не ужимаем ради «всё в окне»: при 35 узлах это масштаб 0.6 и текст,
   // который не прочитать. Влезает целиком в читаемом размере — показываем
-  // целиком; не влезает — обычный размер, корень слева по центру, дальше
+  // целиком; не влезает — обычный размер, корень наверху по центру, дальше
   // человек ведёт сам. «Вписать» по кнопке по-прежнему ужимает всё.
   const READABLE_K = 0.9;
   let lastStart = () => fit();
-  function startTopic(rootY) {
+  function startTopic(rootX) {
     const r = svg.getBoundingClientRect();
     const pad = 28;
     const whole = Math.min(1, (r.width - pad * 2) / Math.max(1, content.w),
@@ -115,8 +115,8 @@
       view.y = (r.height - content.h * whole) / 2;
     } else {
       view.k = 1;
-      view.x = pad;
-      view.y = Math.min(pad, r.height / 2 - (rootY + T.ch / 2));
+      view.y = pad;
+      view.x = r.width / 2 - (rootX + T.cw / 2);   // корень наверху по центру
     }
     applyView();
   }
@@ -289,7 +289,10 @@
   }
 
   // ------------------------------------------------------------ ветка
-  const T = { cw: 236, ch: 70, gx: 58, gy: 14 };
+  // Ветка растёт СВЕРХУ ВНИЗ (Alex 25.09: «так будет читабельнее»): уровень —
+  // строка, ответы одного родителя — рядом по горизонтали. gx — зазор между
+  // соседями, gy — между уровнями (там идут связи).
+  const T = { cw: 236, ch: 70, gx: 16, gy: 48 };
   let topicData = null;
   let selected = null;
   const cardEls = new Map();
@@ -342,14 +345,14 @@
       else if (byId.has(n.parent)) byId.get(n.parent).kids.push(me);
     }
     if (!root) { message("Ветка пуста."); return; }
-    // листья идут подряд сверху вниз, родитель — посередине своих детей
+    // листья идут подряд слева направо, родитель — над серединой своих детей
     let leaf = 0, maxDepth = 0;
     const place = (n, depth) => {
-      n.x = depth * (T.cw + T.gx);
+      n.y = depth * (T.ch + T.gy);
       maxDepth = Math.max(maxDepth, depth);
-      if (!n.kids.length) { n.y = leaf * (T.ch + T.gy); leaf++; return; }
+      if (!n.kids.length) { n.x = leaf * (T.cw + T.gx); leaf++; return; }
       n.kids.forEach((k) => place(k, depth + 1));
-      n.y = (n.kids[0].y + n.kids[n.kids.length - 1].y) / 2;
+      n.x = (n.kids[0].x + n.kids[n.kids.length - 1].x) / 2;
     };
     place(root, 0);
 
@@ -357,17 +360,20 @@
     const cards = svgEl("g", {}, scene);
     const walk = (n) => {
       for (const k of n.kids) {
-        const x1 = n.x + T.cw, y1 = n.y + T.ch / 2, x2 = k.x, y2 = k.y + T.ch / 2;
-        const mx = (x1 + x2) / 2;
-        svgEl("path", { d: `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`,
+        // ступенькой, как в оргсхеме: вниз от родителя, общая горизонталь, вниз
+        // к ответу. Кривые от корня к десятку далёких ответов ложились почти
+        // горизонтально друг на друга и читались сплошной лентой.
+        const x1 = n.x + T.cw / 2, y1 = n.y + T.ch, x2 = k.x + T.cw / 2, y2 = k.y;
+        const my = y1 + T.gy / 2;
+        svgEl("path", { d: `M${x1},${y1} V${my} H${x2} V${y2}`,
                         class: "edge rel-" + (k.rel || "none") + (k.retracted ? " retracted" : "") }, edges);
         walk(k);
       }
       nodeCard(cards, n, n.x, n.y);
     };
     walk(root);
-    content = { w: (maxDepth + 1) * (T.cw + T.gx) - T.gx, h: Math.max(1, leaf) * (T.ch + T.gy) - T.gy };
-    lastStart = () => startTopic(root.y);
+    content = { w: Math.max(1, leaf) * (T.cw + T.gx) - T.gx, h: (maxDepth + 1) * (T.ch + T.gy) - T.gy };
+    lastStart = () => startTopic(root.x);
     lastStart();
     const want = Number(new URLSearchParams(location.search).get("node"));
     if (want && byId.has(want)) selectNode(want, { center: true });

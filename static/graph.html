@@ -95,6 +95,9 @@
 
   /* ---- линии ---- */
   .edge { fill: none; stroke-width: 1.6; stroke: var(--dim2); }
+  /* классы rel-* красят и текст меток (fill); на линии заливка не нужна —
+     иначе изогнутая связь превращается в залитую фигуру */
+  .edges path.edge { fill: none; }
   .edge.retracted { stroke-dasharray: 4 4; opacity: .5; }
   .rel-support { stroke: var(--green); fill: var(--green); }
   .rel-refute { stroke: var(--red); fill: var(--red); }
