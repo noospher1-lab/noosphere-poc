@@ -98,26 +98,14 @@
     view.y = pad;
     applyView();
   }
-  // Ветку не ужимаем ради «всё в окне»: при 35 узлах это масштаб 0.6 и текст,
-  // который не прочитать. Влезает целиком в читаемом размере — показываем
-  // целиком; не влезает — обычный размер, корень наверху по центру, дальше
-  // человек ведёт сам. «Вписать» по кнопке по-прежнему ужимает всё.
-  const READABLE_K = 0.9;
+  // Доска ветки помещается по ширине экрана и растёт вниз: масштаб обычный,
+  // начало сверху. «Вписать» по кнопке по-прежнему ужимает всё.
   let lastStart = () => fit();
-  function startTopic(rootX) {
+  function startBoard() {
     const r = svg.getBoundingClientRect();
-    const pad = 28;
-    const whole = Math.min(1, (r.width - pad * 2) / Math.max(1, content.w),
-                           (r.height - pad * 2) / Math.max(1, content.h));
-    if (whole >= READABLE_K) {
-      view.k = whole;
-      view.x = (r.width - content.w * whole) / 2;
-      view.y = (r.height - content.h * whole) / 2;
-    } else {
-      view.k = 1;
-      view.y = pad;
-      view.x = r.width / 2 - (rootX + T.cw / 2);   // корень наверху по центру
-    }
+    view.k = 1;
+    view.x = Math.max(28, (r.width - content.w) / 2);
+    view.y = 28;
     applyView();
   }
   function zoomAt(px, py, f) {
@@ -144,6 +132,15 @@
   svg.addEventListener("wheel", (e) => {
     e.preventDefault();
     const r = svg.getBoundingClientRect();
+    // доска ветки — как страница: колесо листает, масштаб — Ctrl+колесо (так же
+    // приходит щипок на тачпаде). На карте проблем колесо по-прежнему масштабирует.
+    if (lastStart === startBoard && !e.ctrlKey && !e.metaKey) {
+      const minY = Math.min(28, r.height - content.h * view.k - 28);
+      view.y = Math.min(28, Math.max(minY, view.y - e.deltaY));
+      view.x -= e.deltaX;
+      applyView();
+      return;
+    }
     zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * 0.0015));
   }, { passive: false });
   // клик по карточке не должен срабатывать, если человек тащил картинку
@@ -302,12 +299,12 @@
     return null;
   }
 
-  function nodeCard(parent, n, x, y) {
+  function nodeCard(parent, n, x, y, w = T.cw) {
     const fill = fillOf(n);
     const cls = ["ncard", fill ? "hl-" + fill : "", n.flags.concedes ? "concede" : "",
                  n.retracted ? "retracted" : "", n.parent == null ? "root" : ""].join(" ");
     const g = svgEl("g", { class: cls, transform: `translate(${x},${y})` }, parent);
-    svgEl("rect", { width: T.cw, height: T.ch, rx: 7, class: "nbox" }, g);
+    svgEl("rect", { width: w, height: T.ch, rx: 7, class: "nbox" }, g);
     // верхняя строка: вид связи (или вид корня) и отметки словами — цвет не
     // единственный носитель смысла
     let tx = 12;
@@ -315,13 +312,13 @@
     if (n.parent == null) tag(KIND_WORD[n.kind] || "обсуждение", "kind");
     else tag(relWord(n), "rel-" + (n.rel || "none"));
     if (fill) tag(FILL_ORDER.find(([k]) => k === fill)[1], "flag-" + fill);
-    if (n.flags.concedes && tx < T.cw - 60) tag("признаёт", "flag-concede");
-    if (n.retracted && tx < T.cw - 60) tag("отозвано", "dim");
+    if (n.flags.concedes && tx < w - 60) tag("признаёт", "flag-concede");
+    if (n.retracted && tx < w - 60) tag("отозвано", "dim");
     if (n.poi_score != null) {
       const s = "PoI " + Math.round(n.poi_score);
-      text(g, T.cw - 12 - width(s, FONT_SMALL), 18, s, "poi");
+      text(g, w - 12 - width(s, FONT_SMALL), 18, s, "poi");
     }
-    wrap(n.label, n.parent == null ? FONT_TITLE : FONT_LABEL, T.cw - 24, 2)
+    wrap(n.label, n.parent == null ? FONT_TITLE : FONT_LABEL, w - 24, 2)
       .forEach((line, i) => text(g, 12, 38 + i * 17, line, n.parent == null ? "ptitle" : "nlabel"));
     const t = svgEl("title", {}, g);
     t.textContent = n.text;
@@ -345,35 +342,71 @@
       else if (byId.has(n.parent)) byId.get(n.parent).kids.push(me);
     }
     if (!root) { message("Ветка пуста."); return; }
-    // листья идут подряд слева направо, родитель — над серединой своих детей
-    let leaf = 0, maxDepth = 0;
-    const place = (n, depth) => {
-      n.y = depth * (T.ch + T.gy);
-      maxDepth = Math.max(maxDepth, depth);
-      if (!n.kids.length) { n.x = leaf * (T.cw + T.gx); leaf++; return; }
-      n.kids.forEach((k) => place(k, depth + 1));
-      n.x = (n.kids[0].x + n.kids[n.kids.length - 1].x) / 2;
-    };
-    place(root, 0);
+    // ДОСКА (Alex 25.09: «не видно всего» — в одну строку 13 вопросов при
+    // «вписать» превращались в нечитаемую полоску). Проблема наверху; её прямые
+    // ответы — колонками, сколько влезает по ширине экрана, дальше новый ряд;
+    // под каждым — его ветка стопкой со сдвигом по глубине, как в дереве.
+    // Растёт вниз, листается вниз, текст в натуральную величину.
+    const r = svg.getBoundingClientRect();
+    const COL = 260, GAP = 22, STEP = T.ch + 10, INDENT = 18, TRUNK = 16;
+    const kids1 = root.kids;
+    const cols = Math.max(1, Math.min(kids1.length || 1,
+      Math.floor((r.width - 56 - TRUNK + GAP) / (COL + GAP))));
+    const boardW = cols * (COL + GAP) - GAP;
+    const rootW = Math.min(boardW, 2 * COL);
+    root.x = TRUNK + (boardW - rootW) / 2; root.y = 0; root.w = rootW;
+    const colTops = [];
+    let rowTop = T.ch + 44, maxDepth = 0;
+    for (let i = 0; i < kids1.length; i += cols) {
+      let rowH = 0;
+      kids1.slice(i, i + cols).forEach((top, j) => {
+        const cx = TRUNK + j * (COL + GAP);
+        let yy = rowTop;
+        const stack = (n, d) => {
+          n.x = cx + d * INDENT; n.y = yy; n.w = Math.max(150, COL - d * INDENT);
+          maxDepth = Math.max(maxDepth, d);
+          yy += STEP;
+          n.kids.forEach((k) => stack(k, d + 1));
+        };
+        stack(top, 0);
+        colTops.push({ n: top, row: rowTop });
+        rowH = Math.max(rowH, yy - rowTop);
+      });
+      rowTop += rowH + 40;
+    }
 
     const edges = svgEl("g", { class: "edges" }, scene);
     const cards = svgEl("g", {}, scene);
+    const line = (d, cls) => svgEl("path", { d, class: "edge " + cls }, edges);
+    // от проблемы: вниз, влево к стволу; ствол идёт по левому краю до каждого
+    // ряда, по ряду — шина, от шины вниз к каждой колонке
+    const rootCx = root.x + rootW / 2, bus0 = T.ch + 22;
+    if (colTops.length) {
+      const lastBus = colTops[colTops.length - 1].row - 22;
+      line(`M${rootCx},${T.ch} V${bus0} H4 V${lastBus}`, "rel-none");
+      const rows = [...new Set(colTops.map((c) => c.row))];
+      for (const rt of rows) {
+        const inRow = colTops.filter((c) => c.row === rt);
+        const last = inRow[inRow.length - 1].n;
+        line(`M4,${rt - 22} H${last.x + COL / 2}`, "rel-none");
+        for (const c of inRow)
+          line(`M${c.n.x + COL / 2},${rt - 22} V${rt}`,
+               "rel-" + (c.n.rel || "none") + (c.n.retracted ? " retracted" : ""));
+      }
+    }
+    // внутри колонки: ствол родителя по его левому краю, к ответу — вправо
     const walk = (n) => {
       for (const k of n.kids) {
-        // ступенькой, как в оргсхеме: вниз от родителя, общая горизонталь, вниз
-        // к ответу. Кривые от корня к десятку далёких ответов ложились почти
-        // горизонтально друг на друга и читались сплошной лентой.
-        const x1 = n.x + T.cw / 2, y1 = n.y + T.ch, x2 = k.x + T.cw / 2, y2 = k.y;
-        const my = y1 + T.gy / 2;
-        svgEl("path", { d: `M${x1},${y1} V${my} H${x2} V${y2}`,
-                        class: "edge rel-" + (k.rel || "none") + (k.retracted ? " retracted" : "") }, edges);
+        if (n !== root)
+          line(`M${n.x + 9},${n.y + T.ch} V${k.y + T.ch / 2} H${k.x}`,
+               "rel-" + (k.rel || "none") + (k.retracted ? " retracted" : ""));
         walk(k);
       }
-      nodeCard(cards, n, n.x, n.y);
+      nodeCard(cards, n, n.x, n.y, n.w);
     };
     walk(root);
-    content = { w: Math.max(1, leaf) * (T.cw + T.gx) - T.gx, h: (maxDepth + 1) * (T.ch + T.gy) - T.gy };
-    lastStart = () => startTopic(root.x);
+    content = { w: TRUNK + boardW, h: rowTop - 40 };
+    lastStart = startBoard;
     lastStart();
     const want = Number(new URLSearchParams(location.search).get("node"));
     if (want && byId.has(want)) selectNode(want, { center: true });
@@ -529,9 +562,13 @@
   }
   addEventListener("popstate", load);
   $("#reload").onclick = load;
-  // размер окна меняет только вписывание, не раскладку
+  // размер окна меняет вписывание; у доски ветки — и раскладку (колонки)
   let rt = null;
-  addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => lastStart(), 150); });
+  addEventListener("resize", () => {
+    clearTimeout(rt);
+    rt = setTimeout(() => (lastStart === startBoard && topicData
+      ? renderTopic(topicData) : lastStart()), 150);
+  });
 
   (document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(load);
 })();
