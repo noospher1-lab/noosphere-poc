@@ -904,11 +904,43 @@ _SCHEMA = [
 ]
 
 
+# ХЭШ-ЦЕПОЧКА ЖУРНАЛА (vault: decisions/2026-09-25-opinion-map). Каждое событие
+# несёт хэш предыдущего: подменить или выкинуть строку задним числом нельзя
+# незаметно — `python -m app.chain verify` найдёт разрыв. Цепочка одна на весь
+# журнал, поэтому запись события сериализуется замком (держится до конца
+# транзакции). События до миграции хэша не имеют: цепочка начинается с
+# генезиса, прошлое не переписывается.
+CHAIN_LOCK = 7001
+GENESIS = "0" * 64
+
+
+def event_digest(prev_hash, event_id, ts, type_, author_id, payload):
+    """Хэш события — из хэша предыдущего и его собственных полей. payload
+    сериализуется канонически (ключи по порядку), чтобы проверка сошлась с
+    тем, что вернёт JSONB."""
+    body = json.dumps({"id": event_id,
+                       "ts": ts.astimezone(timezone.utc).isoformat(),
+                       "type": type_, "author_id": author_id,
+                       "payload": payload},
+                      sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256((prev_hash + body).encode("utf-8")).hexdigest()
+
+
 async def _log(conn, type_, payload, author_id=None):
     """Append one immutable event (call inside the write's transaction)."""
+    # нормализуем через JSON — ровно то, что потом прочитается из JSONB
+    payload = json.loads(json.dumps(payload, default=str))
+    await conn.execute("SELECT pg_advisory_xact_lock($1)", CHAIN_LOCK)
+    prev = await conn.fetchval(
+        "SELECT hash FROM events WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1")
+    event_id = await conn.fetchval("SELECT nextval(pg_get_serial_sequence('events', 'id'))")
+    ts = await conn.fetchval("SELECT clock_timestamp()")
+    prev = prev or GENESIS
+    digest = event_digest(prev, event_id, ts, type_, author_id, payload)
     await conn.execute(
-        "INSERT INTO events (type, author_id, payload) VALUES ($1, $2, $3)",
-        type_, author_id, json.dumps(payload))
+        "INSERT INTO events (id, ts, type, author_id, payload, prev_hash, hash) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        event_id, ts, type_, author_id, json.dumps(payload), prev, digest)
 
 
 # The read contract is "a node + a RANKED PAGE of its children" — the client
@@ -952,6 +984,9 @@ async def init_db():
     pool = await init_pool()
     async with pool.acquire() as conn:
         for stmt in _SCHEMA:
+            await conn.execute(stmt)
+        from . import opinion_db
+        for stmt in opinion_db.SCHEMA:
             await conn.execute(stmt)
         for stmt in _INDEXES:
             await conn.execute(stmt)
@@ -1027,11 +1062,17 @@ async def wipe(force=False):
         # на авторов, которых больше нет.
         kept = await conn.fetch(
             "SELECT code, note FROM invites WHERE used_by IS NULL")
-        await conn.execute(
-            "TRUNCATE position_reactions, position_links, positions, "
-            "author_topic_poi, reactions, edges, nodes, sessions, dialogues, "
-            "usage_events, authors, events RESTART IDENTITY CASCADE"
-        )
+        # журналы только дописываются (триггер); сброс — единственный
+        # сознательный обход, и только на эту транзакцию
+        from . import opinion_db
+        async with conn.transaction():
+            await conn.execute("SET LOCAL noosphere.allow_wipe = 'on'")
+            await conn.execute(
+                "TRUNCATE position_reactions, position_links, positions, "
+                "author_topic_poi, reactions, edges, nodes, sessions, dialogues, "
+                "usage_events, authors, events, "
+                + opinion_db.WIPE_TABLES + " RESTART IDENTITY CASCADE"
+            )
         if kept:
             await conn.executemany(
                 "INSERT INTO invites (code, note) VALUES ($1, $2) "
@@ -1142,11 +1183,16 @@ async def add_atoms_once(exploration_id, root_id, author_id, atoms):
 
 
 async def set_node_position(node_id, position_id):
+    from . import opinion_db
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            old = await conn.fetchval(
+                "SELECT position_id FROM nodes WHERE id = $1 FOR UPDATE", node_id)
             await conn.execute(
                 "UPDATE nodes SET position_id = $1 WHERE id = $2", position_id, node_id)
+            # состав позиции для карты мнений — до _log (порядок замков)
+            await opinion_db.on_node_position(conn, node_id, old, position_id)
             await _log(conn, "node_position_set",
                        {"node_id": node_id, "position_id": position_id})
 
@@ -1325,13 +1371,21 @@ async def soft_delete_node(node_id, author_id):
     return True
 
 
-async def add_addendum(node_id, author_id, text):
+ADDENDUM_KINDS = ("note", "error_ack")
+
+
+async def add_addendum(node_id, author_id, text, kind="note"):
     """Датированная приписка к своему зафиксированному высказыванию.
 
     Работает ПОСЛЕ окна и только для автора: исходный текст неприкосновенен (на
     него отвечали, его хеш уходит в цепочку), но сказать «здесь я ошибся» автор
     вправе всегда. Приписка ничего не переписывает и не трогает оценку.
+
+    kind='error_ack' — «признаю ошибку» (карта мнений): узел остаётся в графе,
+    но выходит из состава позиций — он их больше не держит.
     """
+    if kind not in ADDENDUM_KINDS:
+        raise ValueError(f"kind must be one of {ADDENDUM_KINDS}")
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -1342,11 +1396,14 @@ async def add_addendum(node_id, author_id, text):
             if row["author_id"] != author_id:
                 raise Locked("примечание к своему высказыванию добавляет только автор")
             added = await conn.fetchrow(
-                "INSERT INTO node_addenda (node_id, author_id, text) "
-                "VALUES ($1, $2, $3) RETURNING *", node_id, author_id, text)
+                "INSERT INTO node_addenda (node_id, author_id, text, kind) "
+                "VALUES ($1, $2, $3, $4) RETURNING *", node_id, author_id, text, kind)
+            if kind == "error_ack":
+                from . import opinion_db
+                await opinion_db.on_error_ack(conn, node_id)
             await _log(conn, "node_addendum_added",
                        {"node_id": node_id, "addendum_id": added["id"],
-                        "text": text}, author_id)
+                        "text": text, "kind": kind}, author_id)
     return _row_with_iso(added, "created_at")
 
 
@@ -2993,16 +3050,11 @@ async def get_reactions(node_id, topic_root_id):
 
 
 # ---------------------------------------------------------------- positions
-async def clear_positions(topic_root_id):
-    pool = _pool_or_raise()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                "UPDATE nodes SET position_id = NULL WHERE position_id IN "
-                "(SELECT id FROM positions WHERE topic_root_id = $1)", topic_root_id)
-            await conn.execute(
-                "DELETE FROM positions WHERE topic_root_id = $1", topic_root_id)
-            await _log(conn, "positions_cleared", {"topic_root_id": topic_root_id})
+# ID позиций постоянны (карта мнений, 2026-09-25): на них ссылаются журнал
+# переходов людей и голосование. Поэтому «стереть позиции темы и собрать
+# заново» больше нет — пересборка только раскладывает ещё не распределённые
+# доводы (main._recompute_positions), а опустевшая позиция не удаляется, а
+# получает статус 'empty'.
 
 
 async def mark_dissented(node_id):
@@ -3015,15 +3067,24 @@ async def mark_dissented(node_id):
             await _log(conn, "node_dissented", {"node_id": node_id})
 
 
-async def delete_position(position_id):
-    """Remove an empty/left-behind pool; detach any nodes still pointing at it."""
+async def retire_position(position_id):
+    """Позиция, из которой ушли все доводы, остаётся строкой со статусом 'empty'
+    (если в ней никто не стоит): ID живёт в журналах и чужих ссылках."""
+    from . import opinion_db
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT p.topic_root_id, p.status, coalesce(s.in_now, 0) AS in_now "
+                "FROM positions p LEFT JOIN position_stats s ON s.position_id = p.id "
+                "WHERE p.id = $1 FOR UPDATE OF p", position_id)
+            if row is None or row["in_now"] > 0 or row["status"] == "empty":
+                return
             await conn.execute(
-                "UPDATE nodes SET position_id = NULL WHERE position_id = $1", position_id)
-            await conn.execute("DELETE FROM positions WHERE id = $1", position_id)
-            await _log(conn, "position_deleted", {"position_id": position_id})
+                "UPDATE positions SET status = 'empty' WHERE id = $1", position_id)
+            await opinion_db._position_event(
+                conn, row["topic_root_id"], position_id, "status",
+                {"from": row["status"], "to": "empty", "reason": "no_members"})
 
 
 async def add_position(topic_root_id, headline, composed, stance, author_id=None):
@@ -3034,6 +3095,11 @@ async def add_position(topic_root_id, headline, composed, stance, author_id=None
                 "INSERT INTO positions (topic_root_id, headline, composed, stance, "
                 "author_id) VALUES ($1, $2, $3, $4, $5) RETURNING id",
                 topic_root_id, headline, composed, stance, author_id)
+            # новая позиция «складывается»: на карту выйдет, когда в ней встанут люди
+            from . import opinion_db
+            await opinion_db._bump(conn, pid)
+            await opinion_db._position_event(conn, topic_root_id, pid, "create",
+                                             {"headline": headline}, author_id)
             await _log(conn, "position_added",
                        {"position_id": pid, "topic_root_id": topic_root_id,
                         "headline": headline, "stance": stance,
@@ -3060,9 +3126,16 @@ async def update_position(position_id, headline, composed):
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            old = await conn.fetchrow(
+                "SELECT topic_root_id, headline FROM positions WHERE id = $1", position_id)
             await conn.execute(
                 "UPDATE positions SET headline = $1, composed = $2 WHERE id = $3",
                 headline, composed, position_id)
+            if old is not None and old["headline"] != headline:
+                from . import opinion_db
+                await opinion_db._position_event(
+                    conn, old["topic_root_id"], position_id, "rename",
+                    {"from": old["headline"], "to": headline})
             await _log(conn, "position_updated",
                        {"position_id": position_id, "headline": headline})
 
@@ -3239,6 +3312,8 @@ async def add_edge(source_id, target_id, edge_type, anchor_hash=None,
                 "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
                 source_id, target_id, edge_type, anchor_hash,
                 anchor_start, anchor_end, anchor_quote)
+            from . import opinion_db
+            await opinion_db.on_edge(conn, target_id, edge_type)
             await _log(conn, "edge_added",
                        {"edge_id": edge_id, "source_id": source_id,
                         "target_id": target_id, "edge_type": edge_type,

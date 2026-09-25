@@ -2338,16 +2338,23 @@ class PositionVoteIn(BaseModel):
 
 
 async def _recompute_positions(topic_root_id):
-    """Full re-cluster: rebuild a topic's positions from its argument nodes."""
-    # read the topic's arguments straight from the materialized topic_root_id
-    # (atoms excluded) — no whole-graph load, no risk of a stray edge dragging in
-    # another topic's nodes
-    arg_nodes = await db.topic_argument_nodes(topic_root_id)
-    # dissented args are pinned: they never go through the LLM re-cluster, they
-    # are re-created as their own verbatim positions afterwards (п.10)
+    """Разложить по позициям доводы, которые ещё ни в одной не лежат.
+
+    Раньше это была полная пересборка: позиции темы стирались и собирались
+    заново с новыми ID. Карта мнений (2026-09-25) держит на ID позиций журнал
+    переходов людей, поэтому существующие позиции не трогаются: когда позиции
+    уже есть, каждый нераспределённый довод идёт через инкрементальное
+    приписывание; когда их нет совсем — одна группировка, как раньше.
+    Слияние и раскол — отдельные действия с событиями (opinion_db).
+    """
+    arg_nodes = [n for n in await db.topic_argument_nodes(topic_root_id)
+                 if not n.get("position_id")]
     free = [n for n in arg_nodes if not n.get("dissented")]
     pinned = [n for n in arg_nodes if n.get("dissented")]
-    await db.clear_positions(topic_root_id)
+    if free and await db.list_positions(topic_root_id):
+        for n in free:
+            await _assign_position_later(n["id"], n["text"])
+        free = []
     if free:
         clustered = await asyncio.to_thread(
             pools_mod.cluster_arguments,
@@ -2678,7 +2685,7 @@ async def dissent_position(node_id: int, author=Depends(verified_author)):
             hub.publish({"type": "position_compose_failed",
                          "position_id": old_pid, "error": str(e)})
     else:
-        await db.delete_position(old_pid)
+        await db.retire_position(old_pid)
     hub.publish({"type": "position_updated", "position_id": new_pid})
     hub.publish({"type": "position_updated", "position_id": old_pid})
     return await _position_payload(await db.get_position(new_pid))

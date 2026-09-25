@@ -72,6 +72,11 @@ fi
 #    решал, что ещё унести. authors, sessions и invites в списке нет.
 #    Посевные персоны удаляются отдельной строкой после.
 SQL="BEGIN;
+SET LOCAL noosphere.allow_wipe = 'on';
+TRUNCATE stance_log, exposures, node_joins, answer_acceptances, position_events,
+         current_stance, exposure_state, answer_state, position_leavers,
+         cause_counts, position_top, position_stats, position_stats_daily,
+         topic_settings, position_nodes;
 TRUNCATE position_reactions, position_links, positions, author_topic_poi,
          reactions, node_addenda, node_topics, edges, interventions,
          problem_scale, problems, topic_facets, topic_geo, topic_tags,
