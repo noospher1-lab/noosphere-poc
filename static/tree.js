@@ -1411,6 +1411,15 @@ async function selectNode(id) {
   };
   meta.appendChild(idLink);
   card.appendChild(meta);
+  // КАРТА МНЕНИЙ — отдельной кнопкой сразу под корнем (vault:
+  // decisions/2026-09-25-opinion-map). Раньше ссылка жила внизу, в карточке
+  // позиций под формой ответа, — Alex: «находится в недосягаемости».
+  if (isRoot) {
+    const mapBtn = el("a", "map-btn", "Карта мнений →");
+    mapBtn.href = `/opinion.html?root=${node.id}`;
+    mapBtn.appendChild(el("span", "map-btn-sub", "кто где стоит и кто передумал"));
+    card.appendChild(mapBtn);
+  }
   // на что опирается довод — у своего можно сменить (метка, не текст)
   if (!isRoot || node.kind !== "problem") {
     const vl = valueLine(node, !!(ME && node.author_id === ME.id));
@@ -1522,11 +1531,6 @@ async function selectNode(id) {
     const where = node.kind === "problem" ? "проблеме" : "обсуждению";
     const pc = el("div", "card");
     pc.appendChild(el("div", "section-title", "Позиции по " + where));
-    // карта мнений (vault: decisions/2026-09-25-opinion-map): где стоят люди,
-    // кто устоял перед возражениями и кто передумал
-    const mapLink = el("a", null, "Карта мнений: кто где стоит и кто передумал →");
-    mapLink.href = `/opinion.html?root=${root}`;
-    pc.appendChild(mapLink);
     appendHint(pc, "ИИ сводит близкие доводы в <b>позиции</b> — общую карту " +
       "мнений по " + where + ". Позицию можно поддержать, оспорить, развить или выйти из " +
       "неё в свою, если тебя свели не туда.");
