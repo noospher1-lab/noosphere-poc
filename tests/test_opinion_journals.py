@@ -294,6 +294,12 @@ def test_merge_and_split_are_not_persuasion():
                 "SELECT count(*) FROM current_stance WHERE unclarified")
         assert srcs.count("split") == 2 and unclar == 4
         assert (await _stats(b))["converted"] == 0
+        # перезапуск приложения не возвращает узлы в слитую/расколотую позицию
+        await db.init_db()
+        async with db._pool_or_raise().acquire() as conn:
+            assert await conn.fetchval(
+                "SELECT count(*) FROM position_nodes WHERE position_id = ANY($1::int[])",
+                [a, b]) == 0          # оба довода ушли: в b слиянием, из b — расколом
         await _assert_matches_replay(root)
     run(body)
 

@@ -255,13 +255,14 @@ def test_dissent_pins_argument_as_own_verbatim_position():
         await db.mark_dissented(arg)
         assert (await db.get_node(arg))["dissented"] is True
 
-        # a full re-cluster re-creates the pinned arg as its own verbatim position
-        # (no LLM: there are no free arguments to cluster)
+        # пересборка не стирает позиции (ID постоянны — карта мнений, 2026-09-25)
+        # и не сворачивает вынесенный довод обратно (нет свободных доводов — нет LLM)
         await main._recompute_positions(root)
-        positions = await db.list_positions(root)
-        assert len(positions) == 1
-        assert positions[0]["stance"] == "dissent"
-        assert positions[0]["composed"] == "мой аргумент дословно"
+        positions = {p["id"]: p for p in await db.list_positions(root)}
+        assert set(positions) == {pool, own}
+        assert (await db.get_node(arg))["position_id"] == own
+        assert positions[own]["stance"] == "dissent"
+        assert positions[own]["composed"] == "мой аргумент дословно"
         await db.close_pool()
     _run(go)
 

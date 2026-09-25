@@ -1659,6 +1659,7 @@ class RetractIn(BaseModel):
 
 class AddendumIn(BaseModel):
     text: str
+    kind: str = "note"                   # 'note' | 'error_ack' («признаю ошибку»)
 
 
 @app.delete("/api/nodes/{node_id}")
@@ -1691,8 +1692,10 @@ async def add_node_addendum(node_id: int, body: AddendumIn,
     text = body.text.strip()
     if not text:
         raise HTTPException(400, "пустое примечание")
+    if body.kind not in db.ADDENDUM_KINDS:
+        raise HTTPException(400, f"kind: {' | '.join(db.ADDENDUM_KINDS)}")
     try:
-        added = await db.add_addendum(node_id, author["id"], text)
+        added = await db.add_addendum(node_id, author["id"], text, kind=body.kind)
     except db.Locked as e:
         raise _locked_403(e)
     hub.publish({"type": "node_addendum", "node_id": node_id})
@@ -4059,6 +4062,235 @@ async def node_page(node_id: str, request: Request):
     )
     return HTMLResponse(page.replace(
         "<title>Noosphere — Дерево обсуждений</title>", meta, 1))
+
+
+# ------------------------------------------------------------ карта мнений
+# vault: decisions/2026-09-25-opinion-map. Позиция — где стоит человек; числа
+# только из журналов (app/opinion_db). Модель здесь не зовётся нигде, кроме
+# подсказки места в маршрутизаторе, — и та только предлагает.
+from . import opinion_db  # noqa: E402
+
+
+def _opinion_400(e):
+    return HTTPException(400, str(e))
+
+
+class StanceIn(BaseModel):
+    topic_root_id: int
+    position_id: int | None = None       # None — «без позиции»
+    cause_node_id: int | None = None     # довод, из-за которого переходит
+
+
+class ExposureIn(BaseModel):
+    node_id: int
+    response: str                        # shown | convinced | partial | not_convinced
+
+
+class NodeRefIn(BaseModel):
+    node_id: int
+
+
+class AcceptIn(BaseModel):
+    question_id: int
+    answer_id: int
+    action: str = "accept"               # accept | withdraw
+
+
+class MergeIn(BaseModel):
+    source_id: int
+    target_id: int
+
+
+class SplitPartIn(BaseModel):
+    headline: str
+    composed: str | None = None
+    node_ids: list[int] = []
+
+
+class SplitIn(BaseModel):
+    position_id: int
+    parts: list[SplitPartIn]
+
+
+class OpinionSettingsIn(BaseModel):
+    sort: str | None = None
+    blind_first_answer: bool | None = None
+    top_k: int | None = None
+    accept_share: float | None = None
+    min_positions: int | None = None
+
+
+@app.get("/api/opinion/topic/{topic_root_id}")
+async def opinion_topic(topic_root_id: int, request: Request, period: str = "30",
+                        sort: str | None = None, seed: int | None = None):
+    viewer = await optional_author(request)
+    try:
+        return await opinion_db.topic_view(topic_root_id, period, sort,
+                                           viewer["id"] if viewer else None, seed)
+    except opinion_db.OpinionError as e:
+        raise HTTPException(404 if "нет" in str(e) else 400, str(e))
+
+
+@app.get("/api/opinion/position/{position_id}")
+async def opinion_position(position_id: int, request: Request, period: str = "30",
+                           at: str | None = None):
+    viewer = await optional_author(request)
+    try:
+        pos = await db.get_position(position_id)
+        if pos is None:
+            raise HTTPException(404, "позиции нет")
+        # вчерашние и более ранние снимки дописываются при чтении — дёшево,
+        # если уже есть, и не требует отдельного крона
+        await opinion_db.ensure_daily(pos["topic_root_id"])
+        return await opinion_db.position_view(position_id, period, at,
+                                              viewer["id"] if viewer else None)
+    except opinion_db.OpinionError as e:
+        raise _opinion_400(e)
+
+
+@app.get("/api/opinion/me/{topic_root_id}")
+async def opinion_me(topic_root_id: int, author=Depends(current_author)):
+    return await opinion_db.my_view(topic_root_id, author["id"])
+
+
+@app.post("/api/opinion/stance")
+async def opinion_stance(body: StanceIn, author=Depends(verified_author)):
+    try:
+        res = await opinion_db.set_stance(author["id"], body.topic_root_id,
+                                          body.position_id, body.cause_node_id)
+    except opinion_db.OpinionError as e:
+        raise _opinion_400(e)
+    hub.publish({"type": "opinion_changed", "topic_root_id": body.topic_root_id})
+    return res
+
+
+@app.post("/api/opinion/exposure")
+async def opinion_exposure(body: ExposureIn, author=Depends(verified_author)):
+    try:
+        return await opinion_db.record_exposure(author["id"], body.node_id, body.response)
+    except opinion_db.OpinionError as e:
+        raise _opinion_400(e)
+
+
+@app.post("/api/opinion/undo")
+async def opinion_undo(body: NodeRefIn, author=Depends(verified_author)):
+    try:
+        return await opinion_db.undo_response(author["id"], body.node_id)
+    except opinion_db.OpinionError as e:
+        raise _opinion_400(e)
+
+
+@app.post("/api/opinion/join")
+async def opinion_join(body: NodeRefIn, author=Depends(verified_author)):
+    try:
+        return await opinion_db.join_node(author["id"], body.node_id)
+    except opinion_db.OpinionError as e:
+        raise _opinion_400(e)
+
+
+@app.post("/api/opinion/accept")
+async def opinion_accept(body: AcceptIn, author=Depends(verified_author)):
+    try:
+        return await opinion_db.accept_answer(author["id"], body.question_id,
+                                              body.answer_id, body.action)
+    except opinion_db.OpinionError as e:
+        raise _opinion_400(e)
+
+
+class RouteIn(BaseModel):
+    topic_root_id: int
+    text: str
+    action: str = "refute"               # support | qualify | refute | question
+    target_id: int | None = None         # на что отвечает; None — «моей позиции нет»
+
+
+@app.post("/api/opinion/route")
+async def opinion_route(body: RouteIn, author=Depends(verified_author)):
+    """Маршрутизатор ответа: ПРЕДЛАГАЕТ, ничего не публикует.
+
+    Сначала — почти такой же узел в этом обсуждении (эмбеддинги поверх языков):
+    «это уже сказано — присоединиться?». Иначе — место: к чему привязать, какой
+    тип, к какой позиции относится. Модель эмбеддингов не загружена — поиск по
+    буквам (точное совпадение), подсказка места — по цели ответа (fail-open).
+    """
+    from . import opinionmap as om
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(400, "пустой текст")
+    if body.action not in om.ACTION_EDGE:
+        raise HTTPException(400, "action: support | qualify | refute | question")
+    root = await db.get_node(body.topic_root_id)
+    if root is None or root.get("topic_root_id") != body.topic_root_id:
+        raise HTTPException(404, "обсуждения нет")
+    target = None
+    if body.target_id is not None:
+        target = await db.get_node(body.target_id)
+        if target is None or target.get("topic_root_id") != body.topic_root_id:
+            raise HTTPException(400, "цель ответа не в этом обсуждении")
+    qvec = await embed_mod.query_vector(text) if embed_mod.ENABLED else None
+    near = []
+    if qvec is not None:
+        near = [n for n in await db.semantic_nodes(
+                    qvec, embed_mod.MODEL, om.PLACE_SIM, 40,
+                    exclude_ids=[body.topic_root_id])
+                if n["topic_root_id"] == body.topic_root_id]
+    else:
+        near = [dict(n, sim=1.0) for n in await db.nodes_with_text(body.topic_root_id, text)]
+    dups = [n for n in near if n["sim"] >= om.DUP_SIM and n["id"] != body.target_id][:3]
+    async with db._pool_or_raise().acquire() as conn:
+        cards = await opinion_db._node_cards(conn, [n["id"] for n in near[:6]]
+                                             + ([target["id"]] if target else []))
+        joins = {r["node_id"]: r["n"] for r in await conn.fetch(
+            "SELECT node_id, count(*) AS n FROM node_joins WHERE node_id = ANY($1::int[]) "
+            "GROUP BY node_id", [n["id"] for n in dups])}
+        place_node = target["id"] if target else (
+            near[0]["id"] if near and body.action != "support" else None)
+        pos = None
+        for nid in ([place_node] if place_node else []) + [n["id"] for n in near[:3]]:
+            pos = await conn.fetchrow(
+                "SELECT p.id, p.headline AS title FROM position_nodes pn "
+                "JOIN positions p ON p.id = pn.position_id "
+                "WHERE pn.node_id = $1 AND pn.topic_root_id = $2 LIMIT 1",
+                nid, body.topic_root_id)
+            if pos:
+                break
+    edge = om.ACTION_EDGE[body.action]
+    return {
+        "embed": qvec is not None,
+        "duplicates": [{**cards[n["id"]], "sim": n["sim"], "joins": joins.get(n["id"], 0)}
+                       for n in dups],
+        "placement": {
+            "target": cards.get(place_node) if place_node else None,
+            "edge_type": edge, "edge_label": om.EDGE_WORD[edge],
+            "position": dict(pos) if pos else None,
+            "alternatives": [cards[n["id"]] for n in near[:4]
+                             if n["id"] != place_node and n["id"] in cards][:3],
+        },
+    }
+
+
+@app.post("/api/opinion/merge", dependencies=[Depends(admin_only)])
+async def opinion_merge(body: MergeIn):
+    try:
+        return await opinion_db.merge_positions(body.source_id, body.target_id)
+    except opinion_db.OpinionError as e:
+        raise _opinion_400(e)
+
+
+@app.post("/api/opinion/split", dependencies=[Depends(admin_only)])
+async def opinion_split(body: SplitIn):
+    try:
+        return await opinion_db.split_position(
+            body.position_id, [p.model_dump() for p in body.parts])
+    except opinion_db.OpinionError as e:
+        raise _opinion_400(e)
+
+
+@app.put("/api/opinion/settings/{topic_root_id}", dependencies=[Depends(admin_only)])
+async def opinion_settings(topic_root_id: int, body: OpinionSettingsIn):
+    if body.sort is not None and body.sort not in ("size", "movement", "random"):
+        raise HTTPException(400, "sort: size | movement | random")
+    return await opinion_db.set_settings(topic_root_id, **body.model_dump())
 
 
 if static_dir.exists():

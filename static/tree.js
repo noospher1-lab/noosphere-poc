@@ -1522,6 +1522,11 @@ async function selectNode(id) {
     const where = node.kind === "problem" ? "проблеме" : "обсуждению";
     const pc = el("div", "card");
     pc.appendChild(el("div", "section-title", "Позиции по " + where));
+    // карта мнений (vault: decisions/2026-09-25-opinion-map): где стоят люди,
+    // кто устоял перед возражениями и кто передумал
+    const mapLink = el("a", null, "Карта мнений: кто где стоит и кто передумал →");
+    mapLink.href = `/opinion.html?root=${root}`;
+    pc.appendChild(mapLink);
     appendHint(pc, "ИИ сводит близкие доводы в <b>позиции</b> — общую карту " +
       "мнений по " + where + ". Позицию можно поддержать, оспорить, развить или выйти из " +
       "неё в свою, если тебя свели не туда.");

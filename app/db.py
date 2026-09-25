@@ -3939,6 +3939,18 @@ async def semantic_nodes(qvec, model, floor, limit, exclude_ids=()):
     return scored[:limit]
 
 
+async def nodes_with_text(topic_root_id, text):
+    """Узлы обсуждения с тем же текстом (без учёта регистра и пробелов по
+    краям) — запасной поиск дубля, когда модель эмбеддингов не загружена."""
+    pool = _pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, text, kind, topic_root_id FROM nodes WHERE topic_root_id = $1 "
+            "AND id <> topic_root_id AND deleted_at IS NULL "
+            "AND lower(btrim(text)) = lower(btrim($2))", topic_root_id, text)
+    return [dict(r) for r in rows]
+
+
 async def suggest_problems(query, limit=5, exclude_id=None, qvec=None):
     """Соседние проблемы, похожие на черновик, — ПОДСКАЗКА при создании, не гейт и
     не слияние. Свободное создание остаётся: это лишь «может, вот эта уже есть?».

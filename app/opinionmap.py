@@ -43,6 +43,18 @@ RESPONSES = ("shown", "convinced", "partial", "not_convinced", "withdrawn")
 STOOD = ("not_convinced", "partial")
 
 OBJECTION_EDGES = ("refute", "undercut")
+
+# Маршрутизатор ответа. Выше DUP_SIM — «это уже сказано, присоединиться?»,
+# выше PLACE_SIM — кандидат в место для нового текста. DUP_SIM строже порога
+# проблем (embed.SIM_FLOOR = 0,6): там подсказка «похожая проблема», здесь —
+# предложение вообще не писать своё, и ложное срабатывание заставило бы человека
+# молчать. Значения сверены на живой модели — см. decisions/2026-09-25-opinion-map.
+DUP_SIM = 0.85
+PLACE_SIM = 0.5
+ACTION_EDGE = {"support": "support", "qualify": "qualify", "refute": "refute",
+               "question": "question"}
+EDGE_WORD = {"support": "за", "qualify": "уточнение", "refute": "против",
+             "question": "вопрос", "undercut": "подрыв"}
 CRUX_KINDS = ("question", "undercut")
 
 STATUSES = ("forming", "active", "empty", "merged", "split")
@@ -159,25 +171,14 @@ def replay(stance_rows, exposure_rows, members, objections, node_meta,
 
     undone = {r["undo_of"] for r in stance_rows
               if r["source"] == "undo" and r.get("undo_of")}
-    current, since = {}, {}
+    current = {}
     leavers = defaultdict(set)
     out_counts = defaultdict(lambda: defaultdict(int))
-    unclarified = set()
-    splits = sorted((e for e in events if e["kind"] == "split"),
-                    key=lambda e: e["created_at"])
-    timeline = sorted(
-        [("s", r["created_at"], r["id"], r) for r in stance_rows]
-        + [("e", e["created_at"], 0, e) for e in splits],
-        key=lambda t: (t[1], t[0] == "s", t[2]))
-    for tag, _, _, r in timeline:
-        if tag == "e":
-            p = r["position_id"]
-            for key, pid in current.items():
-                if pid == p:
-                    unclarified.add(key)
-            continue
+    # Порядок — по id, а не по времени: строки пишутся под замком обсуждения,
+    # и id монотонен в порядке применения. created_at берётся в начале
+    # транзакции и у двух одновременных записей может идти наоборот.
+    for r in sorted(stance_rows, key=lambda r: r["id"]):
         key = (r["user_id"], r["topic_root_id"])
-        unclarified.discard(key)
         if r["to_position_id"] is None:
             current.pop(key, None)
         else:
@@ -187,6 +188,10 @@ def replay(stance_rows, exposure_rows, members, objections, node_meta,
             leavers[r["from_position_id"]].add(r["user_id"])
             if r.get("cause_node_id"):
                 out_counts[r["from_position_id"]][r["cause_node_id"]] += 1
+    # «Не уточнил»: стоит в расколотой позиции. Войти в расколотую нельзя —
+    # там остаются только те, кто был в ней в момент раскола и ещё не выбрал.
+    split_pids = {e["position_id"] for e in events if e["kind"] == "split"}
+    unclarified = {key for key, pid in current.items() if pid in split_pids}
 
     state = {}
     for e in sorted(exposure_rows, key=lambda r: r["id"]):
