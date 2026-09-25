@@ -770,7 +770,12 @@ function concedeBadge(quote) {
 }
 
 // ---- tree render
-function relLabel(type) {
+// Под ВОПРОСОМ «за» и «против» читались как согласие с самим вопросом (Alex
+// 25.09, скрин посева о войне). У вопроса нет утверждения — ответ на него «да»
+// или «нет». Тип связи в базе тот же (support / refute), меняется только слово.
+const ANSWER_WORD = { support: "да", refute: "нет" };
+function relLabel(type, parentKind) {
+  if (parentKind === "question" && ANSWER_WORD[type]) return ANSWER_WORD[type];
   return { support: "за", refute: "против", qualify: "уточнение", restate: "пересказ", question: "вопрос",
            proposal: "предложение", exploration: "разбор", atom: "атом",
            root: "обсуждение",
@@ -816,7 +821,7 @@ function shortLabel(text, safetyMax = 320) {
   if (s.length > safetyMax) s = s.slice(0, safetyMax - 1).trimEnd() + "…";
   return s;
 }
-function nodeRow(node, type) {
+function nodeRow(node, type, parentKind) {
   const row = el("div", "row" + (node.id === selectedId ? " sel" : ""));
   row.dataset.id = node.id;
   const hasKids = (node.reply_count ?? 0) > 0;
@@ -831,7 +836,7 @@ function nodeRow(node, type) {
   row.appendChild(type === "root"
     ? el("span", "rel " + (node.kind || "argument"),
          KIND_RU[node.kind] || "обсуждение")
-    : el("span", "rel " + type, relLabel(type)));
+    : el("span", "rel " + type, relLabel(type, parentKind)));
   // уступка — второе действие того же ответа: «против», но часть признаёт
   if (type !== "root" && node.concedes) row.appendChild(concedeBadge(node.concede_quote));
   // a topic root shows its own short title; replies fall back to a text excerpt
@@ -930,15 +935,15 @@ function nodeRow(node, type) {
   row.onclick = () => selectNode(node.id);
   return row;
 }
-function renderSubtree(container, node, type) {
-  container.appendChild(nodeRow(node, type));
+function renderSubtree(container, node, type, parentKind) {
+  container.appendChild(nodeRow(node, type, parentKind));
   if (!expanded.has(node.id)) return;
   const page = KIDS.get(node.id);
   const box = el("div", "children");
   if (!page) {
     box.appendChild(el("div", "row muted", "загрузка…"));
   } else {
-    for (const c of page.children) renderSubtree(box, c, c.rel);
+    for (const c of page.children) renderSubtree(box, c, c.rel, node.kind);
     const left = page.total - page.children.length;
     if (left > 0) {
       const moreRow = el("div", "row muted", `▸ ещё ${left}…`);
@@ -973,6 +978,7 @@ function renderTree() {
       el("span", "rel support", "за"),
       el("span", "rel refute", "против"),
       el("span", "rel qualify", "уточнение"),
+      el("span", "legend-key", "(под вопросом: да / нет)"),
       el("span", "rel restate", "пересказ"),
       el("span", "rel question", "вопрос"),
       el("span", "rel proposal", "предложение"),
@@ -1521,7 +1527,7 @@ async function selectNode(id) {
     d.appendChild(positionMembershipCard(node));
 
   // reply form
-  d.appendChild(replyForm(id));
+  d.appendChild(replyForm(id, node.kind));
 
   // positions (only for the discussion root)
   if (isRoot) {
@@ -2915,11 +2921,14 @@ function attributionForm(interventionId, mount) {
   ta.focus();
 }
 
-function replyForm(parentId) {
+function replyForm(parentId, parentKind) {
   const card = el("div", "card");
   card.appendChild(el("div", "section-title", "Ответить"));
-  appendHint(card, "Выбери, как твой довод относится к этому доводу " +
-    "(за / против / уточнение / вопрос / предложение / разбор), и напиши его. " +
+  appendHint(card, (parentKind === "question"
+      ? "Выбери, как отвечаешь на этот вопрос (да / нет / уточнение / вопрос / " +
+        "предложение / разбор), и напиши ответ. "
+      : "Выбери, как твой довод относится к этому доводу " +
+        "(за / против / уточнение / вопрос / предложение / разбор), и напиши его. ") +
     "Перед отправкой " +
     "ИИ-компаньон разберёт черновик — с ним можно спорить и переспрашивать. " +
     "<b>После публикации текст изменить нельзя</b>: на нём строят ответы.");
@@ -2938,7 +2947,9 @@ function replyForm(parentId) {
   // Слово выбрано Alex 10.09 вместо «подрыв»: тот был калькой с undercut и
   // по-русски читался как диверсия. Здесь спорят не с выводом, а с опорой:
   // вывод может быть верен, но ЭТОТ кусок его не доказывает.
-  for (const [v, l] of [["support", "за"], ["refute", "против"], ["qualify", "уточнение"],
+  const toQuestion = parentKind === "question";
+  for (const [v, l] of [["support", toQuestion ? "да" : "за"], ["refute", toQuestion ? "нет" : "против"],
+                        ["qualify", "уточнение"],
                         ["restate", "пересказ"],
                         ["undercut", "не доказывает этот участок"], ["question", "вопрос"],
                         ["proposal", "предложение"], ["exploration", "разбор"]])

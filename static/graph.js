@@ -19,6 +19,11 @@
     restate: "пересказ",
     question: "вопрос", proposal: "предложение", exploration: "разбор", atom: "атом",
   };
+  // под вопросом ответ — «да / нет», а не «за / против» (как в дереве, 25.09)
+  const ANSWER_WORD = { support: "да", refute: "нет" };
+  const KIND_BY_ID = new Map();
+  const relWord = (n) => (KIND_BY_ID.get(n.parent) === "question" && ANSWER_WORD[n.rel])
+    || REL_WORD[n.rel] || n.rel || "";
   const KIND_WORD = {
     problem: "проблема", question: "вопрос", proposal: "предложение",
     exploration: "разбор", argument: "тезис", atom: "атом разбора",
@@ -305,7 +310,7 @@
     let tx = 12;
     const tag = (label, c) => { text(g, tx, 18, label, "tag " + c); tx += width(label, FONT_SMALL) + 10; };
     if (n.parent == null) tag(KIND_WORD[n.kind] || "обсуждение", "kind");
-    else tag(REL_WORD[n.rel] || n.rel || "", "rel-" + (n.rel || "none"));
+    else tag(relWord(n), "rel-" + (n.rel || "none"));
     if (fill) tag(FILL_ORDER.find(([k]) => k === fill)[1], "flag-" + fill);
     if (n.flags.concedes && tx < T.cw - 60) tag("признаёт", "flag-concede");
     if (n.retracted && tx < T.cw - 60) tag("отозвано", "dim");
@@ -329,6 +334,7 @@
     setLegend("topic");
     const list = data.nodes || [];
     const byId = new Map(list.map((n) => [n.id, { ...n, kids: [] }]));
+    for (const n of list) KIND_BY_ID.set(n.id, n.kind);
     let root = null;
     for (const n of list) {                          // порядок сервера = по времени
       const me = byId.get(n.id);
@@ -414,7 +420,7 @@
       return e;
     };
     add("div", "eyebrow", n.parent == null ? (KIND_WORD[n.kind] || "обсуждение")
-        : (REL_WORD[n.rel] || n.rel) + " · " + (KIND_WORD[n.kind] || "тезис"));
+        : relWord(n) + " · " + (KIND_WORD[n.kind] || "тезис"));
     add("div", "ptext", n.text);
     const meta = add("div", "pmeta");
     meta.append("автор: " + (n.author || "—"));
