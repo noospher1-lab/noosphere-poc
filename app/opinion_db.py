@@ -1158,12 +1158,19 @@ async def topic_view(topic, period="30", sort=None, viewer_id=None, seed=None):
             positions.sort(key=lambda p: (-p.get("in_now", 0), p["id"]))
         cruxes = await _cruxes(conn, topic, None, limit=8, share=cfg["accept_share"],
                                titles=titles) if see else []
+        # Складывающиеся позиции видны всегда: иначе встать в них не из чего, и
+        # позиция никогда не наберёт первых людей (холодный старт замкнулся бы).
+        forming_list = [
+            {"id": pid, "title": t["title"], "in_now": stats.get(pid, {}).get("in_now", 0),
+             "mine": pid == mine}
+            for pid, t in sorted(titles.items()) if t["status"] in ("forming", "empty")]
     return {"topic": {"id": topic, "title": root["title"] or root["text"][:80],
                       "kind": root["kind"]},
             "period": period, "sort": sort, "cold_start": cold,
             "active_positions": active, "forming_positions": forming,
             "min_positions": cfg["min_positions"], "blind": not see,
             "my_position": mine, "positions": positions, "cruxes": cruxes,
+            "forming": forming_list, "min_supporters": om.MIN_SUPPORTERS,
             "caption": CAPTION}
 
 

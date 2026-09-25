@@ -85,6 +85,8 @@ def test_cold_start_then_map(world):
     r = c.get(f"/api/opinion/topic/{root}").json()
     assert r["cold_start"] is True and r["positions"] == []
     assert r["forming_positions"] == 3
+    # складывающиеся позиции видны, иначе встать в них не из чего
+    assert [f["id"] for f in r["forming"]] == pids and r["min_supporters"] == 3
     assert "аккаунты, а не проверенные люди" in r["caption"]
     # по трое в каждой позиции — все три выходят на карту, холодный старт кончается
     moves = []

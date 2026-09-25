@@ -530,12 +530,15 @@ function drawTopic(d) {
   const head = `<div class="crumbs"><a href="/n/${t.id}">Дерево обсуждения</a><span class="sep">›</span><span>карта мнений</span></div>
     <h1>${esc(t.title)}</h1>`;
   if (d.cold_start) {
-    main.innerHTML = head + `<p class="note">Позиции ещё складываются: на карте ${fmt(d.active_positions)} из ${fmt(d.min_positions)} нужных,
-      ещё ${fmt(d.forming_positions)} собирают людей. Пока главное здесь — <a href="/n/${t.id}">дерево обсуждения</a>.</p>
+    main.innerHTML = head + `<p class="note">Позиции ещё складываются: на карте ${fmt(d.active_positions)} из ${fmt(d.min_positions)} нужных.
+      Позиция выходит на карту, когда в ней встанут ${fmt(d.min_supporters)} человека. Пока главное здесь — <a href="/n/${t.id}">дерево обсуждения</a>.</p>
       ${d.positions.length ? `<div class="plist" id="plist"></div>` : ""}
+      ${formingList(d)}
       <div class="btns"><button type="button" class="btn" id="no-pos">Моей позиции здесь нет</button></div>
+      ${d.cruxes.length ? `<section class="card" style="margin-top:18px"><h2>Открытые вопросы и подрывы</h2><div id="tcruxes" style="margin-top:10px"></div></section>` : ""}
       <p class="caption">${esc(d.caption)}</p>`;
     if (d.positions.length) drawPositionCards(d);
+    if (d.cruxes.length) drawCruxes(d, "#tcruxes", t.id);
     $("#no-pos").onclick = () => composer({ topic: t.id, target: null });
     return;
   }
@@ -565,6 +568,16 @@ function drawTopic(d) {
   $("#no-pos").onclick = () => composer({ topic: t.id, target: null });
   drawPositionCards(d);
   drawCruxes(d, "#tcruxes", t.id);
+}
+
+function formingList(d) {
+  if (!d.forming || !d.forming.length) return "";
+  return `<section class="card" style="margin-top:16px" aria-labelledby="fm-h"><h2 id="fm-h">Складываются</h2>
+    <p class="sub" style="margin-top:4px">Откройте позицию, прочитайте её доводы и возражения — и встаньте в неё, если она ваша.</p>
+    ${d.forming.map((f) => `<div class="item"><div class="head"><a class="title" href="position.html?id=${f.id}">${esc(f.title)}</a>
+      ${f.mine ? `<span class="tag ok">вы здесь</span>` : ""}</div>
+      <div class="stat">в позиции ${fmt(f.in_now)} из ${fmt(d.min_supporters)} нужных для карты</div></div>`).join("")}
+  </section>`;
 }
 
 function drawPositionCards(d) {
