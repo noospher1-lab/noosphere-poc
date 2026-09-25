@@ -299,12 +299,13 @@
     return null;
   }
 
-  function nodeCard(parent, n, x, y, w = T.cw) {
+  function nodeCard(parent, n, x, y, w = T.cw, opt = {}) {
+    const h = opt.h || T.ch;
     const fill = fillOf(n);
     const cls = ["ncard", fill ? "hl-" + fill : "", n.flags.concedes ? "concede" : "",
                  n.retracted ? "retracted" : "", n.parent == null ? "root" : ""].join(" ");
     const g = svgEl("g", { class: cls, transform: `translate(${x},${y})` }, parent);
-    svgEl("rect", { width: w, height: T.ch, rx: 7, class: "nbox" }, g);
+    svgEl("rect", { width: w, height: h, rx: 7, class: "nbox" + (opt.focus ? " focus" : "") }, g);
     // верхняя строка: вид связи (или вид корня) и отметки словами — цвет не
     // единственный носитель смысла
     let tx = 12;
@@ -318,11 +319,12 @@
       const s = "PoI " + Math.round(n.poi_score);
       text(g, w - 12 - width(s, FONT_SMALL), 18, s, "poi");
     }
-    wrap(n.label, n.parent == null ? FONT_TITLE : FONT_LABEL, w - 24, 2)
-      .forEach((line, i) => text(g, 12, 38 + i * 17, line, n.parent == null ? "ptitle" : "nlabel"));
+    const big = opt.focus || n.parent == null;
+    wrap(opt.focus ? n.text : n.label, big ? FONT_TITLE : FONT_LABEL, w - 24, opt.lines || 2)
+      .forEach((line, i) => text(g, 12, 38 + i * 17, line, big ? "ptitle" : "nlabel"));
     const t = svgEl("title", {}, g);
     t.textContent = n.text;
-    onActivate(g, () => selectNode(n.id));
+    onActivate(g, opt.onClick || (() => selectNode(n.id)));
     cardEls.set(n.id, g);
   }
 
@@ -342,73 +344,102 @@
       else if (byId.has(n.parent)) byId.get(n.parent).kids.push(me);
     }
     if (!root) { message("Ветка пуста."); return; }
-    // ДОСКА (Alex 25.09: «не видно всего» — в одну строку 13 вопросов при
-    // «вписать» превращались в нечитаемую полоску). Проблема наверху; её прямые
-    // ответы — колонками, сколько влезает по ширине экрана, дальше новый ряд;
-    // под каждым — его ветка стопкой со сдвигом по глубине, как в дереве.
-    // Растёт вниз, листается вниз, текст в натуральную величину.
-    const r = svg.getBoundingClientRect();
-    const COL = 260, GAP = 22, STEP = T.ch + 10, INDENT = 18, TRUNK = 16;
-    const kids1 = root.kids;
-    const cols = Math.max(1, Math.min(kids1.length || 1,
-      Math.floor((r.width - 56 - TRUNK + GAP) / (COL + GAP))));
-    const boardW = cols * (COL + GAP) - GAP;
-    const rootW = Math.min(boardW, 2 * COL);
-    root.x = TRUNK + (boardW - rootW) / 2; root.y = 0; root.w = rootW;
-    const colTops = [];
-    let rowTop = T.ch + 44, maxDepth = 0;
-    for (let i = 0; i < kids1.length; i += cols) {
-      let rowH = 0;
-      kids1.slice(i, i + cols).forEach((top, j) => {
-        const cx = TRUNK + j * (COL + GAP);
-        let yy = rowTop;
-        const stack = (n, d) => {
-          n.x = cx + d * INDENT; n.y = yy; n.w = Math.max(150, COL - d * INDENT);
-          maxDepth = Math.max(maxDepth, d);
-          yy += STEP;
-          n.kids.forEach((k) => stack(k, d + 1));
-        };
-        stack(top, 0);
-        colTops.push({ n: top, row: rowTop });
-        rowH = Math.max(rowH, yy - rowTop);
-      });
-      rowTop += rowH + 40;
+    // ФОКУС (Alex 25.09: «а если на каждый ответ ещё по 5 ответов — и так
+    // далее»). Показать всё нельзя: по 5 ответов на уровень — это 780 карточек
+    // на четвёртом уровне. Поэтому граф показывает ОДНО место в споре: сверху
+    // путь от корня (кликабелен), под ним текущая карточка, под ней её прямые
+    // ответы колонками, а под каждым ответом — сводка его поддерева. Клик по
+    // ответу делает его текущим; «назад» в браузере — на уровень вверх.
+    const q = new URLSearchParams(location.search);
+    const want = Number(q.get("node"));
+    let focus = byId.get(Number(q.get("focus"))) || root;
+    if (!q.get("focus") && want && byId.has(want)) {
+      const w = byId.get(want);
+      focus = w.kids.length ? w : (byId.get(w.parent) || root);
     }
+    const path = [];
+    for (let n = focus; n; n = n.parent != null ? byId.get(n.parent) : null) path.unshift(n);
+
+    const r = svg.getBoundingClientRect();
+    const COL = 260, GAP = 22, CHIP = 30, SUM = 44, ROW = T.ch + 8 + SUM + 40, FOCUS_H = 108;
+    const kids = focus.kids;
+    const cols = Math.max(1, Math.min(kids.length || 1,
+      Math.floor((r.width - 56 + GAP) / (COL + GAP))));
+    const boardW = Math.max(cols * (COL + GAP) - GAP, Math.min(r.width - 56, 2 * COL + GAP));
 
     const edges = svgEl("g", { class: "edges" }, scene);
     const cards = svgEl("g", {}, scene);
     const line = (d, cls) => svgEl("path", { d, class: "edge " + cls }, edges);
-    // от проблемы: вниз, влево к стволу; ствол идёт по левому краю до каждого
-    // ряда, по ряду — шина, от шины вниз к каждой колонке
-    const rootCx = root.x + rootW / 2, bus0 = T.ch + 22;
-    if (colTops.length) {
-      const lastBus = colTops[colTops.length - 1].row - 22;
-      line(`M${rootCx},${T.ch} V${bus0} H4 V${lastBus}`, "rel-none");
-      const rows = [...new Set(colTops.map((c) => c.row))];
-      for (const rt of rows) {
-        const inRow = colTops.filter((c) => c.row === rt);
-        const last = inRow[inRow.length - 1].n;
-        line(`M4,${rt - 22} H${last.x + COL / 2}`, "rel-none");
-        for (const c of inRow)
-          line(`M${c.n.x + COL / 2},${rt - 22} V${rt}`,
-               "rel-" + (c.n.rel || "none") + (c.n.retracted ? " retracted" : ""));
-      }
+    let y = 0;
+    // путь: предки текущей карточки одной строкой каждый, по клику — туда
+    path.slice(0, -1).forEach((a, i) => {
+      const x = i * 14, w = boardW - x;
+      const g = svgEl("g", { class: "ncard chip", transform: `translate(${x},${y})` }, cards);
+      svgEl("rect", { width: w, height: CHIP, rx: 6, class: "nbox" }, g);
+      const head = a.parent == null ? (KIND_WORD[a.kind] || "обсуждение") : relWord(a);
+      text(g, 10, 20, "↑ " + head, a.parent == null ? "tag kind" : "tag rel-" + (a.rel || "none"));
+      wrap(a.label, FONT_LABEL, w - 30 - width("↑ " + head, FONT_SMALL), 1)
+        .forEach((l) => text(g, 22 + width("↑ " + head, FONT_SMALL), 20, l, "nlabel"));
+      onActivate(g, () => setFocus(a.id));
+      y += CHIP + 6;
+    });
+    // текущая карточка — крупно, до четырёх строк полного текста
+    const fw = Math.min(boardW, 2 * COL + GAP), fx = (boardW - fw) / 2;
+    nodeCard(cards, focus, fx, y, fw, { h: FOCUS_H, lines: 4, focus: true });
+    const fBottom = y + FOCUS_H;
+    y = fBottom + 44;
+    if (!kids.length) {
+      text(cards, fx + 4, y, "Ответов пока нет — ответь первым (карточка → панель → «в дереве»).", "dim");
+      y += 24;
     }
-    // внутри колонки: ствол родителя по его левому краю, к ответу — вправо
-    const walk = (n) => {
-      for (const k of n.kids) {
-        if (n !== root)
-          line(`M${n.x + 9},${n.y + T.ch} V${k.y + T.ch / 2} H${k.x}`,
-               "rel-" + (k.rel || "none") + (k.retracted ? " retracted" : ""));
-        walk(k);
+    // ответы колонками; под каждым — сводка его поддерева
+    const summary = (k, x, yy) => {
+      const g = svgEl("g", { class: "ncard summary" + (k.kids.length ? "" : " empty"),
+                             transform: `translate(${x},${yy})` }, cards);
+      svgEl("rect", { width: COL, height: SUM, rx: 6, class: "nbox" }, g);
+      if (!k.kids.length) { text(g, 10, 27, "ответов нет", "sum-dim"); return; }
+      const byRel = new Map();
+      for (const c of k.kids) {
+        const w = relWord(c) || "ответ";
+        byRel.set(w, (byRel.get(w) || 0) + 1);
       }
-      nodeCard(cards, n, n.x, n.y, n.w);
+      let deep = 0, unans = 0, open = 0;
+      const count = (n) => n.kids.forEach((c) => {
+        deep++; if (c.flags.unanswered) unans++; if (c.flags.open) open++; count(c); });
+      count(k);
+      const n = k.kids.length;
+      text(g, 10, 18, `▸ ${n} ${n === 1 ? "ответ" : n < 5 ? "ответа" : "ответов"}: ` +
+        [...byRel].map(([w, c]) => `${w} ${c}`).join(" · "), "sum");
+      const tail = [deep > n ? `всего в ветке ${deep}` : "",
+                    unans ? `без ответа ${unans}` : "", open ? `открытых вопросов ${open}` : ""]
+        .filter(Boolean).join(" · ");
+      if (tail) text(g, 10, 35, tail, unans || open ? "sum-alert" : "sum-dim");
+      onActivate(g, () => setFocus(k.id));
     };
-    walk(root);
-    content = { w: TRUNK + boardW, h: rowTop - 40 };
+    const bus = fBottom + 22, rows = Math.ceil(kids.length / cols);
+    kids.forEach((k, i) => {
+      const row = Math.floor(i / cols), x = (i % cols) * (COL + GAP), yy = y + row * ROW;
+      nodeCard(cards, k, x, yy, COL, { onClick: () => { setFocus(k.id); } });
+      summary(k, x, yy + T.ch + 8);
+      const cx = x + COL / 2, rbus = row === 0 ? bus : yy - 20;
+      line(`M${cx},${rbus} V${yy}`, "rel-" + (k.rel || "none") + (k.retracted ? " retracted" : ""));
+    });
+    if (kids.length) {
+      // от текущей карточки вниз к шине; к следующим рядам — по левому краю
+      line(`M${fx + fw / 2},${fBottom} V${bus}`, "rel-none");
+      for (let row = 0; row < rows; row++) {
+        const inRow = kids.slice(row * cols, row * cols + cols).length;
+        const rb = row === 0 ? bus : y + row * ROW - 20;
+        const lastCx = (inRow - 1) * (COL + GAP) + COL / 2;
+        line(`M${Math.min(COL / 2, fx + fw / 2)},${rb} H${Math.max(lastCx, fx + fw / 2)}`, "rel-none");
+        if (row > 0) line(`M-10,${bus} V${rb} H${COL / 2}`, "rel-none");
+      }
+      if (rows > 1) line(`M${COL / 2},${bus} H-10`, "rel-none");
+    }
+    content = { w: boardW, h: y + rows * ROW };
+    setFocusCrumb(path);
     lastStart = startBoard;
     lastStart();
-    const want = Number(new URLSearchParams(location.search).get("node"));
     if (want && byId.has(want)) selectNode(want, { center: true });
   }
 
@@ -553,6 +584,22 @@
     } catch (e) {
       message("Не загрузилось: " + e.message);
     }
+  }
+  function setFocus(id) {
+    const q = new URLSearchParams(location.search);
+    q.set("focus", id);
+    q.delete("node");
+    history.pushState(null, "", "/graph.html?" + q);
+    if (topicData) renderTopic(topicData);
+  }
+  function setFocusCrumb(path) {
+    const el = $("#crumbs .depth");
+    if (el) el.remove();
+    if (path.length < 2) return;
+    const s = document.createElement("span");
+    s.className = "depth";
+    s.textContent = ` · уровень ${path.length - 1}`;
+    $("#crumbs").appendChild(s);
   }
   function go(params) {
     const q = new URLSearchParams();

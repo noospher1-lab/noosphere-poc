@@ -82,6 +82,14 @@
   .pcard:focus-visible .pbox, .ncard:focus-visible .nbox { stroke: var(--ivory); stroke-width: 2; }
 
   .nbox { fill: var(--panel); stroke: var(--line2); stroke-width: 1.2; }
+  /* режим «фокус»: текущая карточка, путь наверх и сводки поддеревьев */
+  .nbox.focus { fill: var(--panel2); stroke: var(--bronze); stroke-width: 1.6; }
+  .ncard.chip .nbox { fill: transparent; stroke-dasharray: 3 3; }
+  .ncard.summary .nbox { fill: transparent; stroke: var(--line); }
+  .ncard.summary.empty { cursor: default; }
+  .sum { fill: var(--ivory); font-size: 12px; }
+  .sum-alert { fill: var(--red); font-size: 12px; }
+  .sum-dim { fill: var(--dim2); font-size: 12px; }
   .ncard.root .nbox { fill: var(--panel2); stroke: var(--bronze); }
   /* подсветка: у каждой отметки свой цвет и своя заливка */
   .ncard.hl-unanswered .nbox { fill: rgba(236,107,102,.15); stroke: var(--red); }
