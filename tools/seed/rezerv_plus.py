@@ -10,7 +10,9 @@
 вынесено вопросами «кто может подтвердить», а не фактами.
 
 Правила — как у первого посева (vault: decisions/seed-problems-first-echelon):
-ни одного числа PoI, посевные персоны без входа. Отличия, согласованные 25.09:
+ни одного числа PoI. Отличия, согласованные 25.09:
+  - автор всего посева — служебный аккаунт «Claude (ИИ)», а не
+    выдуманные люди (Alex: «имена, кто это писал. в этом проблема»);
   - ДОБАВЛЯЕТ, а не стирает базу; повторный запуск ничего не задваивает
     (проблема с тем же названием уже есть — пропуск);
   - людей в позициях нет: позиции «складываются», пока не придут живые (никакой
@@ -34,8 +36,16 @@ from app import db, opinion_db, taxonomy  # noqa: E402
 RETRIEVED = datetime(2026, 9, 25, tzinfo=timezone.utc)
 DEFAULT_URL = "postgresql://noosphere@127.0.0.1:5433/noosphere_studio"
 
-PEOPLE = [("Оксана", "#e0b878"), ("Тарас", "#66b0ea"), ("Ирина", "#bf98ff"),
-          ("Андрей", "#5fd18f"), ("Мирослава", "#ec6b66"), ("Павел", "#9aa0b0")]
+# Автор посева — ОДИН служебный аккаунт с честным именем, а не выдуманные люди.
+# Alex 25.09, глядя на дерево: «имена, кто это писал. в этом проблема». Тема
+# реальная и для реальных людей: «Оксана» или «Тарас» под доводом читаются как
+# живые участники, которых нет. Alex следом: «это должно выглядеть для людей,
+# что всё было создано командой сайта или ллм», затем выбрал: «лучше ллм»,
+# «клод». Автор — Claude, с пометкой «ИИ», чтобы не читался как человек по
+# имени Клод; собрано по источникам (ссылка у каждого текста). Служебный — значит без PoI и без ИИ
+# (decisions/service-account); позиции ставятся посевом напрямую.
+SOURCE_AUTHOR = ("Claude (ИИ)", "#9aa0b0")
+N_VOICES = 6        # author_idx в данных ниже — от старых персон; все ведут сюда
 
 # ---------------------------------------------------------------- мир
 WORLD = {
@@ -734,15 +744,15 @@ async def run(url):
     await db.init_pool()
     await db.init_db()
     pool = db._pool_or_raise()
-    ids = []
+    name, color = SOURCE_AUTHOR
     async with pool.acquire() as conn:
-        for name, color in PEOPLE:
-            aid = await conn.fetchval(
-                "SELECT id FROM authors WHERE name = $1 AND username IS NULL "
-                "AND NOT is_service ORDER BY id LIMIT 1", name)
-            ids.append(aid)
-    ids = [aid or await db.add_author(name, color)
-           for aid, (name, color) in zip(ids, PEOPLE)]
+        aid = await conn.fetchval(
+            "SELECT id FROM authors WHERE name = $1 AND is_service ORDER BY id LIMIT 1", name)
+    if aid is None:
+        aid = await db.add_author(name, color)
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE authors SET is_service = TRUE WHERE id = $1", aid)
+    ids = [aid] * N_VOICES
     world, _ = await seed_problem(WORLD, ids)
     eu, new_eu = await seed_problem(EU, ids)
     if new_eu:
