@@ -1156,7 +1156,7 @@ async def topic_view(topic, period="30", sort=None, viewer_id=None, seed=None):
             positions.sort(key=lambda p: (-abs(p.get("delta", 0)), p["id"]))
         elif see:
             positions.sort(key=lambda p: (-p.get("in_now", 0), p["id"]))
-        cruxes = await _cruxes(conn, topic, None, limit=8, share=cfg["accept_share"],
+        cruxes = await _cruxes(conn, topic, None, limit=60, share=cfg["accept_share"],
                                titles=titles) if see else []
         # Р-2 (Alex 25.09): доводы, которые ИИ ещё не разложил по позициям
         # (модель была недоступна). Механика прежняя — экран говорит честно.

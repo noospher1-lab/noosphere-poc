@@ -7,14 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/tokens.css" />
 <style>
-  :root {
-    --bg:#0e1016; --panel:#161922; --panel2:#1d212c; --line:#272c39; --line2:#333a49;
-    --ivory:#edeef2; --dim:#9aa0b0; --dim2:#828a9c; --bronze:#e0b878; --green:#5fd18f;
-    --red:#ec6b66; --blue:#66b0ea;
-    --sans:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
-    --mono:'JetBrains Mono',ui-monospace,'SFMono-Regular',Menlo,monospace;
-  }
   * { box-sizing:border-box; }
   html,body { margin:0; background:var(--bg); color:var(--ivory);
     font-family:var(--sans); font-size:15px; line-height:1.5;
@@ -42,7 +36,7 @@
     padding:16px 18px; margin:13px 0; }
   .acc-row { display:flex; align-items:center; gap:10px; margin-top:12px; }
   .acc-label { color:var(--dim2); font-size:12.5px; min-width:52px; }
-  .acc-tag { font-size:11.5px; padding:1px 8px; border-radius:99px;
+  .acc-tag { font-size: 12px; padding:1px 8px; border-radius:99px;
     border:1px solid var(--line2); color:var(--dim); }
   .acc-tag.ok { color:var(--green); border-color:var(--green); }
   .acc-tag.no { color:var(--orange); border-color:var(--orange); }
@@ -66,7 +60,7 @@
     font-weight:600; }
   .hidden { display:none; }
   .section-title { color:var(--dim2); letter-spacing:.06em; text-transform:uppercase;
-    font-size:10.5px; font-weight:600; margin-bottom:11px; }
+    font-size: 12px; font-weight:600; margin-bottom:11px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; }
   .stat .v { font-family:var(--mono); font-size:21px; font-weight:600; }
   .stat .k { color:var(--dim2); font-size:12px; margin-top:2px; }
@@ -117,11 +111,11 @@
   .act:first-child { border-top:0; }
   .act .disc { font-weight:600; line-height:1.4; }
   .act .disc a { color:var(--ivory); }
-  .act .badge { font-size:11px; padding:1px 8px; border-radius:99px;
+  .act .badge { font-size: 12px; padding:1px 8px; border-radius:99px;
     border:1px solid var(--line2); color:var(--dim2); margin-left:8px; font-weight:500; }
   .act .badge.made { color:var(--bronze); border-color:var(--bronze); }
   .act .item { margin-top:7px; padding-left:10px; border-left:2px solid var(--line2); }
-  .act .item .rel { font-size:11.5px; color:var(--dim2); font-family:var(--mono); }
+  .act .item .rel { font-size: 12px; color:var(--dim2); font-family:var(--mono); }
   .act .item .t { color:var(--dim); line-height:1.5; margin-top:2px; }
 </style>
 </head>
@@ -431,7 +425,7 @@ async function load() {
       "К аккаунту привязан свой ключ ИИ — расход идёт по нему, без лимита счёта.";
   } else if ((acc.left_usd || 0) <= 0 && granted > 0) {
     $("#balanceNote").textContent =
-      "Счёт израсходован. Читать и голосовать можно по-прежнему; для действий с ИИ нужно пополнение.";
+      "Счёт израсходован. Читать можно по-прежнему; для публикации и действий с ИИ нужно пополнение.";
   } else {
     $("#balanceNote").textContent =
       "Счёт тратится на оценку текстов, диалог PoI, поиск и переводы.";
@@ -503,7 +497,9 @@ async function loadPoints(myId) {
   try {
     const r = await fetch("/api/points/me");
     if (!r.ok) { $("#pointsCard").classList.add("hidden"); return; }
-    renderPoints(await r.json());
+    const pts = await r.json();
+    if (pts.anon) { $("#pointsCard").classList.add("hidden"); return; }
+    renderPoints(pts);
   } catch (_) { $("#pointsCard").classList.add("hidden"); return; }
   try {
     const top = await (await fetch("/api/points/top?limit=15")).json();

@@ -408,7 +408,7 @@ def test_service_account_gets_no_ai_and_no_poi(service_client, monkeypatch):
     scored = []
     monkeypatch.setattr(main, "_score_later",
                         lambda *a, **kw: scored.append(a))
-    monkeypatch.setattr(main, "_spawn", lambda coro: None)
+    monkeypatch.setattr(main, "_spawn", lambda coro: coro.close())  # не запускать и не оставлять висеть
     monkeypatch.setattr(pools_mod, "companion_reply",
                         lambda *a, **kw: {"reply": "ок", "suggestion": None})
 

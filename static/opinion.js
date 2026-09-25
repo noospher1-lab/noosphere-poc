@@ -286,10 +286,15 @@ function drawPosition(d) {
       <p class="caption">${esc(d.caption)}</p>`;
     return;
   }
-  const n = d.numbers;
-  const delta = d.delta;
   main.innerHTML = head + membersBlock(p) + `
-    <section class="card" style="margin-top:18px" aria-label="Числа позиции">
+    <section class="card" style="margin-top:18px" aria-label="Числа позиции" id="numbers">${numbersHtml(d)}</section>
+    <section id="personal"></section>` + restHtml(d);
+  afterDraw(d);
+}
+
+function numbersHtml(d) {
+  const n = d.numbers, delta = d.delta;
+  return `
       <div class="nums">
         <div class="num"><div class="k">Сейчас в позиции</div><div class="v">${fmt(n.in_now)}</div>
           <div class="d ${delta > 0 ? "up" : delta < 0 ? "down" : ""}">${delta ? (delta > 0 ? "+" : "") + fmt(delta) + " " + PERIOD_WORD[d.period] : "без изменений " + PERIOD_WORD[d.period]}</div></div>
@@ -301,9 +306,21 @@ function drawPosition(d) {
           <div class="d">были здесь и ушли в другие позиции</div></div>
       </div>
       ${bar3(n)}
-      <div class="msg">Все, кто когда-либо держался этой позиции: ${fmt(n.ever)}</div>
-    </section>
-    <section id="personal"></section>
+      <div class="msg">Все, кто когда-либо держался этой позиции: ${fmt(n.ever)}</div>`;
+}
+
+// числа позиции — заново с сервера, без перерисовки остального экрана (Б10):
+// после «не убедило» человек видел старые числа до перезагрузки
+async function refreshNumbers(pid) {
+  try {
+    const d = await api(`/api/opinion/position/${pid}?period=${STATE.period}`);
+    const box = $("#numbers");
+    if (box && d.numbers) box.innerHTML = numbersHtml(d);
+  } catch (_) { /* числа обновятся при следующем открытии */ }
+}
+
+function restHtml(d) {
+  return `
     <div class="grid2">
       <section class="card" aria-labelledby="mv-h"><div class="row-head"><h2 id="mv-h">Движение</h2><span id="tabs"></span></div>
         <div id="movement"></div></section>
@@ -318,6 +335,9 @@ function drawPosition(d) {
     </div>
     <section class="card" style="margin-top:18px" aria-labelledby="er-h" id="errors-card"><h2 id="er-h">Признанные ошибки</h2><div id="errors" style="margin-top:10px"></div></section>
     <p class="caption">${esc(d.caption)}</p>`;
+}
+
+function afterDraw(d) {
   $("#tabs").appendChild(periodTabs(d.period, (id) => { STATE.period = id; refresh(); }));
   drawPersonal(d);
   drawMovement(d);
@@ -397,6 +417,7 @@ async function answerObjection(d, o, response) {
   const msg = $("#pmsg");
   try { await api("/api/opinion/exposure", { method: "POST", body: { node_id: o.id, response } }); }
   catch (e) { msg.textContent = e.message; return; }
+  refreshNumbers(p.id);
   const undo = `<button type="button" class="btn link" id="undo">Отменить</button>`;
   const btns = $("#obj-btns");
   if (response === "not_convinced") {
@@ -526,7 +547,9 @@ function cruxBar(c) {
 function drawCruxes(d, sel = "#cruxes", topic = d.position && d.position.topic.id) {
   const box = $(sel);
   if (!d.cruxes.length) { box.innerHTML = `<p class="muted">Пока нет вопросов и возражений «не доказывает».</p>`; return; }
-  box.innerHTML = d.cruxes.map((c) => `<div class="item">
+  // видны все вопросы, а не первые восемь: остальные — по «показать ещё» (Б10)
+  const SHOW = 8;
+  box.innerHTML = d.cruxes.map((c, i) => `<div class="item"${i >= SHOW ? " hidden" : ""}>
     <div class="head">${tag(c)}${cruxBadge(c)}</div>
     <div class="text">${nodeLink(c)}</div>
     ${cruxBar(c)}
@@ -535,6 +558,13 @@ function drawCruxes(d, sel = "#cruxes", topic = d.position && d.position.topic.i
       ${c.kind === "question" ? `<button type="button" class="act" data-same="${c.id}">у меня тот же вопрос</button>` : ""}
       <button type="button" class="act" data-reply="${c.id}">ответить</button></div>
   </div>`).join("");
+  if (d.cruxes.length > SHOW) {
+    const more = document.createElement("button");
+    more.type = "button"; more.className = "btn";
+    more.textContent = `показать ещё ${d.cruxes.length - SHOW}`;
+    more.onclick = () => { box.querySelectorAll(".item[hidden]").forEach((x) => { x.hidden = false; }); more.remove(); };
+    box.appendChild(more);
+  }
   const byId = Object.fromEntries(d.cruxes.map((c) => [c.id, c]));
   for (const b of box.querySelectorAll("[data-reply]")) {
     b.onclick = () => composer({ topic, target: byId[b.dataset.reply],

@@ -54,7 +54,7 @@
   const measureCtx = document.createElement("canvas").getContext("2d");
   const FONT_LABEL = "500 12.5px Inter, system-ui, sans-serif";
   const FONT_TITLE = "600 14px Inter, system-ui, sans-serif";
-  const FONT_SMALL = "500 11px Inter, system-ui, sans-serif";
+  const FONT_SMALL = "500 12px Inter, system-ui, sans-serif";
   function width(str, font) { measureCtx.font = font; return measureCtx.measureText(str).width; }
 
   // Перенос по словам в заданную ширину и число строк; не влезло — многоточие.
@@ -357,6 +357,10 @@
     // ответы колонками, а под каждым ответом — сводка его поддерева. Клик по
     // ответу делает его текущим; «назад» в браузере — на уровень вверх.
     const q = new URLSearchParams(location.search);
+    if (data.focus && !q.get("focus")) {       // пришли по номеру узла, а не корня
+      q.set("problem", root.id); q.set("focus", data.focus);
+      history.replaceState(null, "", "/graph.html?" + q);
+    }
     const want = Number(q.get("node"));
     let focus = byId.get(Number(q.get("focus"))) || root;
     if (!q.get("focus") && want && byId.has(want)) {
@@ -576,6 +580,13 @@
     c.appendChild(tree);
   }
 
+  for (const t of document.querySelectorAll(".lg-toggle")) {
+    t.onclick = () => {
+      const box = t.parentElement;
+      box.classList.toggle("open");
+      t.setAttribute("aria-expanded", String(box.classList.contains("open")));
+    };
+  }
   function setLegend(mode) {
     $("#legend-topic").hidden = mode !== "topic";
     $("#legend-map").hidden = mode !== "map";
@@ -620,8 +631,13 @@
   let rt = null;
   addEventListener("resize", () => {
     clearTimeout(rt);
-    rt = setTimeout(() => (lastStart === startBoard && topicData
-      ? renderTopic(topicData) : lastStart()), 150);
+    rt = setTimeout(() => {
+      if (lastStart === startBoard && topicData) {
+        const y = view.y;                       // прокрутка не сбрасывается (QA М-13)
+        renderTopic(topicData);
+        view.y = y; applyView();
+      } else lastStart();
+    }, 150);
   });
 
   (document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()).then(load);

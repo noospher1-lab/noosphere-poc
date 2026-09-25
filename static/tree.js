@@ -84,6 +84,14 @@ function hint(html) {
   h.innerHTML = html;
   return h;
 }
+// показать что-то один раз на этом устройстве: true, если уже видели
+function seenOnce(key) {
+  try {
+    if (localStorage.getItem(key) === "1") return true;
+    localStorage.setItem(key, "1");
+  } catch (_) { /* нет хранилища — показываем каждый раз */ }
+  return false;
+}
 function appendHint(container, html) {
   const h = hint(html);
   if (h) container.appendChild(h);
@@ -138,8 +146,8 @@ function guidePanel() {
       "неопределённостью и с возражениями. Высокий PoI не значит «прав», значит " +
       "«сделан добросовестно» — поэтому <b>порядок доводов не зависит от PoI</b>: " +
       "внутри одного родителя они идут по времени, иначе первый в списке читался " +
-      "бы как ответ. <b>Вес в голосовании</b> — отдельное: его даёт разбор " +
-      "проблемы с ИИ в момент голосования, а не PoI твоих доводов."],
+      "бы как ответ." + (VOTES_HIDDEN ? "" : " <b>Вес в голосовании</b> — отдельное: его даёт разбор " +
+      "проблемы с ИИ в момент голосования, а не PoI твоих доводов.")],
     ["3", "Реагируй: ▲ согласен / ▼ не согласен",
       "Так ты показываешь своё отношение к доводу. Согласие и несогласие — это " +
       "не оценка качества: сильный довод остаётся сильным, даже когда с ним " +
@@ -912,7 +920,7 @@ function nodeRow(node, type, parentKind) {
     who = el("a", "who", node.author || "—");
     who.href = "/profile.html?id=" + node.author_id;
     who.target = "_blank";
-    who.title = "профиль и история голосований — " + (node.author || "");
+    who.title = (VOTES_HIDDEN ? "профиль — " : "профиль и история голосований — ") + (node.author || "");
     who.onclick = (e) => e.stopPropagation();
   } else {
     who = el("span", "who muted", node.author || "—");
@@ -998,7 +1006,20 @@ function renderTree() {
       undercutBadge(),
       concedeBadge(),
     );
-    tree.append(kinds, rels);
+    // Обозначения — свёрнутым блоком: 14 меток над деревом занимали больше места,
+    // чем само дерево (Б5 студии 25.09). Раскрыты только при первом визите;
+    // дальше человек открывает их сам, и выбор запоминается.
+    const box = el("details", "legend-box");
+    let open = null;
+    try { open = localStorage.getItem("noo_legend_open"); } catch (_) {}
+    box.open = open === null ? true : open === "1";
+    const sum = el("summary", "legend-key", "обозначения");
+    box.append(sum, kinds, rels);
+    box.addEventListener("toggle", () => {
+      try { localStorage.setItem("noo_legend_open", box.open ? "1" : "0"); } catch (_) {}
+    });
+    if (open === null) { try { localStorage.setItem("noo_legend_open", "0"); } catch (_) {} }
+    tree.append(box);
   }
   if (!TOPICS.length) {
     tree.appendChild(el("div", "muted",
@@ -1405,7 +1426,7 @@ async function selectNode(id) {
     authorEl = el("a", null, node.author || "—");
     authorEl.href = "/profile.html?id=" + node.author_id;
     authorEl.target = "_blank";
-    authorEl.title = "профиль и история голосований";
+    authorEl.title = VOTES_HIDDEN ? "профиль автора" : "профиль и история голосований";
   }
   // an atom of an exploration is a point under investigation: it carries no
   // LLM base score (the разбор was scored as a whole) and no taken position
@@ -1455,10 +1476,11 @@ async function selectNode(id) {
   // они не утверждение, с которым спорят.
   if (node.dialectic && !["problem", "question", "exploration"].includes(node.kind))
     card.appendChild(dialecticLine(node.dialectic));
-  appendHint(card, "<b>PoI</b> — насколько довод проработан, а не «правота». " +
+  // справка про PoI — один раз, а не под каждым доводом (Б5 студии 25.09)
+  if (!seenOnce("noo_poi_hint")) appendHint(card, "<b>PoI</b> — насколько довод проработан, а не «правота». " +
     "На порядок в дереве он не влияет: внутри одного родителя доводы идут по " +
-    "времени, иначе верхний читался бы как ответ. Вес в голосовании — " +
-    "отдельное: его даёт разбор проблемы с ИИ при голосовании, не PoI доводов.");
+    "времени, иначе верхний читался бы как ответ." + (VOTES_HIDDEN ? "" : " Вес в голосовании — " +
+    "отдельное: его даёт разбор проблемы с ИИ при голосовании, не PoI доводов."));
   if (node.poi_breakdown && !node.poi_breakdown.seed) card.appendChild(critBreakdown(node.poi_breakdown));
 
   // reactions live INSIDE the argument card, right under the text — not a
@@ -1941,7 +1963,11 @@ async function reviewDraft(payload) {
 // «оценивается…» не должно висеть вечно (А4): без общего ключа ИИ оценки не
 // будет вовсе, а спустя 10 минут без оценки её уже не ждём.
 let AI_OK = true;
-api("/api/config").then((c) => { AI_OK = !!(c && c.ai); }).catch(() => {});
+let VOTES_HIDDEN = false;   // голосования закрыты (NOOSPHERE_HIDE) — о них не пишем (Б11)
+api("/api/config").then((c) => {
+  AI_OK = !!(c && c.ai);
+  VOTES_HIDDEN = !!(c && (c.hidden || []).includes("votes"));
+}).catch(() => {});
 function scoringStalled(node) {
   if (!AI_OK) return true;
   const t = node.created_at ? Date.parse(node.created_at) : NaN;
@@ -2783,9 +2809,14 @@ function scaleRow(r, nodeId) {
   const head = el("div", "sr-head");
   head.append(el("span", "sr-region", r.region), el("span", "sr-figure", r.figure));
   if (ME) {
-    const x = el("span", "sr-x", "×");
-    x.title = "снять строку";
+    const x = el("button", "sr-x", "×");
+    x.type = "button";
+    x.title = "снять строку для всех — рамку проблемы правит любой участник";
+    x.setAttribute("aria-label", "снять строку масштаба для всех");
     x.onclick = async () => {
+      // снимает для ВСЕХ, а выглядело как «удалить своё» (Б9 студии 25.09)
+      if (!window.confirm("Снять строку «" + r.region + "» для всех? Рамку проблемы правит " +
+                          "любой участник; в журнале снятие останется.")) return;
       try {
         await api(`/api/scale/${r.id}`, { method: "DELETE" });
         toast("строка снята"); selectNode(nodeId);

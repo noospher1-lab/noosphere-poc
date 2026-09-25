@@ -1098,8 +1098,14 @@ async def _points_catch_up():
 
 
 @app.get("/api/points/me")
-async def my_points(author=Depends(current_author)):
-    """Свой вклад: сумма, место среди тестеров, последние начисления, вехи."""
+async def my_points(request: Request):
+    """Свой вклад: сумма, место среди тестеров, последние начисления, вехи.
+
+    Гостю — {"anon": true} с 200, а не 401: бейдж вклада спрашивает это на
+    каждой странице, и у каждого гостя консоль краснела ошибкой (QA М-16)."""
+    author = await optional_author(request)
+    if author is None:
+        return {"anon": True}
     await _points_catch_up()
     return await db.points_me(author["id"], hidden=HIDDEN_SECTIONS)
 
@@ -1278,9 +1284,17 @@ async def graph_map():
 
 @app.get("/api/graph/topic/{root_id}")
 async def graph_topic(root_id: int):
-    view = graphview.topic_view(await db.get_graph(), root_id)
+    graph = await db.get_graph()
+    view = graphview.topic_view(graph, root_id)
     if view is None:
-        raise HTTPException(404, "такого обсуждения нет — ветка строится от корня")
+        # ссылка на узел внутри ветки — отдаём ветку его корня и фокус на нём
+        # (QA М-10: раньше 404 «ветка строится от корня»)
+        node = await db.get_node(root_id)
+        home = node and node.get("topic_root_id")
+        view = graphview.topic_view(graph, home) if home and home != root_id else None
+        if view is None:
+            raise HTTPException(404, "такого обсуждения нет")
+        view["focus"] = root_id
     return view
 
 

@@ -53,6 +53,7 @@
       const r = await api('/api/points/me');
       if (!r.ok) { slot.style.display = 'none'; return; }   // не вошёл — бейджа нет
       const p = await r.json();
+      if (p.anon) { slot.style.display = 'none'; return; }   // гость
       slot.textContent = `вклад ${p.total}`;
       slot.title = p.players > 1
         ? `${p.total} баллов · ${p.rank}-й из ${p.players} участников`
