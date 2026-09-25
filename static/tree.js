@@ -1417,7 +1417,6 @@ async function selectNode(id) {
   if (isRoot) {
     const mapBtn = el("a", "map-btn", "Карта мнений →");
     mapBtn.href = `/opinion.html?root=${node.id}`;
-    mapBtn.appendChild(el("span", "map-btn-sub", "кто где стоит и кто передумал"));
     card.appendChild(mapBtn);
   }
   // на что опирается довод — у своего можно сменить (метка, не текст)
