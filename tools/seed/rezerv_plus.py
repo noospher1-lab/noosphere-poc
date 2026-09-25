@@ -438,6 +438,246 @@ EU = {
 }
 
 
+# ------------------------------------------------ добавки (исследование 25.09)
+# vault: drafts/2026-09-25-seed-rezerv-plus-additions. Каждая ссылка открыта
+# 25.09.2026, выдержка дословно. Не вошло (проверить не удалось): Руководящие
+# принципы УВКБ №10 (страница закрыта), цитата Трюдо «убежище от милитаризма»
+# (исследователи называют её искажённой), правила выезда 18–22 и QR/VIN.
+WORLD_EXTRA = {
+    "scale": [
+        {"region": "Весь мир (паспорт и другие консульские услуги)",
+         "figure": "С 04.08.2026 для большинства консульских услуг мужчинам нужен "
+                   "действующий военно-учётный документ; проверка — по реестру «Оберіг»",
+         "source_url": "https://kadroland.com/news/11270-novi-pravila-dlya-ukrayinciv-za-"
+                       "kordonom-bez-vod-konsulski-poslugi",
+         "source_excerpt":
+             "Відтепер чоловікам, які перебувають на військовому обліку, для отримання "
+             "більшості консульських послуг потрібно буде підтвердити наявність дійсного "
+             "військово-облікового докуме"},
+        {"region": "Весь мир (водительские права)",
+         "figure": "С 2024 (постановление КМУ №918): мужчинам 18–60 за рубежом, не "
+                   "обновившим данные учёта, водительское удостоверение не пересылается",
+         "source_url": "https://www.ukrinform.ua/rubric-society/3895116-coloviki-za-kordonom-"
+                       "bez-onovlenih-oblikovih-danih-ne-zmozut-otrimati-ci-obminati-vodijski-prava.html",
+         "source_excerpt":
+             "українцям-чоловікам віком 18-60 років, які перебувають за кордоном і не "
+             "оновили військово-облікові дані, посвідчення водія, виготовлене на бланку і "
+             "замовлене онлайн, не пересилається."},
+        {"region": "Весь мир (снятые с учёта)",
+         "figure": "Снятие с воинского учёта не освобождает от требования ВОД в "
+                   "консульстве; с февраля 2027 обращение может вернуть человека на учёт",
+         "source_url": "https://sud.ua/uk/news/publication/370329-zvernennia-do-konsulstva-"
+                       "mozhe-povernuty-ranishe-vykliuchenykh-cholovikiv-na-viiskovyi-oblik-z-liutoho-2027-roku",
+         "source_excerpt":
+             "Сам факт виключення особи з військового обліку не названий у чинному порядку "
+             "окремою підставою для звільнення від вимоги щодо подання ВОД."},
+        {"region": "Европа (Eurostat)",
+         "figure": "Около 1,42 млн украинских мужчин 18–64 лет за рубежом (февраль 2026)",
+         "source_url": "https://pravdatutnews.com/society/2026/04/26/77793-ponad-14-mln-"
+                       "ukrayinskyh-cholovikiv-pryzovnogo-viku-mayut",
+         "source_excerpt":
+             "За даними Eurostat, станом на лютий 2026 року за кордоном перебуває близько "
+             "1,42 мільйона українських чоловіків віком від 18 до 64 років."},
+        {"region": "Украина (оценка по пересечениям границы)",
+         "figure": "Около 540 тыс. мужчин призывного возраста выехали и не вернулись "
+                   "(470 тыс. легально, не менее 70 тыс. нелегально; NGL.media)",
+         "source_url": "https://texty.org.ua/fragments/116691/skilky-cholovikiv-vyyixaly-z-"
+                       "ukrayiny-pid-chas-velykoyi-vijny-doslidzhennya/",
+         "source_excerpt":
+             "Від початку повномасштабної війни з України легально та нелегально могли "
+             "виїхати й не повернутися близько 540 тис. чоловіків призовного віку."},
+        {"region": "Украина (право покинуть страну)",
+         "figure": "Украина официально отступила от ст. 12 Пакта о гражданских и "
+                   "политических правах и ст. 2 Протокола №4 к Конвенции — права покидать страну",
+         "source_url": "https://treaties.un.org/doc/Publication/CN/2022/CN.65.2022-Eng.pdf",
+         "source_excerpt":
+             "The restriction of this right necessitates a waiver of obligations under "
+             "articles 12 to 13 of the Covenant and Article 2 of Protocol No. 4 to the Convention."},
+        {"region": "Украина (мобилизация, доклад ООН)",
+         "figure": "Комиссия ООН: незаконные задержания, нет доступа к адвокату, поспешные "
+                   "ВЛК, насилие к отказникам по убеждениям (A/HRC/61/61, 2026)",
+         "source_url": "https://www.ohchr.org/sites/default/files/documents/hrbodies/hrcouncil/"
+                       "sessions-regular/session61/advance-version/a-hrc-61-61-auv.pdf",
+         "source_excerpt":
+             "These include irregular administrative detention, lack of access to a lawyer, "
+             "and hurried examinations by military medical commissions that ignore possible "
+             "underlying medical issues."},
+    ],
+    "interventions": [
+        {"what": "Конституционная жалоба отказника по убеждениям Виталия Алексеенко "
+                 "на закон об альтернативной службе и ст. 336 УК",
+         "actor": "Конституционный суд Украины", "geo": "Украина",
+         "when_text": "производство открыто 06.05.2025",
+         "outcome": "Решения нет. Это уже второе дело отказника в Конституционном суде.",
+         "outcome_kind": "unclear",
+         "source_url": "https://hrwf.eu/ukraine-a-second-case-of-conscientious-objection-"
+                       "reaches-the-constitutional-court/",
+         "source_excerpt":
+             "On May 6, 2025, the Constitutional Court of Ukraine opened proceedings in the "
+             "case of a constitutional complaint filed by Vitalii Vasylovych Alekseenko"},
+        {"what": "Заключение Венецианской комиссии для Конституционного суда об "
+                 "альтернативной службе в военное время (CDL-AD(2025)006)",
+         "actor": "Венецианская комиссия Совета Европы", "geo": "Украина",
+         "when_text": "март 2025",
+         "outcome": "Позиция ясна: отказ по убеждениям нельзя полностью исключить и в "
+                    "войну. В законе Украины это пока не отражено.",
+         "outcome_kind": "partial",
+         "source_url": "https://www.venice.coe.int/webforms/documents/default.aspx?"
+                       "pdffile=CDL-AD(2025)006-e",
+         "source_excerpt":
+             "the very nature of conscientious objection implies that it cannot be fully "
+             "excluded in time of war, albeit States have a limited margin of appreciation, "
+             "especially in case of a general mobilisation."},
+        {"what": "Закон об альтернативной гражданской службе в военное время — "
+                 "обязательство по дорожной карте вступления в ЕС (срок — конец июня 2026)",
+         "actor": "Кабинет министров Украины", "geo": "Украина",
+         "when_text": "срок — июнь 2026",
+         "outcome": "На 03.07.2026 проект в парламент не внесён; Минобороны против.",
+         "outcome_kind": "failure",
+         "source_url": "https://www.forum18.org/archive.php?article_id=3056",
+         "source_excerpt":
+             "set the end of June for adopting a law to introduce alternative civilian "
+             "service in wartime. No draft Law has yet reached parliament."},
+        {"what": "Ежегодный доклад омбудсмена за 2025 год признаёт системные нарушения "
+                 "при мобилизации",
+         "actor": "Уполномоченный Верховной Рады по правам человека (Д. Лубинец)",
+         "geo": "Украина", "when_text": "2026",
+         "outcome": "Нарушения признаны официально; правозащитники считают масштаб "
+                    "мониторинга и предложенные меры недостаточными.",
+         "outcome_kind": "partial",
+         "source_url": "https://en.connection-ev.org/article-4751",
+         "source_excerpt":
+             "recognized quick escalation in systemic human rights violations during military "
+             "mobilization, such as arbitrary detentions, forcible conscription with beating, "
+             "and punishment for exercise of human right to conscientious objection"},
+        {"what": "Страна-хозяин перестала спрашивать о воинском статусе у тех, кто "
+                 "бежал от призыва на чужую войну (американцы во время войны во Вьетнаме)",
+         "actor": "Правительство Канады", "geo": "Канада", "when_text": "с 22.05.1969",
+         "outcome": "Десятки тысяч человек получили вид на жительство. Исторический "
+                    "образец решения, обратного нынешнему.",
+         "outcome_kind": "success",
+         "conditions": "Канада сама не воевала, призыв был чужой; дезертиров сначала "
+                       "принимали хуже, чем уклонившихся от призыва.",
+         "source_url": "https://en.wikipedia.org/wiki/Vietnam_War_resisters_in_Canada",
+         "source_excerpt":
+             "On May 22, 1969, Ottawa announced that immigration officials would not and could "
+             "not ask about applicants' military status if they sought residence."},
+        {"what": "Защита россиян, бежавших от мобилизации 2022 года",
+         "actor": "Германия; Литва, Чехия, Эстония", "geo": "Евросоюз",
+         "when_text": "сентябрь 2022",
+         "outcome": "Германия: дезертиры под угрозой репрессий «как правило» получают "
+                    "защиту. Литва, Чехия, Эстония — отказ. Страны ЕС разошлись.",
+         "outcome_kind": "mixed",
+         "source_url": "https://meduza.io/en/news/2022/09/22/germany-ready-to-accept-russian-"
+                       "deserters-and-conscientious-objectors",
+         "source_excerpt":
+             "“As a rule, deserters threatened by severe repressions will receive international "
+             "protection in Germany,” Faeser stated"},
+    ],
+    "arguments": [
+        {"k": "q-leave", "author_idx": 5, "kind": "question", "rel": "question",
+         "text": "Вправе ли государство запрещать гражданину покидать страну — и как долго?"},
+        {"k": "leave-yes", "author_idx": 3, "rel": "support", "to": "q-leave",
+         "text": "Да, в чрезвычайной ситуации: Пакт о гражданских и политических правах "
+                 "это допускает, и Украина с 2022 года официально отступила от ст. 12 "
+                 "(«каждый свободен покидать любую страну, включая свою»): "
+                 "https://treaties.un.org/doc/Publication/CN/2022/CN.65.2022-Eng.pdf"},
+        {"k": "leave-limits", "author_idx": 2, "rel": "qualify", "to": "q-leave",
+         "text": "Но отступление допустимо только «в той мере, в какой это строго требуется "
+                 "остротой положения», и не должно быть дискриминацией «исключительно по "
+                 "признаку … пола» (ст. 4 Пакта). Запрет выезда только для мужчин — прямо "
+                 "об этом: https://en.wikisource.org/wiki/International_Covenant_on_Civil_and_Political_Rights"},
+        {"k": "socrates", "author_idx": 3, "rel": "support", "to": "q-death",
+         "text": "Да — Сократ в «Критоне» отказывается бежать от приговора: родину надо "
+                 "убедить или подчиниться, «и если она ведёт нас на раны или смерть в бою, "
+                 "мы следуем туда, как должно»: https://www.gutenberg.org/cache/epub/1657/pg1657.txt"},
+        {"k": "walzer", "author_idx": 5, "rel": "qualify", "to": "q-death",
+         "text": "Этому вопросу посвящена целая книга: Майкл Уолцер, «Obligations» (1970), "
+                 "главы «Обязанность умирать за государство» и «Отказ по убеждениям»: "
+                 "https://archive.org/details/obligationsessay0000walz_k0c3"},
+        {"k": "rawls", "author_idx": 4, "rel": "support", "to": "q-objector",
+         "text": "Да, и не только по религии: Ролз («Теория справедливости») считал, что "
+                 "избирательный отказ должен быть разрешён — он может помешать государству "
+                 "продолжать несправедливую войну: "
+                 "https://en.wikipedia.org/wiki/Selective_conscientious_objection"},
+        {"k": "irreversible", "author_idx": 0, "rel": "support",
+         "text": "Ошибку здесь не исправить задним числом: по докладу Комиссии ООН, даже "
+                 "если суд признаёт мобилизацию незаконной, она, как правило, считается "
+                 "необратимой (A/HRC/61/61, п. 79). Поэтому проверка до, а не после, — "
+                 "вопрос жизни."},
+        {"k": "q-double", "author_idx": 1, "kind": "question", "rel": "question",
+         "text": "Почему в 2022 году Германия обещала защиту россиянам, бежавшим от "
+                 "мобилизации, а в 2026-м ЕС отказывает украинцам, бежавшим от своей? "
+                 "Это разные случаи или двойной стандарт?"},
+        {"k": "q-canada", "author_idx": 4, "kind": "question", "rel": "question",
+         "text": "Кто может подтвердить: в Канаде при оформлении постоянного жительства "
+                 "украинским мужчинам присылают запрос документов о воинском статусе?"},
+    ],
+}
+
+EU_EXTRA = {
+    "arguments": [
+        {"k": "shepherd", "author_idx": 5, "rel": "qualify", "to": "against-law",
+         "text": "Суд ЕС уже решал, когда дезертир получает защиту по праву ЕС: дело "
+                 "Shepherd (февраль 2015). Разборы называют его толкование спорным, но это "
+                 "ближайший прецедент: http://eulawanalysis.blogspot.com/2015/02/"},
+    ],
+}
+
+
+async def extend_problem(title, base, extra, author_ids):
+    """Дописать к уже засеянной проблеме то, чего в ней ещё нет. Повтор ничего
+    не задваивает: строки масштаба сверяются по региону и цифре, реестр — по
+    «что», узлы — по тексту."""
+    pool = db._pool_or_raise()
+    async with pool.acquire() as conn:
+        root = await conn.fetchval(
+            "SELECT id FROM nodes WHERE kind = 'problem' AND title = $1 "
+            "AND deleted_at IS NULL", title)
+        if root is None:
+            print(f"нет проблемы «{title}» — сначала основной посев")
+            return 0
+        have_scale = {(r["region"], r["figure"]) for r in await conn.fetch(
+            "SELECT region, figure FROM problem_scale WHERE topic_root_id = $1 "
+            "AND deleted_at IS NULL", root)}
+        have_iv = {r["what"] for r in await conn.fetch(
+            "SELECT what FROM interventions WHERE topic_root_id = $1", root)}
+        texts = {r["text"]: r["id"] for r in await conn.fetch(
+            "SELECT id, text FROM nodes WHERE topic_root_id = $1 AND deleted_at IS NULL", root)}
+    author = author_ids[base["author_idx"]]
+    added = 0
+    for row in extra.get("scale", []):
+        if (row["region"], row["figure"]) in have_scale:
+            continue
+        await db.add_scale_row(root, region=row["region"], figure=row["figure"],
+                               source_url=row["source_url"],
+                               source_excerpt=row["source_excerpt"],
+                               retrieved_at=RETRIEVED, author_id=author)
+        added += 1
+    for iv in extra.get("interventions", []):
+        if iv["what"] in have_iv:
+            continue
+        await db.add_intervention(
+            root, what=iv["what"], actor=iv.get("actor"), geo=iv.get("geo"),
+            when_text=iv.get("when_text"), outcome=iv.get("outcome"),
+            outcome_kind=iv["outcome_kind"], conditions=iv.get("conditions"),
+            source_url=iv["source_url"], source_excerpt=iv["source_excerpt"],
+            source_retrieved_at=RETRIEVED, author_id=author)
+        added += 1
+    by_key = {a["k"]: texts[a["text"]] for a in base["arguments"] if a["text"] in texts}
+    for a in extra.get("arguments", []):
+        if a["text"] in texts:
+            by_key[a["k"]] = texts[a["text"]]
+            continue
+        nid = await db.add_node(a["text"], author_id=author_ids[a["author_idx"]],
+                                kind=a.get("kind", "argument"), topic_root_id=root)
+        by_key[a["k"]] = nid
+        await db.add_edge(nid, by_key[a["to"]] if a.get("to") else root, a["rel"])
+        added += 1
+    print(f"«{title}»: добавлено {added}")
+    return added
+
+
 async def seed_problem(p, author_ids):
     async with db._pool_or_raise().acquire() as conn:
         found = await conn.fetchval(
@@ -511,6 +751,8 @@ async def run(url):
         # постановка причины (одна мысль — один узел).
         await db.add_problem_link(world, eu, node_id=world, author_id=ids[0])
         print(f"связь: #{world} порождает #{eu}")
+    await extend_problem(WORLD["title"], WORLD, WORLD_EXTRA, ids)
+    await extend_problem(EU["title"], EU, EU_EXTRA, ids)
     await db.close_pool()
 
 
