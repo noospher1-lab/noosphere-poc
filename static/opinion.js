@@ -255,7 +255,7 @@ function drawPosition(d) {
     </div>
     <div class="grid2">
       <section class="card" aria-labelledby="cx-h"><h2 id="cx-h">Точки расхождения</h2>
-        <p class="sub" style="margin-top:4px">Вопросы и подрывы, на которых сторонники делятся или уходят</p><div id="cruxes"></div></section>
+        <p class="sub" style="margin-top:4px">Вопросы и возражения «не доказывает», на которых сторонники делятся или уходят</p><div id="cruxes"></div></section>
       <section class="card" aria-labelledby="mo-h"><h2 id="mo-h">Что сдвигало людей</h2>
         <p class="sub" style="margin-top:4px">Доводы по числу вызванных переходов, а не по реакциям</p><div id="movers"></div></section>
     </div>
@@ -459,7 +459,7 @@ function cruxBar(c) {
 
 function drawCruxes(d, sel = "#cruxes", topic = d.position && d.position.topic.id) {
   const box = $(sel);
-  if (!d.cruxes.length) { box.innerHTML = `<p class="muted">Пока нет вопросов и подрывов.</p>`; return; }
+  if (!d.cruxes.length) { box.innerHTML = `<p class="muted">Пока нет вопросов и возражений «не доказывает».</p>`; return; }
   box.innerHTML = d.cruxes.map((c) => `<div class="item">
     <div class="head">${tag(c)}${cruxBadge(c)}</div>
     <div class="text">${nodeLink(c)}</div>
@@ -535,7 +535,7 @@ function drawTopic(d) {
       ${d.positions.length ? `<div class="plist" id="plist"></div>` : ""}
       ${formingList(d)}
       <div class="btns"><button type="button" class="btn" id="no-pos">Моей позиции здесь нет</button></div>
-      ${d.cruxes.length ? `<section class="card" style="margin-top:18px"><h2>Открытые вопросы и подрывы</h2><div id="tcruxes" style="margin-top:10px"></div></section>` : ""}
+      ${d.cruxes.length ? `<section class="card" style="margin-top:18px"><h2>Открытые вопросы и возражения</h2><div id="tcruxes" style="margin-top:10px"></div></section>` : ""}
       <p class="caption">${esc(d.caption)}</p>`;
     if (d.positions.length) drawPositionCards(d);
     if (d.cruxes.length) drawCruxes(d, "#tcruxes", t.id);
@@ -559,7 +559,7 @@ function drawTopic(d) {
     <div class="plist" id="plist"></div>
     <div class="btns"><button type="button" class="btn" id="no-pos">Моей позиции здесь нет</button></div>
     <section class="card" style="margin-top:18px"><h2>Точки расхождения</h2>
-      <p class="sub" style="margin-top:4px">Вопросы и подрывы, на которых люди чаще всего уходят или стоят на своём</p>
+      <p class="sub" style="margin-top:4px">Вопросы и возражения «не доказывает», на которых люди чаще всего уходят или стоят на своём</p>
       <div id="tcruxes"></div></section>
     <p class="caption">${esc(d.caption)}</p>`;
   $("#tabs").appendChild(periodTabs(d.period, (id) => { TSTATE.period = id; refresh(); }));

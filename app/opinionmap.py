@@ -54,7 +54,7 @@ PLACE_SIM = 0.5
 ACTION_EDGE = {"support": "support", "qualify": "qualify", "refute": "refute",
                "question": "question"}
 EDGE_WORD = {"support": "за", "qualify": "уточнение", "refute": "против",
-             "question": "вопрос", "undercut": "подрыв"}
+             "question": "вопрос", "undercut": "не доказывает"}
 CRUX_KINDS = ("question", "undercut")
 
 STATUSES = ("forming", "active", "empty", "merged", "split")
@@ -81,7 +81,7 @@ def next_status(status, in_now):
 def rank_objections(candidates, out_counts, k=TOP_K):
     """Главные возражения позиции.
 
-    candidates: [{id, poi, created_at}] — узлы «против» / «подрыв», направленные
+    candidates: [{id, poi, created_at}] — узлы «против» / «не доказывает», направленные
     на узлы позиции. out_counts: {node_id: сколько людей ушло из позиции, назвав
     этот узел причиной}. Порядок: по уходам, при равенстве — по PoI текста
     (нет оценки — ниже любой оценки), затем старше выше: дольше висит — больше
@@ -153,7 +153,7 @@ def replay(stance_rows, exposure_rows, members, objections, node_meta,
       from_position_id, to_position_id, cause_node_id, source, undo_of, created_at}.
     exposure_rows: строки exposures по id — {id, user_id, node_id, response, created_at}.
     members: {position_id: set(node_id)} — состав позиции.
-    objections: {position_id: set(node_id)} — узлы «против»/«подрыв» на состав.
+    objections: {position_id: set(node_id)} — узлы «против»/«не доказывает» на состав.
     node_meta: {node_id: {poi, created_at}}.
     events: события позиций [{kind, position_id, payload, created_at}] — нужен
       только раскол (пометка «не уточнил»).
