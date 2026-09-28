@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app import db, opinion_db, taxonomy  # noqa: E402
+from app import db, info_db, opinion_db, taxonomy  # noqa: E402
 
 RETRIEVED = datetime(2026, 9, 25, tzinfo=timezone.utc)
 DEFAULT_URL = "postgresql://noosphere@127.0.0.1:5433/noosphere_studio"
@@ -653,9 +653,8 @@ async def extend_problem(title, base, extra, author_ids):
         if root is None:
             print(f"нет проблемы «{title}» — сначала основной посев")
             return 0
-        have_scale = {(r["region"], r["figure"]) for r in await conn.fetch(
-            "SELECT region, figure FROM problem_scale WHERE topic_root_id = $1 "
-            "AND deleted_at IS NULL", root)}
+        # масштаб с 28.09 — раздел сведений «Масштаб» (db.list_scale читает оттуда)
+        have_scale = {(r["region"], r["figure"]) for r in await info_db.scale_rows(conn, root)}
         have_iv = {r["what"] for r in await conn.fetch(
             "SELECT what FROM interventions WHERE topic_root_id = $1", root)}
         texts = {r["text"]: r["id"] for r in await conn.fetch(

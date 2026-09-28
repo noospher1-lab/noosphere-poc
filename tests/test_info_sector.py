@@ -116,7 +116,8 @@ def test_intake_output_is_clamped_to_server_vocabulary(monkeypatch):
                         '{"title": "Т", "section": "лайфхак", "kind": "norm", '
                         '"country": "ФРГ", "source_quote": null}')
     d = info_ai.intake_sync("какой-то текст про продление")["draft"]
-    assert d["section"] == "other" and d["country"] is None
+    # раздел — подпись обсуждения (своя допустима); страна — только из таксономии
+    assert d["section"] == "лайфхак" and d["country"] is None
     assert d["kind"] == "experience"            # норма без ссылки и выдержки не норма
 
 
@@ -150,13 +151,13 @@ def test_linked_accounts_count_once_but_nobody_is_erased():
         await antiabuse.record(farm1, "5.5.5.5", "register")
         await antiabuse.record(farm2, "5.5.5.5", "register")
         await antiabuse.record(b, "7.7.7.7", "register")
-        sid = await info_db.ensure_sector("t", "Тест")
+        sid = await db.add_node("Тест", kind="problem", title="Тест")
         fid = await info_db.add_fact(sid, {"title": "В ABH Лейпцига не продлевают без Резерв+",
                                            "country": "Германия", "city": "Лейпциг",
                                            "kind": "experience", "section": "protection"}, owner)
         for x in (a, b, farm1, farm2):
             await info_db.set_report(fid, x, "same")
-        v = await info_db.country_view("t", "Германия")
+        v = await info_db.country_view(sid, "Германия")
         f = v["cities"][0]["facts"][0]
         assert f["same"] == 4                      # все отметки видны
         assert f["same_independent"] == 3          # ферма — один владелец
@@ -168,7 +169,7 @@ def test_linked_accounts_count_once_but_nobody_is_erased():
         await antiabuse.record(owner, "9.9.9.9", "register")
         await antiabuse.record(twin, "9.9.9.9", "register")
         await info_db.set_report(fid, twin, "same")
-        f = (await info_db.country_view("t", "Германия"))["cities"][0]["facts"][0]
+        f = (await info_db.country_view(sid, "Германия"))["cities"][0]["facts"][0]
         assert f["same"] == 5 and f["same_independent"] == 3
 
         # сырой адрес не хранится нигде
@@ -188,7 +189,7 @@ def test_same_action_from_same_network_links_accounts():
         owner = await db.add_user("owner", "h", "Автор", invite_required=False)
         x = await db.add_user("x1", "h", "X", invite_required=False)
         y = await db.add_user("y1", "h", "Y", invite_required=False)
-        sid = await info_db.ensure_sector("t", "Тест")
+        sid = await db.add_node("Тест", kind="problem", title="Тест")
         fid = await info_db.add_fact(sid, {"title": "Сведение", "country": "Чехия"}, owner)
         for u in (x, y):
             await info_db.set_report(fid, u, "same")
@@ -201,7 +202,7 @@ def test_same_action_from_same_network_links_accounts():
 def test_sector_view_puts_common_law_first_and_counts_countries():
     async def body(db):
         owner = await db.add_user("owner", "h", "Автор", invite_required=False)
-        sid = await info_db.ensure_sector("ua", "Украинцы в ЕС")
+        sid = await db.add_node("Украинцы в ЕС", kind="problem", title="Украинцы в ЕС")
         await info_db.add_fact(sid, {"title": "Директива 2001/55/ЕС", "kind": "norm",
                                      "section": "basis", "source_url": "https://e.eu",
                                      "source_quote": "temporary protection"}, owner)
@@ -209,7 +210,7 @@ def test_sector_view_puts_common_law_first_and_counts_countries():
                                      "kind": "experience"}, owner)
         await info_db.add_fact(sid, {"title": "Город", "country": "Польша", "city": "Краков",
                                      "kind": "report", "source_url": "https://news.example"}, owner)
-        v = await info_db.sector_view("ua")
+        v = await info_db.topic_view(sid)
         assert [f["title"] for f in v["common"]] == ["Директива 2001/55/ЕС"]
         pl = v["countries"][0]
         assert pl["country"] == "Польша" and pl["facts"] == 2 and pl["cities"] == ["Краков"]
@@ -223,7 +224,7 @@ def test_sector_view_puts_common_law_first_and_counts_countries():
 def test_daily_limit_on_new_facts():
     async def body(db):
         u = await db.add_user("u", "h", "U", invite_required=False)
-        sid = await info_db.ensure_sector("t", "Тест")
+        sid = await db.add_node("Тест", kind="problem", title="Тест")
         for i in range(info_db.FACTS_PER_DAY):
             await info_db.add_fact(sid, {"title": f"С{i}", "country": "Чехия"}, u)
         with pytest.raises(info_db.InfoError):
@@ -293,7 +294,7 @@ def test_norm_is_not_marked_and_links_expire():
         owner = await db.add_user("owner", "h", "Автор", invite_required=False)
         a = await db.add_user("anna", "h", "А", invite_required=False)
         b = await db.add_user("boris", "h", "Б", invite_required=False)
-        sid = await info_db.ensure_sector("t", "Тест")
+        sid = await db.add_node("Тест", kind="problem", title="Тест")
         fid = await info_db.add_fact(sid, {"title": "Закон", "kind": "norm",
                                            "source_url": "https://e.eu", "source_quote": "q"}, owner)
         with pytest.raises(info_db.InfoError):
@@ -309,4 +310,64 @@ def test_norm_is_not_marked_and_links_expire():
         await antiabuse.purge()
         async with pool.acquire() as conn:
             assert await conn.fetchval("SELECT count(*) FROM account_links") == 0
+    _run(body)
+
+
+
+@needs_db
+def test_scale_rows_are_facts_of_the_discussion():
+    """Масштаб — раздел сведений: строка из карточки проблемы видна на странице
+    сведений, старая строка problem_scale переезжает при старте один раз."""
+    async def body(db):
+        uid = await db.add_user("u", "h", "U", invite_required=False)
+        root = await db.add_node("Пробки", kind="problem", title="Пробки")
+        row = await db.add_scale_row(root, "Германия (Берлин)", "12 часов в год",
+                                     source_url="https://e.de", source_excerpt="12 Stunden",
+                                     author_id=uid)
+        assert row["region"] == "Германия (Берлин)" and row["figure"] == "12 часов в год"
+        v = await info_db.topic_view(root)
+        assert v["countries"][0]["country"] == "Германия" and "Масштаб" in v["sections"]
+        assert [r["id"] for r in (await db.get_problem(root))["scale"]] == [row["id"]]
+        # любой участник снимает строку масштаба (рамка проблемы общая)
+        assert await db.delete_scale_row(row["id"], author_id=None)
+        assert (await db.get_problem(root))["scale"] == []
+
+        # перенос старых строк: одна новая, дубль по ссылке+выдержке не заводится
+        f1 = await info_db.add_fact(root, {"title": "Уже есть", "kind": "report",
+                                           "source_url": "https://x.eu", "source_quote": "Q"}, uid)
+        pool = db._pool_or_raise()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO problem_scale (topic_root_id, region, figure, source_url, source_excerpt) "
+                "VALUES ($1, 'Весь мир', 'много', 'https://y.eu', 'Y'), "
+                "($1, 'Чехия', 'дубль', 'https://x.eu', 'q')", root)
+            async with conn.transaction():
+                assert await info_db.migrate_scale(conn) == 1
+            async with conn.transaction():
+                assert await info_db.migrate_scale(conn) == 0          # идемпотентно
+            moved = await conn.fetch("SELECT moved_to_fact FROM problem_scale ORDER BY id")
+        assert moved[-1]["moved_to_fact"] == f1                        # дубль указывает на существующее
+        rows = (await db.get_problem(root))["scale"]
+        assert [r["region"] for r in rows] == ["Весь мир"]
+        v = await info_db.topic_view(root)
+        assert any(f["place_note"] == "Весь мир" for f in v["common"])
+    _run(body)
+
+
+@needs_db
+def test_any_discussion_has_facts_layer_and_related_links():
+    async def body(db):
+        uid = await db.add_user("u", "h", "U", invite_required=False)
+        a = await db.add_node("А", kind="problem", title="А")
+        b = await db.add_node("Б", kind="problem", title="Б")
+        await db.add_problem_link(b, a, node_id=b, author_id=uid)
+        await info_db.add_fact(b, {"title": "Факт Б", "country": "Чехия"}, uid)
+        v = await info_db.topic_view(a)
+        assert v["total"] == 0 and v["related"][0]["id"] == b and v["related"][0]["facts"] == 1
+        assert v["suggested_sections"][:2] == ["Закон-основание", "Права и равенство"]
+        with pytest.raises(info_db.InfoError):
+            await info_db.topic_view(10 ** 7)
+        # раздел — подпись обсуждения, а не список из кода
+        await info_db.add_fact(a, {"title": "Цифра", "country": "Чехия", "section": "Пробки по городам"}, uid)
+        assert (await info_db.topic_view(a))["sections"] == ["Пробки по городам"]
     _run(body)

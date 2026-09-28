@@ -108,29 +108,29 @@ def test_report_switch_unmark_and_note_limit():
     async def body(db):
         owner = await db.add_user("owner", "h", "Автор", invite_required=False)
         u = await db.add_user("u", "h", "U", invite_required=False)
-        sid = await info_db.ensure_sector("t", "Тест")
+        sid = await db.add_node("Тест", kind="problem", title="Тест")
         fid = await info_db.add_fact(sid, {"title": "ТЕСТ", "country": "Польша"}, owner)
 
         await info_db.set_report(fid, u, "same", "ТЕСТ: " + "х" * 900)
-        f = (await info_db.country_view("t", "Польша", me=u))["national"][0]
+        f = (await info_db.country_view(sid, "Польша", me=u))["national"][0]
         assert (f["same"], f["differs"], f["mine"]) == (1, 0, "same")
         assert len(f["notes"][0]["note"]) == 500
 
         # передумал: одна отметка человека, не две
         await info_db.set_report(fid, u, "differs", None)
-        f = (await info_db.country_view("t", "Польша", me=u))["national"][0]
+        f = (await info_db.country_view(sid, "Польша", me=u))["national"][0]
         assert (f["same"], f["differs"], f["mine"]) == (0, 1, "differs")
         assert f["notes"] == []                    # заметка ушла вместе с прежней отметкой
 
         # «mine» — только для того, кто смотрит
-        f = (await info_db.country_view("t", "Польша", me=owner))["national"][0]
+        f = (await info_db.country_view(sid, "Польша", me=owner))["national"][0]
         assert f["mine"] is None
-        f = (await info_db.country_view("t", "Польша"))["national"][0]
+        f = (await info_db.country_view(sid, "Польша"))["national"][0]
         assert f["mine"] is None
 
         await info_db.set_report(fid, u, None)
         await info_db.set_report(fid, u, None)     # снять несуществующее — не ошибка
-        f = (await info_db.country_view("t", "Польша", me=u))["national"][0]
+        f = (await info_db.country_view(sid, "Польша", me=u))["national"][0]
         assert (f["same"], f["differs"], f["mine"]) == (0, 0, None)
 
         with pytest.raises(info_db.InfoError):
@@ -145,7 +145,7 @@ def test_daily_limit_on_reports():
     async def body(db):
         owner = await db.add_user("owner", "h", "Автор", invite_required=False)
         u = await db.add_user("u", "h", "U", invite_required=False)
-        sid = await info_db.ensure_sector("t", "Тест")
+        sid = await db.add_node("Тест", kind="problem", title="Тест")
         ids = [await info_db.add_fact(sid, {"title": f"ТЕСТ {i}", "country": "Чехия"}, owner, limit=False)
                for i in range(info_db.REPORTS_PER_DAY + 1)]
         for fid in ids[:-1]:
@@ -162,7 +162,7 @@ def test_remove_rules_and_removed_fact_disappears():
     async def body(db):
         owner = await db.add_user("owner", "h", "Автор", invite_required=False)
         other = await db.add_user("other", "h", "Другой", invite_required=False)
-        sid = await info_db.ensure_sector("t", "Тест")
+        sid = await db.add_node("Тест", kind="problem", title="Тест")
         fid = await info_db.add_fact(sid, {"title": "ТЕСТ снимаемое уникальноеслово",
                                            "country": "Чехия"}, owner)
         keep = await info_db.add_fact(sid, {"title": "ТЕСТ остаётся", "kind": "report",
@@ -174,14 +174,14 @@ def test_remove_rules_and_removed_fact_disappears():
             await info_db.remove_fact(fid, owner)  # второй раз — «сведения нет»
         with pytest.raises(info_db.InfoError):
             await info_db.set_report(fid, other, "same")
-        v = await info_db.sector_view("t")
+        v = await info_db.topic_view(sid)
         assert v["total"] == 1 and v["countries"] == []
         # снятое не находится; без совпадений поиск пуст (с 28.09 — не «первые подряд»)
         assert await info_db.search(sid, "уникальноеслово") == []
         assert [f["id"] for f in await info_db.search(sid, "остаётся")] == [keep]
         # админ снимает чужое
         await info_db.remove_fact(keep, other, admin=True)
-        assert (await info_db.sector_view("t"))["total"] == 0
+        assert (await info_db.topic_view(sid))["total"] == 0
     _run(body)
 
 
@@ -203,7 +203,11 @@ async def _prepare_api():
             await conn.execute("UPDATE authors SET email_verified = TRUE, balance_usd = 5 "
                                "WHERE id = $1", uid)
         ids[name] = uid
-    sid = await info_db.ensure_sector("ua-eu", "ТЕСТ сектор")
+    sid = await db.add_node("ТЕСТ обсуждение", kind="problem", title="ТЕСТ обсуждение")
+    # старый адрес /api/info/ua-eu должен вести в это обсуждение
+    async with db._pool_or_raise().acquire() as conn:
+        await conn.execute("INSERT INTO info_sectors (slug, title, problem_id) "
+                           "VALUES ('ua-eu', 'ТЕСТ', $1)", sid)
     ids["common"] = await info_db.add_fact(
         sid, {"title": "ТЕСТ Директива продлевает защиту", "kind": "report",
               "source_url": "https://e.eu", "section": "basis"}, ids["qa_oleg"])

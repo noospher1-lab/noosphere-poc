@@ -1473,22 +1473,21 @@ async function selectNode(id) {
   // decisions/2026-09-25-opinion-map). Раньше ссылка жила внизу, в карточке
   // позиций под формой ответа, — Alex: «находится в недосягаемости».
   if (isRoot) {
-    // «Сведения» — практическое «что делать» по ЭТОМУ вопросу, поэтому живут
-    // рядом с картой позиций под корнем обсуждения, а не в общей шапке сайта
-    // (Alex 28.09: раздел принадлежит конкретному вопросу).
+    // «Сведения» — слой ЭТОГО обсуждения (законы, цифры, опыт людей), поэтому
+    // рядом с картой позиций под корнем, а не в общей шапке сайта (Alex 28.09).
     const row = el("div", "root-btns");
     row.style.cssText = "display:flex;flex-wrap:wrap;gap:8px";
     const mapBtn = el("a", "map-btn", "Карта позиций →");
     mapBtn.href = `/opinion.html?root=${node.id}`;
     row.appendChild(mapBtn);
     card.appendChild(row);
-    api(`/api/info/for-problem/${node.id}`).then((list) => {
-      for (const sct of list || []) {
-        const b = el("a", "map-btn", "Сведения →");
-        b.href = "/info.html?s=" + encodeURIComponent(sct.slug);
-        b.title = sct.title;
-        row.appendChild(b);
-      }
+    // сведения — слой любого обсуждения: кнопка есть всегда, число — если есть
+    const infoBtn = el("a", "map-btn", "Сведения →");
+    infoBtn.href = `/info.html?root=${node.id}`;
+    infoBtn.title = "Законы, цифры, сообщения и опыт людей по этому вопросу — по странам";
+    row.appendChild(infoBtn);
+    api(`/api/info/${node.id}/count`).then((c) => {
+      if (c && c.facts) infoBtn.textContent = `Сведения · ${c.facts} →`;
     }).catch(() => {});
   }
   // на что опирается довод — у своего можно сменить (метка, не текст)

@@ -4333,10 +4333,10 @@ async def opinion_settings(topic_root_id: int, body: OpinionSettingsIn):
     return await opinion_db.set_settings(topic_root_id, **body.model_dump())
 
 
-# ------------------------------------------------------ информационный сектор
-# vault: drafts/2026-09-28-info-sector. Сведения для людей, которым нужно
-# действовать (продление защиты, ВНЖ, суд). Мы не консультируем, а собираем
-# доступное (Alex 28.09). ИИ — редактор при приёме и библиотекарь при ответе.
+# ------------------------------------------------------ сведения обсуждения
+# vault: decisions/2026-09-28-info-sector. Факты, законы и опыт людей — слой
+# обсуждения рядом с реестром. Мы не консультируем, а собираем доступное
+# (Alex 28.09). ИИ — редактор при приёме и библиотекарь при ответе.
 from . import info_ai, info_db  # noqa: E402
 
 
@@ -4357,7 +4357,7 @@ async def _fetch_limited(fn, *args):
 
 class InfoFactIn(BaseModel):
     title: str
-    section: str = "other"
+    section: str = "Другое"
     kind: str = "experience"
     country: str | None = None
     city: str | None = None
@@ -4365,6 +4365,7 @@ class InfoFactIn(BaseModel):
     applies_to: str | None = None
     body: str | None = None
     when_text: str | None = None
+    place_note: str | None = None
     source_url: str | None = None
     source_title: str | None = None
     source_quote: str | None = None
@@ -4385,62 +4386,70 @@ class InfoAskIn(BaseModel):
     country: str | None = None
 
 
-@app.get("/api/info/{slug}")
-async def info_sector(slug: str, author=Depends(optional_author)):
+# Сведения — слой обсуждения: адрес — корень обсуждения. Старые адреса со
+# словом (/api/info/ua-eu) ещё понимаются: info_db.topic_of ищет по нему
+# обсуждение (vault: decisions/2026-09-28-info-sector, Alex 28.09).
+async def _topic_or_404(root):
     try:
-        return await info_db.sector_view(slug, me=author["id"] if author else None)
+        return await info_db.topic_of(root)
     except info_db.InfoError as e:
         raise HTTPException(404, str(e))
-
-
-@app.get("/api/info/{slug}/country/{country}")
-async def info_country(slug: str, country: str, author=Depends(optional_author)):
-    try:
-        return await info_db.country_view(slug, country,
-                                          me=author["id"] if author else None)
-    except info_db.InfoError as e:
-        raise HTTPException(404, str(e))
-
-
-@app.get("/api/info/for-problem/{problem_id}")
-async def info_for_problem(problem_id: int):
-    """Разделы сведений этого обсуждения — для кнопки «Сведения →» под его корнем."""
-    return await info_db.sectors_for_problem(problem_id)
 
 
 @app.get("/api/info/fact/{fact_id}")
 async def info_fact_place(fact_id: int):
-    """Где сведение: ссылка /info.html#f29 должна открыть его страну."""
+    """Где сведение: ссылка #f29 должна открыть его обсуждение и страну."""
     place = await info_db.fact_place(fact_id)
     if not place:
         raise HTTPException(404, "Такого сведения нет — возможно, его сняли")
     return place
 
 
-@app.post("/api/info/{slug}/intake")
-async def info_intake(slug: str, body: InfoIntakeIn, author=Depends(verified_author)):
+@app.get("/api/info/{root}/count")
+async def info_count(root: int):
+    """Сколько сведений у обсуждения — для кнопки «Сведения» под корнем."""
+    return {"facts": (await info_db.counts_for([root])).get(root, 0)}
+
+
+@app.get("/api/info/{root}")
+async def info_topic(root: str, author=Depends(optional_author)):
+    try:
+        return await info_db.topic_view(root, me=author["id"] if author else None)
+    except info_db.InfoError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/info/{root}/country/{country}")
+async def info_country(root: str, country: str, author=Depends(optional_author)):
+    try:
+        return await info_db.country_view(root, country,
+                                          me=author["id"] if author else None)
+    except info_db.InfoError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/info/{root}/intake")
+async def info_intake(root: str, body: InfoIntakeIn, author=Depends(verified_author)):
     """Черновик полей из свободного текста. Публикует человек, не модель."""
-    if not await info_db.get_sector(slug):
-        raise HTTPException(404, "Такого раздела сведений нет")
+    t = await _topic_or_404(root)
     text = (body.text or "").strip()
     if len(text) < 10:
         raise HTTPException(400, "Напишите хотя бы пару предложений")
     url = (body.url or "").strip() or None
     if url and not info_db._public_host(url):
         raise HTTPException(400, "Ссылка не похожа на адрес страницы — проверьте её")
+    sections = (await info_db.topic_view(t["id"]))["suggested_sections"]
     await spend_llm(author)
     page = await _fetch_limited(info_db.fetch_text, url) if url else None
-    res = await asyncio.to_thread(info_ai.intake_sync, text, url, page)
+    res = await asyncio.to_thread(info_ai.intake_sync, text, url, page, sections)
     res["page_read"] = page is not None if url else None
     return res
 
 
-@app.post("/api/info/{slug}/facts")
-async def info_add_fact(slug: str, body: InfoFactIn, request: Request,
+@app.post("/api/info/{root}/facts")
+async def info_add_fact(root: str, body: InfoFactIn, request: Request,
                         author=Depends(verified_author)):
-    s = await info_db.get_sector(slug)
-    if not s:
-        raise HTTPException(404, "Такого раздела сведений нет")
+    t = await _topic_or_404(root)
     data = body.model_dump()
     try:
         info_db.validate_fact(data)
@@ -4457,12 +4466,12 @@ async def info_add_fact(slug: str, body: InfoFactIn, request: Request,
         data["kind"] = "report"
     try:
         fid = await info_db.add_fact(
-            s["id"], data, author["id"], quote_status=status,
+            t["id"], data, author["id"], quote_status=status,
             checked_at=datetime.now(timezone.utc) if status != "none" else None)
     except info_db.InfoError as e:
         raise _info_400(e)
     await antiabuse.record(author["id"], antiabuse.client_ip(request), "action",
-                           f"fact_add:{s['id']}")
+                           f"fact_add:{t['id']}")
     return {"id": fid, "quote_status": status, "kind": data["kind"]}
 
 
@@ -4488,16 +4497,14 @@ async def info_remove(fact_id: int, author=Depends(verified_author)):
     return {"ok": True}
 
 
-@app.post("/api/info/{slug}/ask")
-async def info_ask(slug: str, body: InfoAskIn, author=Depends(verified_author)):
-    s = await info_db.get_sector(slug)
-    if not s:
-        raise HTTPException(404, "Такого раздела сведений нет")
+@app.post("/api/info/{root}/ask")
+async def info_ask(root: str, body: InfoAskIn, author=Depends(verified_author)):
+    t = await _topic_or_404(root)
     q = (body.question or "").strip()
     if len(q) < 5:
         raise HTTPException(400, "Напишите вопрос хотя бы в несколько слов")
     country = body.country if body.country in taxonomy.COUNTRIES else None
-    facts = await info_db.search(s["id"], q, country)
+    facts = await info_db.search(t["id"], q, country)
     if facts:
         await spend_llm(author)
     res = await asyncio.to_thread(info_ai.ask_sync, q, facts)

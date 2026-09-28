@@ -990,6 +990,9 @@ async def init_db():
             await conn.execute(stmt)
         for stmt in antiabuse.SCHEMA + info_db.SCHEMA:
             await conn.execute(stmt)
+        # строки масштаба переезжают в сведения (vault: decisions/2026-09-28-info-sector)
+        async with conn.transaction():
+            await info_db.migrate_scale(conn)
         for stmt in _INDEXES:
             await conn.execute(stmt)
         # триграммы для подсказки дублей — best-effort, старт не зависит от них
@@ -3764,11 +3767,12 @@ async def get_problem(topic_root_id):
         totals = await conn.fetch(
             "SELECT outcome_kind, count(*) AS n FROM interventions "
             "WHERE topic_root_id = $1 GROUP BY outcome_kind", topic_root_id)
-        scale = await conn.fetch(
-            "SELECT * FROM problem_scale WHERE topic_root_id = $1 "
-            "AND deleted_at IS NULL ORDER BY id", topic_root_id)
+        # масштаб — раздел сведений «Масштаб» (одна запись, два вида: карточка
+        # проблемы и страница сведений), vault: decisions/2026-09-28-info-sector
+        from . import info_db
+        scale = await info_db.scale_rows(conn, topic_root_id)
     d = dict(row) if row else {"topic_root_id": topic_root_id}
-    d["scale"] = [_scale_dict(r) for r in scale]
+    d["scale"] = scale
     if d.get("scale_retrieved_at") is not None:
         d["scale_retrieved_at"] = d["scale_retrieved_at"].isoformat()
     if d.get("updated_at") is not None:
@@ -3794,29 +3798,34 @@ async def add_scale_row(topic_root_id, region, figure, source_url=None,
     не правкой строки. Поэтому строку нельзя переписать, только снять и внести
     заново — иначе цифра меняется под уже написанными доводами.
     """
+    # С 28.09 строка масштаба — сведение раздела «Масштаб»: одна запись видна и в
+    # карточке проблемы, и на странице сведений.
+    from . import info_db
+    country = info_db._country_of_region(region)
+    fig = (figure or "").strip()
+    f = {"section": info_db.SCALE_SECTION, "kind": "report", "country": country,
+         "city": None, "office": None, "place_note": None if region == country else region,
+         "applies_to": None, "title": fig[:200], "body": fig if len(fig) > 200 else None,
+         "when_text": None, "source_url": source_url, "source_title": None,
+         "source_quote": source_excerpt, "ord": 0}
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            row = await conn.fetchrow(
-                """
-                INSERT INTO problem_scale (topic_root_id, region, figure,
-                    source_url, source_excerpt, retrieved_at, author_id)
-                VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *
-                """, topic_root_id, region, figure, source_url, source_excerpt,
-                retrieved_at, author_id)
+            fid = await info_db._insert_fact(
+                conn, topic_root_id, f, author_id,
+                "unchecked" if source_url and source_excerpt else "none", retrieved_at, 30)
             await _log(conn, "scale_add",
-                       {"topic_root_id": topic_root_id, "region": region,
+                       {"topic_root_id": topic_root_id, "fact_id": fid, "region": region,
                         "figure": figure, "source_url": source_url}, author_id)
-    return _scale_dict(row)
+            row = await conn.fetchrow("SELECT * FROM info_facts WHERE id = $1", fid)
+    return info_db.scale_row_of(row)
 
 
 async def list_scale(topic_root_id):
+    from . import info_db
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM problem_scale WHERE topic_root_id = $1 "
-            "AND deleted_at IS NULL ORDER BY id", topic_root_id)
-    return [_scale_dict(r) for r in rows]
+        return await info_db.scale_rows(conn, topic_root_id)
 
 
 async def delete_scale_row(row_id, author_id=None):
@@ -3825,13 +3834,16 @@ async def delete_scale_row(row_id, author_id=None):
     pool = _pool_or_raise()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # строку масштаба снимает любой участник (рамка проблемы общая) —
+            # только в разделе «Масштаб»; прочие сведения снимает их автор
+            from . import info_db
             row = await conn.fetchrow(
-                "UPDATE problem_scale SET deleted_at = now() WHERE id = $1 "
-                "AND deleted_at IS NULL RETURNING *", row_id)
+                "UPDATE info_facts SET deleted_at = now() WHERE id = $1 AND section = $2 "
+                "AND deleted_at IS NULL RETURNING *", row_id, info_db.SCALE_SECTION)
             if row is None:
                 return None
             await _log(conn, "scale_delete", {"id": row_id}, author_id)
-    return _scale_dict(row)
+    return info_db.scale_row_of(row)
 
 
 # ---------------------------------------------------------- node embeddings

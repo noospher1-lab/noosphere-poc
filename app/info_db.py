@@ -1,26 +1,33 @@
 """
-Информационный сектор: сведения, подтверждения людей, сверка цитат
-(vault: drafts/2026-09-28-info-sector).
+Сведения — слой обсуждения (vault: decisions/2026-09-28-info-sector).
 
 Alex 28.09: «мы никого не консультируем, а собираем доступную информацию, а
-люди уже ей распоряжаются как хотят». Отсюда устройство:
+люди уже ей распоряжаются как хотят». И следом: «делай сведения слоем
+обсуждения». Отсюда устройство:
 
-  - СВЕДЕНИЕ — не вердикт «правда/ложь», а утверждение и то, на что оно
-    опирается. Три вида (Alex 28.09, «делай как предлагаешь»):
+  - СВЕДЕНИЕ живёт под корнем обсуждения (topic_root_id), как реестр и
+    масштаб: у любого обсуждения могут быть сведения, и у каждого сведения
+    есть место в споре — довод ссылается на него (#id) и оспаривает его.
+    Раньше был отдельный «сектор» с одним обсуждением и своей копией тех же
+    фактов, что в «Масштабе», — одна мысль висела в двух местах.
+  - «МАСШТАБ» проблемы — это раздел сведений с подписью «Масштаб»: строка
+    «регион — цифра — источник» и сведение — одно и то же. Старые строки
+    problem_scale переносятся сюда при старте (migrate_scale), карточка
+    проблемы читает их отсюда же (db.get_problem).
+  - Не вердикт «правда/ложь», а на что опирается. Три вида (Alex 28.09):
       норма  — текст закона или официальное разъяснение ведомства, цитата
                сверена с источником;
       сообщают — СМИ, юристы, помогающие организации: пересказ со ссылкой;
       опыт людей — то, что внесли сами люди; у опыта всегда есть страна,
                и опирается он на число независимых подтверждений.
-    Раньше «практикой» называли и статьи СМИ, и опыт людей, а легенда
-    обещала «так было с людьми» — агенты студии 28.09 поймали расхождение.
-  - Порядок чтения — сначала суть для всех (закон-основание, законы о правах
-    и равенстве, общие пути), потом страна, потом город, если в городе своя
-    практика (Alex 28.09).
+  - РАЗДЕЛ — подпись, а не список из кода: у обсуждения о защите это
+    «Продление защиты», у обсуждения о пробках — своё. Порядок — сначала
+    закон и права, потом масштаб, потом остальное (Alex 28.09: «сначала
+    закон… потом по каждой стране или городу»).
   - Сверка цитаты — механическая, без ИИ: сервер скачивает страницу и ищет
     выдержку дословно. ИИ здесь не судья, а редактор (разбор текста в поля).
-  - Свежесть выводится: checked_at + recheck_days < сегодня → «пора
-    перепроверить». Ничего не копится флагами.
+  - Свежесть выводится: checked_at + recheck_days < сегодня. Ничего не
+    копится флагами.
 """
 
 import html
@@ -33,23 +40,25 @@ from datetime import datetime, timezone
 
 from . import antiabuse, db, taxonomy
 
-SECTIONS = ("basis", "rights", "protection", "residence", "court", "other")
-SECTION_NAMES = {
-    "basis": "Закон-основание",
-    "rights": "Права и равенство",
-    "protection": "Продление защиты",
-    "residence": "Переход на вид на жительство",
-    "court": "Оспаривание в суде",
-    "other": "Другое",
-}
+# Порядок разделов, если такие подписи есть в обсуждении; остальные — следом,
+# по первому появлению. Первые два — «сначала закон» (Alex 28.09).
+SCALE_SECTION = "Масштаб"
+SECTION_ORDER = ["Закон-основание", "Права и равенство", SCALE_SECTION,
+                 "Продление защиты", "Переход на вид на жительство",
+                 "Оспаривание в суде"]
+# что предложить в форме, если в обсуждении разделов ещё нет
+DEFAULT_SECTIONS = ["Закон-основание", "Права и равенство", SCALE_SECTION, "Что делать"]
+_OLD_SECTION = {"basis": "Закон-основание", "rights": "Права и равенство",
+                "protection": "Продление защиты", "residence": "Переход на вид на жительство",
+                "court": "Оспаривание в суде", "other": "Другое"}
 KINDS = ("norm", "report", "experience")
 QUOTE_STATUSES = ("verified", "mismatch", "unreachable", "unchecked", "none")
 
 # лимиты от вбросов (Alex 28.09: «будем мониторить и ограничивать лимиты»)
 FACTS_PER_DAY = 20
 REPORTS_PER_DAY = 100
-# ключ advisory-замка «действия одного аккаунта в секторе»: без него два
-# параллельных запроса оба видят «19 из 20» и оба проходят (ревью 28.09, С-5)
+# ключ advisory-замка «действия одного аккаунта»: без него два параллельных
+# запроса оба видят «19 из 20» и оба проходят (ревью 28.09, С-5)
 AUTHOR_LOCK = 7101
 
 
@@ -58,6 +67,7 @@ class InfoError(Exception):
 
 
 SCHEMA = [
+    # Осталась только как адрес старых ссылок /info.html?s=ua-eu → обсуждение.
     """
     CREATE TABLE IF NOT EXISTS info_sectors (
         id          SERIAL PRIMARY KEY,
@@ -70,15 +80,19 @@ SCHEMA = [
     """,
     # country NULL — сведение для всех (уровень ЕС или международный).
     # Страна — из той же таксономии, что у тем: иначе «Германия» и «ФРГ»
-    # разъехались бы в две страны на карте.
+    # разъехались бы в две страны на карте. place_note — место, которое не
+    # страна («Весь мир (консульства Украины)», «Евросоюз») — так было в
+    # строках масштаба.
     """
     CREATE TABLE IF NOT EXISTS info_facts (
         id            SERIAL PRIMARY KEY,
-        sector_id     INTEGER NOT NULL REFERENCES info_sectors(id) ON DELETE CASCADE,
+        topic_root_id INTEGER REFERENCES nodes(id) ON DELETE CASCADE,
+        sector_id     INTEGER REFERENCES info_sectors(id) ON DELETE SET NULL,
         section       TEXT NOT NULL,
         country       TEXT,
         city          TEXT,
         office        TEXT,
+        place_note    TEXT,
         applies_to    TEXT,
         kind          TEXT NOT NULL,
         title         TEXT NOT NULL,
@@ -96,7 +110,25 @@ SCHEMA = [
         deleted_at    TIMESTAMPTZ
     )
     """,
-    "CREATE INDEX IF NOT EXISTS info_facts_sector ON info_facts (sector_id, country, section)",
+    # стенд 28.09: сведения жили в «секторе» — переезжают под обсуждение
+    "ALTER TABLE info_facts ADD COLUMN IF NOT EXISTS topic_root_id INTEGER "
+    "REFERENCES nodes(id) ON DELETE CASCADE",
+    "ALTER TABLE info_facts ADD COLUMN IF NOT EXISTS place_note TEXT",
+    "ALTER TABLE info_facts ALTER COLUMN sector_id DROP NOT NULL",
+    """
+    UPDATE info_facts f SET topic_root_id = s.problem_id
+    FROM info_sectors s
+    WHERE f.sector_id = s.id AND f.topic_root_id IS NULL AND s.problem_id IS NOT NULL
+    """,
+    """
+    UPDATE info_facts SET section = CASE section
+        WHEN 'basis' THEN 'Закон-основание' WHEN 'rights' THEN 'Права и равенство'
+        WHEN 'protection' THEN 'Продление защиты'
+        WHEN 'residence' THEN 'Переход на вид на жительство'
+        WHEN 'court' THEN 'Оспаривание в суде' ELSE 'Другое' END
+    WHERE section IN ('basis', 'rights', 'protection', 'residence', 'court', 'other')
+    """,
+    "CREATE INDEX IF NOT EXISTS info_facts_topic ON info_facts (topic_root_id, country)",
     # переход со старых видов (стенд 28.09): статьи и разборы — «сообщают»,
     # то, что внесли люди, — «опыт людей»
     """
@@ -118,6 +150,8 @@ SCHEMA = [
         UNIQUE (fact_id, author_id)
     )
     """,
+    # куда переехала строка масштаба (идемпотентность переноса)
+    "ALTER TABLE problem_scale ADD COLUMN IF NOT EXISTS moved_to_fact INTEGER",
 ]
 
 WIPE_TABLES = "info_reports, info_facts, info_sectors"
@@ -330,16 +364,16 @@ def check_quote(url: str | None, quote: str | None) -> str:
 
 
 # ------------------------------------------------------------ запись
-
 def _clean(s, n):
     s = " ".join(str(s or "").split()) if n <= 300 else str(s or "").strip()
     return s[:n] or None
 
 
 def validate_fact(d: dict) -> dict:
-    section = d.get("section") or "other"
-    if section not in SECTIONS:
-        raise InfoError("Такого раздела нет — выберите из списка")
+    section = _clean(d.get("section"), 60)
+    section = _OLD_SECTION.get(section, section) or "Другое"
+    if len(section) < 2:
+        raise InfoError("Раздел — хотя бы пара слов")
     kind = d.get("kind") or "experience"
     if kind not in KINDS:
         raise InfoError("Такого вида сведения нет — выберите из списка")
@@ -350,7 +384,7 @@ def validate_fact(d: dict) -> dict:
     if city and not country:
         raise InfoError("Указан город — выберите и страну")
     # у опыта всегда есть страна: иначе случай из одного города встаёт в
-    # «Суть — для всех» рядом с законами ЕС (UX 28.09, Б2)
+    # «общее для всех» рядом с законами (UX 28.09, Б2)
     if kind == "experience" and not country:
         raise InfoError("Опыт людей всегда в какой-то стране — выберите страну")
     title = _clean(d.get("title"), 200)
@@ -376,6 +410,7 @@ def validate_fact(d: dict) -> dict:
     return {
         "section": section, "kind": kind, "country": country, "city": city,
         "office": _clean(d.get("office"), 200),
+        "place_note": _clean(d.get("place_note"), 200),
         "applies_to": _clean(d.get("applies_to"), 200),
         "title": title, "body": _clean(d.get("body"), 4000),
         "when_text": _clean(d.get("when_text"), 100),
@@ -385,32 +420,22 @@ def validate_fact(d: dict) -> dict:
     }
 
 
-async def get_sector(slug_or_id):
+async def topic_of(root_or_slug):
+    """Корень обсуждения по номеру или по старому адресу раздела (?s=ua-eu)."""
     pool = db._pool_or_raise()
     async with pool.acquire() as conn:
-        if str(slug_or_id).isdigit():
-            row = await conn.fetchrow("SELECT * FROM info_sectors WHERE id = $1", int(slug_or_id))
+        if str(root_or_slug).isdigit():
+            row = await conn.fetchrow(
+                "SELECT id, title, text, kind FROM nodes WHERE id = $1 "
+                "AND id = topic_root_id AND deleted_at IS NULL", int(root_or_slug))
         else:
-            row = await conn.fetchrow("SELECT * FROM info_sectors WHERE slug = $1", str(slug_or_id))
-    return dict(row) if row else None
-
-
-async def ensure_sector(slug, title, intro=None, problem_id=None):
-    pool = db._pool_or_raise()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            sid = await conn.fetchval("SELECT id FROM info_sectors WHERE slug = $1", slug)
-            if sid:
-                await conn.execute(
-                    "UPDATE info_sectors SET title = $2, intro = $3, "
-                    "problem_id = COALESCE($4, problem_id) WHERE id = $1",
-                    sid, title, intro, problem_id)
-                return sid
-            sid = await conn.fetchval(
-                "INSERT INTO info_sectors (slug, title, intro, problem_id) "
-                "VALUES ($1, $2, $3, $4) RETURNING id", slug, title, intro, problem_id)
-            await db._log(conn, "info_sector_added", {"id": sid, "slug": slug, "title": title})
-    return sid
+            row = await conn.fetchrow(
+                "SELECT n.id, n.title, n.text, n.kind FROM info_sectors s "
+                "JOIN nodes n ON n.id = s.problem_id WHERE s.slug = $1 "
+                "AND n.deleted_at IS NULL", str(root_or_slug))
+    if not row:
+        raise InfoError("Такого обсуждения нет")
+    return dict(row)
 
 
 async def _check_fact_limit(conn, author_id):
@@ -430,41 +455,51 @@ async def fact_limit_left(author_id):
         await _check_fact_limit(conn, author_id)
 
 
-async def add_fact(sector_id, data: dict, author_id, quote_status="unchecked",
+async def _insert_fact(conn, root, f, author_id, quote_status, checked_at, recheck_days,
+                       created_at=None):
+    return await conn.fetchval(
+        """
+        INSERT INTO info_facts (topic_root_id, section, country, city, office, place_note,
+            applies_to, kind, title, body, when_text, source_url, source_title,
+            source_quote, quote_status, checked_at, recheck_days, ord, author_id,
+            created_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+                COALESCE($20, now()))
+        RETURNING id
+        """, root, f["section"], f["country"], f["city"], f["office"], f.get("place_note"),
+        f["applies_to"], f["kind"], f["title"], f["body"], f["when_text"],
+        f["source_url"], f["source_title"], f["source_quote"],
+        quote_status, checked_at, recheck_days, f["ord"], author_id, created_at)
+
+
+async def add_fact(root, data: dict, author_id, quote_status="unchecked",
                    checked_at=None, recheck_days=30, limit=True):
     f = validate_fact(data)
     pool = db._pool_or_raise()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            if not await conn.fetchval(
+                    "SELECT 1 FROM nodes WHERE id = $1 AND id = topic_root_id", root):
+                raise InfoError("Такого обсуждения нет")
             if limit and author_id is not None:
                 await conn.execute("SELECT pg_advisory_xact_lock($1, $2)", AUTHOR_LOCK, author_id)
                 await _check_fact_limit(conn, author_id)
-            fid = await conn.fetchval(
-                """
-                INSERT INTO info_facts (sector_id, section, country, city, office,
-                    applies_to, kind, title, body, when_text, source_url,
-                    source_title, source_quote, quote_status, checked_at,
-                    recheck_days, ord, author_id)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-                RETURNING id
-                """, sector_id, f["section"], f["country"], f["city"], f["office"],
-                f["applies_to"], f["kind"], f["title"], f["body"], f["when_text"],
-                f["source_url"], f["source_title"], f["source_quote"],
-                quote_status, checked_at, recheck_days, f["ord"], author_id)
+            fid = await _insert_fact(conn, root, f, author_id, quote_status, checked_at,
+                                     recheck_days)
             await db._log(conn, "info_fact_added",
-                          {"id": fid, "sector_id": sector_id, **f,
+                          {"id": fid, "topic_root_id": root, **f,
                            "quote_status": quote_status}, author_id)
     return fid
 
 
-async def find_fact(sector_id, title, country):
+async def find_fact(root, title, country):
     """Сведение с тем же утверждением в той же стране — для повторного посева."""
     pool = db._pool_or_raise()
     async with pool.acquire() as conn:
         return await conn.fetchval(
-            "SELECT id FROM info_facts WHERE sector_id = $1 AND title = $2 "
+            "SELECT id FROM info_facts WHERE topic_root_id = $1 AND title = $2 "
             "AND country IS NOT DISTINCT FROM $3 AND deleted_at IS NULL",
-            sector_id, title, country)
+            root, title, country)
 
 
 async def set_quote_status(fact_id, status):
@@ -534,6 +569,79 @@ async def set_report(fact_id, author_id, verdict, note=None):
                           {"fact_id": fact_id, "verdict": verdict, "note": note}, author_id)
 
 
+# ------------------------------------------------------------ масштаб = раздел сведений
+
+def _country_of_region(region):
+    """«Дания (вне решения ЕС)» → Дания; «Евросоюз», «Весь мир (…)» → None."""
+    r = (region or "").strip()
+    best = None
+    for c in taxonomy.COUNTRIES:
+        if r == c or r.startswith(c + " ") or r.startswith(c + ","):
+            if best is None or len(c) > len(best):
+                best = c
+    return best
+
+
+async def migrate_scale(conn):
+    """Строки масштаба (problem_scale) переезжают в сведения раздела «Масштаб».
+    Идемпотентно: перенесённая строка помечается moved_to_fact. Если такое же
+    сведение (та же ссылка и выдержка) уже есть — второе не заводим: одна
+    мысль — один узел (Alex 11.09)."""
+    rows = await conn.fetch(
+        "SELECT * FROM problem_scale WHERE deleted_at IS NULL AND moved_to_fact IS NULL "
+        "ORDER BY id")
+    if not rows:
+        return 0
+    existing = {}
+    for r in await conn.fetch(
+            "SELECT id, source_url, source_quote FROM info_facts "
+            "WHERE deleted_at IS NULL AND source_url IS NOT NULL"):
+        existing[(r["source_url"], normalize(r["source_quote"] or ""))] = r["id"]
+    moved = 0
+    for r in rows:
+        key = (r["source_url"], normalize(r["source_excerpt"] or ""))
+        fid = existing.get(key) if r["source_url"] else None
+        if fid is None:
+            country = _country_of_region(r["region"])
+            fig = (r["figure"] or "").strip()
+            f = {"section": SCALE_SECTION, "kind": "report", "country": country,
+                 "city": None, "office": None,
+                 "place_note": None if r["region"] == country else r["region"],
+                 "applies_to": None, "title": fig[:200],
+                 "body": fig if len(fig) > 200 else None, "when_text": None,
+                 "source_url": r["source_url"], "source_title": None,
+                 "source_quote": r["source_excerpt"], "ord": 0}
+            fid = await _insert_fact(conn, r["topic_root_id"], f, r["author_id"],
+                                     "unchecked", None, 30, created_at=r["created_at"])
+            await db._log(conn, "info_fact_from_scale",
+                          {"id": fid, "scale_id": r["id"], "topic_root_id": r["topic_root_id"]},
+                          r["author_id"])
+            if r["source_url"]:
+                existing[key] = fid
+            moved += 1
+        await conn.execute("UPDATE problem_scale SET moved_to_fact = $2 WHERE id = $1",
+                           r["id"], fid)
+    return moved
+
+
+def scale_row_of(r):
+    """Сведение раздела «Масштаб» в прежнем виде строки масштаба — для карточки
+    проблемы и контекста ИИ, которые читают «регион — цифра — источник»."""
+    where = r["place_note"] or ", ".join(x for x in (r["country"], r["city"]) if x) or "—"
+    return {"id": r["id"], "topic_root_id": r["topic_root_id"], "region": where,
+            "figure": r["body"] or r["title"], "source_url": r["source_url"],
+            "source_excerpt": r["source_quote"],
+            "retrieved_at": r["checked_at"].isoformat() if r["checked_at"] else None,
+            "author_id": r["author_id"], "created_at": r["created_at"].isoformat()}
+
+
+async def scale_rows(conn, root):
+    rows = await conn.fetch(
+        "SELECT * FROM info_facts WHERE topic_root_id = $1 AND section = $2 "
+        "AND deleted_at IS NULL ORDER BY id", root, SCALE_SECTION)
+    return [scale_row_of(r) for r in rows]
+
+
 # ------------------------------------------------------------ чтение
 
 def _fact_out(r, reports, rep_counts, me=None):
@@ -543,7 +651,8 @@ def _fact_out(r, reports, rep_counts, me=None):
     mine = next((x["verdict"] for x in reports if x["author_id"] == me), None) if me else None
     return {
         "id": r["id"], "section": r["section"], "country": r["country"],
-        "city": r["city"], "office": r["office"], "applies_to": r["applies_to"],
+        "city": r["city"], "office": r["office"], "place_note": r["place_note"],
+        "applies_to": r["applies_to"],
         "kind": r["kind"], "title": r["title"], "body": r["body"],
         "when_text": r["when_text"], "source_url": r["source_url"],
         "source_title": r["source_title"], "source_quote": r["source_quote"],
@@ -561,25 +670,25 @@ def _fact_out(r, reports, rep_counts, me=None):
     }
 
 
-async def sector_facts(sector_id, me=None, country=None):
+async def topic_facts(root, me=None, country=None):
     pool = db._pool_or_raise()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT f.*, a.name AS author_name, a.is_service AS author_is_service
             FROM info_facts f LEFT JOIN authors a ON a.id = f.author_id
-            WHERE f.sector_id = $1 AND f.deleted_at IS NULL
+            WHERE f.topic_root_id = $1 AND f.deleted_at IS NULL
               AND ($2::text IS NULL OR f.country = $2)
             ORDER BY f.country NULLS FIRST, f.city NULLS FIRST, f.ord, f.id
-            """, sector_id, country)
+            """, root, country)
         reps = await conn.fetch(
             "SELECT r.* FROM info_reports r JOIN info_facts f ON f.id = r.fact_id "
-            "WHERE f.sector_id = $1 AND f.deleted_at IS NULL ORDER BY r.created_at",
-            sector_id)
+            "WHERE f.topic_root_id = $1 AND f.deleted_at IS NULL ORDER BY r.created_at",
+            root)
     by_fact: dict[int, list] = {}
     for x in reps:
         by_fact.setdefault(x["fact_id"], []).append(x)
-    # одна склейка на всех авторов сектора, а не запрос на каждое сведение
+    # одна склейка на всех авторов обсуждения, а не запрос на каждое сведение
     rep = await antiabuse.clusters([x["author_id"] for x in reps] +
                                    [r["author_id"] for r in rows if r["author_id"]])
     out = []
@@ -595,15 +704,36 @@ async def sector_facts(sector_id, me=None, country=None):
     return out
 
 
+def section_order(facts):
+    """Подписи разделов обсуждения в порядке чтения: закон и права — первыми."""
+    seen = []
+    for f in facts:
+        if f["section"] not in seen:
+            seen.append(f["section"])
+    known = [s for s in SECTION_ORDER if s in seen]
+    return known + [s for s in seen if s not in known]
+
+
 def _geo_of(country):
     return sorted(taxonomy.GEO_PARENTS.get(country, {}).get("regions", set()))
 
 
-async def sector_view(slug_or_id, me=None):
-    s = await get_sector(slug_or_id)
-    if not s:
-        raise InfoError("Такого раздела сведений нет")
-    facts = await sector_facts(s["id"], me=me)
+async def counts_for(roots):
+    """Сколько сведений у обсуждений — для кнопки «Сведения» и связанных."""
+    if not roots:
+        return {}
+    pool = db._pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT topic_root_id, count(*) AS n FROM info_facts "
+            "WHERE topic_root_id = ANY($1::int[]) AND deleted_at IS NULL GROUP BY 1",
+            list(roots))
+    return {r["topic_root_id"]: r["n"] for r in rows}
+
+
+async def topic_view(root_or_slug, me=None):
+    t = await topic_of(root_or_slug)
+    facts = await topic_facts(t["id"], me=me)
     common = [f for f in facts if not f["country"]]
     countries: dict[str, dict] = {}
     for f in facts:
@@ -619,25 +749,34 @@ async def sector_view(slug_or_id, me=None):
             c["cities"].add(f["city"])
     for c in countries.values():
         c["cities"] = sorted(c["cities"])
+    # связанные обсуждения («порождает») — там могут быть свои сведения
+    links = await db.problem_links_of(t["id"])
+    rel = [{"id": l["cause_id"], "title": l["problem_title"], "rel": "cause"}
+           for l in links.get("causes", [])] + \
+          [{"id": l["effect_id"], "title": l["problem_title"], "rel": "effect"}
+           for l in links.get("effects", [])]
+    n = await counts_for([r["id"] for r in rel])
+    for r in rel:
+        r["facts"] = n.get(r["id"], 0)
+    sections = section_order(facts)
     return {
-        "sector": {"id": s["id"], "slug": s["slug"], "title": s["title"],
-                   "intro": s["intro"], "problem_id": s["problem_id"]},
-        "sections": [{"id": k, "name": SECTION_NAMES[k]} for k in SECTIONS],
+        "topic": {"id": t["id"], "title": t["title"] or (t["text"] or "")[:120],
+                  "kind": t["kind"]},
+        "sections": sections,
+        "suggested_sections": sections + [s for s in DEFAULT_SECTIONS if s not in sections],
         "common": common,
         "countries": sorted(countries.values(), key=lambda c: c["country"]),
+        "related": rel,
         "total": len(facts),
     }
 
 
-async def country_view(slug_or_id, country, me=None):
-    s = await get_sector(slug_or_id)
-    if not s:
-        raise InfoError("Такого раздела сведений нет")
+async def country_view(root_or_slug, country, me=None):
+    t = await topic_of(root_or_slug)
     if country not in taxonomy.COUNTRIES:
         raise InfoError("Такой страны нет в списке")
-    facts = await sector_facts(s["id"], me=me, country=country)
-    return {"sector": {"id": s["id"], "slug": s["slug"], "title": s["title"]},
-            "country": country,
+    facts = await topic_facts(t["id"], me=me, country=country)
+    return {"topic": {"id": t["id"]}, "country": country,
             "national": [f for f in facts if not f["city"]],
             "cities": [{"city": c, "facts": [f for f in facts if f["city"] == c]}
                        for c in sorted({f["city"] for f in facts if f["city"]})]}
@@ -657,10 +796,10 @@ async def stale_facts(limit=200):
     return [dict(r) for r in rows]
 
 
-async def search(sector_id, question, country=None, limit=12):
+async def search(root, question, country=None, limit=12):
     """Кандидаты для ответа: слова вопроса против утверждения, пояснения и
     выдержки + всё по стране человека. Без эмбеддингов — стенд их не грузит,
-    а сведений в секторе сотни, не миллионы."""
+    а сведений в обсуждении сотни, не миллионы."""
     words = [w for w in re.findall(r"\w{4,}", (question or "").lower())][:12]
     pool = db._pool_or_raise()
     async with pool.acquire() as conn:
@@ -673,9 +812,9 @@ async def search(sector_id, question, country=None, limit=12):
                                  coalesce(f.source_quote,'') || ' ' || coalesce(f.city,''))
                            LIKE '%' || left(w, greatest(4, length(w) - 2)) || '%') AS hits
             FROM info_facts f
-            WHERE f.sector_id = $1 AND f.deleted_at IS NULL
+            WHERE f.topic_root_id = $1 AND f.deleted_at IS NULL
               AND (f.country IS NULL OR $2::text IS NULL OR f.country = $2)
-            """, sector_id, country, words)
+            """, root, country, words)
     ranked = sorted((dict(r) for r in rows),
                     key=lambda r: (-(r["hits"] + (2 if country and r["country"] == country else 0)),
                                    r["id"]))
@@ -685,26 +824,10 @@ async def search(sector_id, question, country=None, limit=12):
 
 
 async def fact_place(fact_id):
-    """Где лежит сведение — чтобы ссылка /info.html#f29 открыла нужную страну."""
+    """Где лежит сведение — чтобы ссылка #f29 открыла нужное обсуждение и страну."""
     pool = db._pool_or_raise()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT f.id, f.country, s.slug FROM info_facts f "
-            "JOIN info_sectors s ON s.id = f.sector_id "
-            "WHERE f.id = $1 AND f.deleted_at IS NULL", fact_id)
+            "SELECT id, country, topic_root_id FROM info_facts "
+            "WHERE id = $1 AND deleted_at IS NULL", fact_id)
     return dict(row) if row else None
-
-
-async def sectors_for_problem(problem_id):
-    pool = db._pool_or_raise()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT slug, title FROM info_sectors WHERE problem_id = $1 ORDER BY id", problem_id)
-    return [dict(r) for r in rows]
-
-
-async def list_sectors():
-    pool = db._pool_or_raise()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT slug, title FROM info_sectors ORDER BY id")
-    return [dict(r) for r in rows]

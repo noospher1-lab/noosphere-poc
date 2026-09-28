@@ -786,24 +786,34 @@ async def run(url, check=True, replace=False):
         problem = await conn.fetchval(
             "SELECT id FROM nodes WHERE kind = 'problem' AND title = $1 ORDER BY id LIMIT 1",
             SECTOR["problem_title"])
-    sid = await info_db.ensure_sector(SECTOR["slug"], SECTOR["title"], SECTOR["intro"], problem)
+    if problem is None:
+        raise SystemExit(f"нет обсуждения «{SECTOR['problem_title']}» — сначала посев rezerv_plus")
+    # сведения — слой обсуждения; строка info_sectors осталась только как
+    # адрес старых ссылок /info.html?s=ua-eu
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO info_sectors (slug, title, problem_id) VALUES ($1, $2, $3) "
+            "ON CONFLICT (slug) DO UPDATE SET problem_id = EXCLUDED.problem_id",
+            SECTOR["slug"], SECTOR["title"], problem)
     aid = await _author()
     if replace:
         # Пересев после правки текстов: снимаем прежний посев (его автор —
         # служебный Claude) и тестовые «ТЕСТ:» записи; сведения живых людей
         # не трогаем. Снятие — пометкой, событие пишется как обычно.
         async with pool.acquire() as conn:
+            # «Масштаб» — строки, перенесённые из карточки проблемы (посев 25.09):
+            # этот посев их не заводил и не снимает
             gone = await conn.fetch(
-                "UPDATE info_facts SET deleted_at = now() WHERE sector_id = $1 "
-                "AND deleted_at IS NULL AND (author_id = $2 OR title LIKE 'ТЕСТ%') "
-                "RETURNING id", sid, aid)
+                "UPDATE info_facts SET deleted_at = now() WHERE topic_root_id = $1 "
+                "AND deleted_at IS NULL AND ((author_id = $2 AND section <> $3) "
+                "OR title LIKE 'ТЕСТ%') RETURNING id", problem, aid, info_db.SCALE_SECTION)
             for r in gone:
                 await db._log(conn, "info_fact_removed", {"id": r["id"], "reason": "reseed"})
         print(f"снято перед пересевом: {len(gone)}")
     added = skipped = 0
     stats = {}
     for f in COMMON + COUNTRIES:
-        if await info_db.find_fact(sid, f["title"], f.get("country")):
+        if await info_db.find_fact(problem, f["title"], f.get("country")):
             skipped += 1
             continue
         status = "none"
@@ -812,15 +822,15 @@ async def run(url, check=True, replace=False):
                                              f["source_quote"]) if check else "unchecked"
         data = dict(f)
         if data["kind"] == "norm" and status != "verified":
-            data["kind"] = "unverified"
-        await info_db.add_fact(sid, data, aid, quote_status=status,
+            data["kind"] = "report"
+        await info_db.add_fact(problem, data, aid, quote_status=status,
                                checked_at=datetime.now(timezone.utc) if status != "none" else None,
                                limit=False)
         stats[status] = stats.get(status, 0) + 1
         if status == "mismatch":
             print(f"  ✗ цитата не найдена: {f.get('country') or 'общее'} — {f['title'][:70]}")
         added += 1
-    print(f"сектор #{sid} ({SECTOR['slug']}), обсуждение #{problem}: добавлено {added}, "
+    print(f"обсуждение #{problem}: добавлено {added}, "
           f"уже было {skipped}; сверка: {stats}")
     await db.close_pool()
 

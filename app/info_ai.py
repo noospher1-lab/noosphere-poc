@@ -39,10 +39,8 @@ INTAKE_SYSTEM = (
     '  "title": one short factual sentence in Russian stating what is known '
     "(e.g. «В ABH Лейпцига продление без Резерв+ не оформляют»);\n"
     '  "body": optional 1-3 sentences in Russian with details the contributor gave;\n'
-    '  "section": one of basis (the law the authorities act on), rights (laws on '
-    "equality / rights that may be violated), protection (extending temporary "
-    "protection), residence (switching to a residence permit), court (challenging in "
-    "court), other;\n"
+    '  "section": the section label — pick the best fitting one from SECTIONS below, '
+    "or a new short label in Russian (2-4 words) if none fits;"
     '  "kind": norm (only if a law or an official text of an authority is quoted), '
     "report (retelling of a news article, lawyer, NGO — needs the link), experience "
     "(what happened to the contributor or people they know at an office);\n"
@@ -79,9 +77,10 @@ def _parse(raw):
     return json.loads(m.group(0) if m else raw)
 
 
-def intake_sync(text, url=None, page_text=None):
+def intake_sync(text, url=None, page_text=None, sections=None):
     """Черновик полей сведения. Никогда не бросает."""
-    user = "CONTRIBUTION:\n" + poi.wrap_user_text(text[:4000])
+    user = "SECTIONS: " + "; ".join(sections or info_db.DEFAULT_SECTIONS) + "\n"
+    user += "CONTRIBUTION:\n" + poi.wrap_user_text(text[:4000])
     if url:
         user += f"\nLINK: {url}"
     if page_text:
@@ -102,8 +101,8 @@ def intake_sync(text, url=None, page_text=None):
                        "office", "applies_to", "when_text", "source_quote", "source_title")}
     draft["source_url"] = url
     # модель не решает, что допустимо — чистим до словаря сервера
-    if draft.get("section") not in info_db.SECTIONS:
-        draft["section"] = "other"
+    sec = " ".join(str(draft.get("section") or "").split())[:60]
+    draft["section"] = sec if len(sec) >= 2 else "Другое"
     if draft.get("kind") not in info_db.KINDS:
         draft["kind"] = "experience"
     if draft.get("country") not in taxonomy.COUNTRIES:

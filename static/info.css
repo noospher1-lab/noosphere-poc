@@ -154,3 +154,10 @@ label.f textarea { min-height: 90px; resize: vertical; }
 .msg:empty { display: none; }
 .answer { white-space: pre-line; margin-top: 12px; }
 .answer a { font-family: var(--mono); font-size: 13px; }
+
+.crumbs { margin: 0 0 4px; font-size: 14px; }
+.crumbs a { display: inline-flex; align-items: center; min-height: 44px; }
+.small-h { font-weight: 500; }
+.related { list-style: none; padding: 0; margin: 8px 0 0; }
+.related li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.related a { display: inline-flex; min-height: 32px; align-items: center; }

@@ -1,4 +1,5 @@
-// Информационный сектор (vault: decisions/2026-09-28-info-sector).
+// Сведения обсуждения (vault: decisions/2026-09-28-info-sector) — слой обсуждения,
+// как реестр: законы, цифры, сообщения и опыт людей по этому вопросу.
 // Порядок чтения задал Alex 28.09: сначала общее для всех — закон, на котором
 // основаны действия стран, и нормы о правах и равенстве; потом страна; потом
 // город, если там своя практика. Карта — вход в страну.
@@ -15,7 +16,9 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const $ = (sel, root = document) => root.querySelector(sel);
 const qs = new URLSearchParams(location.search);
-const SLUG = qs.get("s") || "ua-eu";
+// Сведения — слой обсуждения: адрес — корень обсуждения (?root=128). Старый
+// адрес со словом (?s=ua-eu) сервер ещё понимает.
+const ROOT = qs.get("root") || qs.get("s") || "";
 
 async function api(path, opts = {}) {
   let r;
@@ -58,14 +61,14 @@ const KIND = {
   report: ["сообщают", "пересказ источника: СМИ, юристы, помогающие организации"],
   experience: ["опыт людей", "так было с людьми — опирается на число подтверждений"],
 };
-const SECTION_ORDER = ["basis", "rights", "protection", "residence", "court", "other"];
+// подсказки к привычным разделам; раздел — подпись обсуждения, у других свои
 const SECTION_HINT = {
-  basis: "На чём основаны действия стран: решения ЕС и национальные акты. Страны применяют новое условие с разных дат — смотрите свою страну.",
-  rights: "Нормы о равенстве и запрете дискриминации в праве ЕС и международном праве.",
-  protection: "Продление временной защиты: сроки и что требуют.",
-  residence: "Переход с временной защиты на вид на жительство: какие есть пути.",
-  court: "Где и в какие сроки обжалуют решения.",
-  other: "",
+  "Закон-основание": "На чём основаны действия: законы и решения. Страны применяют их с разных дат — смотрите свою страну.",
+  "Права и равенство": "Нормы о равенстве и запрете дискриминации.",
+  "Масштаб": "Где встречается и в каких объёмах.",
+  "Продление защиты": "Продление временной защиты: сроки и что требуют.",
+  "Переход на вид на жительство": "Переход с временной защиты на вид на жительство: какие есть пути.",
+  "Оспаривание в суде": "Где и в какие сроки обжалуют решения.",
 };
 
 // ------------------------------------------------------------ карточка
@@ -84,7 +87,7 @@ function quoteStatus(f) {
 
 function factCard(f, ctx) {
   // в общей части не повторять «ЕС и международное право», в стране — её имя
-  const where = [ctx === "country" ? null : (f.country || null), f.city, f.office].filter(Boolean).join(" · ");
+  const where = [ctx === "country" ? null : (f.country || null), f.city, f.office, f.place_note].filter(Boolean).join(" · ");
   const extra = [f.applies_to && "кого касается: " + f.applies_to, f.when_text && "когда: " + f.when_text]
     .filter(Boolean).join(" · ");
   const meta = [where, extra].filter(Boolean).join(" · ");
@@ -134,11 +137,11 @@ function factRow(f) {
 
 function bySection(facts, ctx) {
   const out = [];
-  for (const s of SECTION_ORDER) {
+  const order = VIEW.sections.concat([...new Set(facts.map(f => f.section))].filter(x => !VIEW.sections.includes(x)));
+  for (const s of order) {
     const list = facts.filter(f => f.section === s);
     if (!list.length) continue;
-    const name = VIEW.sections.find(x => x.id === s)?.name || s;
-    out.push(`<h3 id="sec-${ctx}-${s}">${esc(name)}</h3>` +
+    out.push(`<h3>${esc(s)}</h3>` +
       (ctx === "common" && SECTION_HINT[s] ? `<p class="muted hint">${esc(SECTION_HINT[s])}</p>` : "") +
       (ctx === "common" ? `<div class="rows">${list.map(factRow).join("")}</div>` : list.map(f => factCard(f, ctx)).join("")));
   }
@@ -177,15 +180,15 @@ function render() {
   const v = VIEW;
   const counts = Object.fromEntries(v.countries.map(c => [c.country, c.facts]));
   const listed = v.countries.map(c => c.country).sort((a, b) => a.localeCompare(b, "ru"));
+  const rel = (v.related || []).map(r => `<li><a href="/info.html?root=${r.id}">${r.rel === "cause" ? "↑ причина" : "↓ порождает"}: ${esc(r.title || "#" + r.id)}</a> <span class="muted">· сведений: ${r.facts}</span></li>`).join("");
   $("main").innerHTML = `
-    <h1>${esc(v.sector.title)}</h1>
-    ${v.sector.intro ? `<p class="lead">${esc(v.sector.intro)}</p>` : ""}
+    <p class="crumbs"><a href="/n/${v.topic.id}">← К обсуждению</a></p>
+    <h1><span class="muted small-h">Сведения ·</span> ${esc(v.topic.title)}</h1>
     <nav class="toc toc-top">
-      <a class="primary" href="#countries">Моя страна →</a>
-      <a href="#common">Общее для всех</a>
+      ${v.countries.length ? `<a class="primary" href="#countries">Моя страна →</a>` : ""}
+      ${v.common.length ? `<a href="#common">Общее для всех</a>` : ""}
       <a href="#ask">Спросить</a>
       <a href="#add">+ Добавить сведение</a>
-      ${v.sector.problem_id ? `<a href="/n/${v.sector.problem_id}">← К обсуждению</a>` : ""}
     </nav>
     <div class="note">Здесь не консультируют. Здесь собрано то, что доступно: тексты законов и разъяснения
       ведомств со ссылками, сообщения СМИ и юристов, опыт людей. Как этим распорядиться — решаете вы. У каждого
@@ -197,12 +200,14 @@ function render() {
       </div>
     </div>
 
-    <h2 id="common">Общее для всех, независимо от страны</h2>
-    <p class="muted">Сначала закон, на котором основаны действия стран, и нормы о правах и равенстве;
-      потом общие пути. Нажмите на строку, чтобы раскрыть. Что делает конкретная страна — ниже.</p>
-    ${bySection(v.common, "common")}
+    ${v.total ? "" : `<p class="empty">У этого обсуждения сведений пока нет: законов, цифр, сообщений,
+      опыта людей. Если знаете — <a href="#add">добавьте первое</a>.</p>`}
+    ${v.common.length ? `<h2 id="common">Общее для всех, независимо от страны</h2>
+    <p class="muted">Сначала закон и нормы о правах, потом остальное. Нажмите на строку, чтобы раскрыть.
+      Что делает конкретная страна — ниже.</p>
+    ${bySection(v.common, "common")}` : ""}
 
-    <h2 id="countries">По странам</h2>
+    ${v.countries.length ? `<h2 id="countries">По странам</h2>
     <p class="muted">${v.countries.length} ${plural(v.countries.length, "страна", "страны", "стран")} со сведениями,
       всего сведений: ${v.total}. Выберите страну в списке или на карте.</p>
     <div class="mapwrap">
@@ -214,7 +219,8 @@ function render() {
         <div class="maplegend"><span class="sw"></span>нет сведений <span class="sw has"></span>1
           <span class="sw has l2"></span>2–3 <span class="sw has l3"></span>4 и больше</div></div>
     </div>
-    <section id="country-panel"></section>
+    <section id="country-panel"></section>` : `<section id="country-panel"></section>`}
+    ${rel ? `<h2>Связанные обсуждения</h2><ul class="related">${rel}</ul>` : ""}
 
     <h2 id="ask">Спросить по сведениям</h2>
     <p class="muted">ИИ отвечает только по собранным здесь сведениям и ставит их номера. Если сведений нет — так и скажет.</p>
@@ -230,7 +236,7 @@ function render() {
   bindRows($("main"));
   $("main").querySelectorAll(".map [data-c]").forEach(el =>
     el.addEventListener("click", () => openCountry(el.dataset.c)));
-  bindCountryList(counts, listed);
+  if (v.countries.length) bindCountryList(counts, listed);
   renderAsk();
   renderAdd();
 }
@@ -266,7 +272,7 @@ async function openCountry(name, scroll = true) {
   document.querySelectorAll(".clist button").forEach(b => b.setAttribute("aria-current", b.dataset.c === name));
   if (!location.hash.startsWith("#f")) history.replaceState(null, "", "#c=" + encodeURIComponent(name));
   let v;
-  try { v = await api(`/api/info/${SLUG}/country/${encodeURIComponent(name)}`); }
+  try { v = await api(`/api/info/${ROOT}/country/${encodeURIComponent(name)}`); }
   catch (e) { box.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; return; }
   const n = v.national.length + v.cities.reduce((s, c) => s + c.facts.length, 0);
   box.innerHTML = `<div class="country">
@@ -349,7 +355,7 @@ async function sendReport(card, id, verdict, note) {
 }
 
 async function reload(anchor) {
-  VIEW = await api(`/api/info/${SLUG}`);
+  VIEW = await api(`/api/info/${ROOT}`);
   render();
   if (CURRENT) await openCountry(CURRENT, false);
   if (anchor) reveal(anchor.replace(/^f/, ""), false);
@@ -405,7 +411,7 @@ function renderAsk() {
     const q = box.querySelector("[name=q]").value.trim();
     out.innerHTML = `<p class="msg">ищу…</p>`;
     try {
-      const r = await api(`/api/info/${SLUG}/ask`, { method: "POST",
+      const r = await api(`/api/info/${ROOT}/ask`, { method: "POST",
         body: { question: q, country: box.querySelector("[name=ask_country]").value || null } });
       const ans = r.answer ? esc(r.answer).replace(/\[#(\d+)\]/g, '<a href="#f$1" data-go="$1">[#$1]</a>') : "";
       const list = r.facts?.length
@@ -453,7 +459,7 @@ function renderAdd() {
     const msg = $("#add-msg");
     msg.className = "msg"; msg.textContent = "разбираю…";
     try {
-      const r = await api(`/api/info/${SLUG}/intake`, { method: "POST", body: { text, url: url || null } });
+      const r = await api(`/api/info/${ROOT}/intake`, { method: "POST", body: { text, url: url || null } });
       msg.textContent = r.ok
         ? "Проверьте поля — ИИ мог ошибиться." + (r.removed_personal ? " Личные данные убраны." : "") +
           (r.page_read === false ? " Страницу по ссылке открыть не удалось — выдержку вставьте сами." : "")
@@ -479,7 +485,8 @@ function fields(d) {
         ["experience", "опыт людей — так было со мной или со знакомыми"],
         ["report", "сообщают — пересказ СМИ, юриста, организации (нужна ссылка)"],
         ["norm", "норма — текст закона или ведомства (нужны ссылка и выдержка)"]], kind)}</select></label>
-      <label class="f">Раздел<select name="section">${opt(VIEW.sections.map(s => [s.id, s.name]), d.section || "protection")}</select></label>
+      <label class="f">Раздел — выберите или впишите свой<input name="section" list="info-sections" maxlength="60" value="${esc(d.section || VIEW.suggested_sections[0] || "")}" />
+        <datalist id="info-sections">${VIEW.suggested_sections.map(x => `<option value="${esc(x)}">`).join("")}</datalist></label>
       <label class="f">Страна (для опыта людей — обязательно)${countrySelect("country", d.country || PRESET_COUNTRY || CURRENT, "— для всех (ЕС и международное право)")}</label>
       <label class="f">Город (если так только в этом городе)<input name="city" maxlength="80" value="${esc(d.city || "")}" /></label>
       <label class="f">Ведомство<input name="office" maxlength="200" value="${esc(d.office || "")}" placeholder="например, ведомство по делам иностранцев (ABH)" /></label>
@@ -501,7 +508,7 @@ function fields(d) {
     if (body.kind === "experience" && !body.country) { msg.className = "msg err"; msg.textContent = "Опыт людей всегда в какой-то стране — выберите страну."; return; }
     b.disabled = true;
     try {
-      const r = await api(`/api/info/${SLUG}/facts`, { method: "POST", body });
+      const r = await api(`/api/info/${ROOT}/facts`, { method: "POST", body });
       const st = { verified: "Цитата найдена на странице дословно.",
         mismatch: "Такой выдержки на странице нет — это видно на карточке.",
         unreachable: "Сайт не пустил автоматическую проверку — это видно на карточке.",
@@ -528,9 +535,9 @@ function fields(d) {
   if (ME) { who.textContent = ME.name || ME.username; who.href = "/profile.html"; }
   else { who.href = loginUrl(); }
   try { COUNTRIES = (await api("/api/taxonomy")).countries; } catch { COUNTRIES = []; }
-  try { VIEW = await api(`/api/info/${SLUG}`); }
+  try { VIEW = await api(`/api/info/${ROOT}`); }
   catch (e) { $("main").innerHTML = `<p class="msg err">${esc(e.message)}</p>`; return; }
-  document.title = "Noosphere — " + VIEW.sector.title;
+  document.title = "Noosphere — сведения: " + VIEW.topic.title;
   render();
   await followHash();
   // ссылки [#id] и «назад/вперёд» внутри страницы (QA 28.09)
