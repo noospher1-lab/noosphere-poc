@@ -2696,6 +2696,14 @@ async function problemCard(nodeId) {
   catch (e) { body.textContent = "не загрузилось: " + e.message; return card; }
   body.className = ""; body.innerHTML = "";
 
+  // практический раздел «что делать» по этой проблеме — первой строкой
+  for (const sct of p.info_sectors || []) {
+    const a = el("a", "info-link", "Сведения: " + sct.title + " →");
+    a.href = "/info.html?s=" + encodeURIComponent(sct.slug);
+    a.style.cssText = "display:inline-flex;align-items:center;min-height:44px;font-weight:600";
+    body.appendChild(a);
+  }
+
   if (p.causes) {
     body.appendChild(el("div", "section-title", "Причины и составные части"));
     body.appendChild(el("div", "causes", p.causes));

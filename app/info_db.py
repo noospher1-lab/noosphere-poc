@@ -693,3 +693,18 @@ async def fact_place(fact_id):
             "JOIN info_sectors s ON s.id = f.sector_id "
             "WHERE f.id = $1 AND f.deleted_at IS NULL", fact_id)
     return dict(row) if row else None
+
+
+async def sectors_for_problem(problem_id):
+    pool = db._pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT slug, title FROM info_sectors WHERE problem_id = $1 ORDER BY id", problem_id)
+    return [dict(r) for r in rows]
+
+
+async def list_sectors():
+    pool = db._pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT slug, title FROM info_sectors ORDER BY id")
+    return [dict(r) for r in rows]

@@ -1468,6 +1468,9 @@ async def read_problem(topic_root_id: int):
     # вверх до известных корней — уровень не хранится, он читается отсюда
     problem["links"] = await db.problem_links_of(topic_root_id)
     problem["chain"] = await db.problem_chain(topic_root_id)
+    # раздел сведений по этой проблеме, если есть: из обсуждения «законно ли»
+    # человек должен попасть к практическому «что делать» (Alex 28.09)
+    problem["info_sectors"] = await info_db.sectors_for_problem(topic_root_id)
     return problem
 
 
