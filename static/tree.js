@@ -456,6 +456,9 @@ async function doAuthOnce(path) {
       $("#authErr").textContent = "нужно принять условия и политику данных";
       return;
     }
+    if (CAPTCHA_KEY && window.turnstile && CAPTCHA_WIDGET !== null) {
+      body.captcha = window.turnstile.getResponse(CAPTCHA_WIDGET) || undefined;
+    }
   }
   try {
     const out = await api(path, {
@@ -481,6 +484,7 @@ async function doAuthOnce(path) {
     let msg = e.message;
     try { msg = JSON.parse(msg).detail || msg; } catch (_) { /* raw */ }
     $("#authErr").textContent = msg;
+    if (CAPTCHA_WIDGET !== null && window.turnstile) window.turnstile.reset(CAPTCHA_WIDGET);
     // «адрес не подтверждён» — не тупик: даём выслать письмо заново прямо тут,
     // войти-то человек всё равно не может
     if (/не подтверждён/i.test(msg)) offerResend(body.username, body.password);
@@ -1964,7 +1968,26 @@ async function reviewDraft(payload) {
 // будет вовсе, а спустя 10 минут без оценки её уже не ждём.
 let AI_OK = true;
 let VOTES_HIDDEN = false;   // голосования закрыты (NOOSPHERE_HIDE) — о них не пишем (Б11)
+// Капча регистрации (Turnstile). Скрипт Cloudflare грузится, только если на
+// сервере задан ключ: без него регистрация работает как раньше, и чужой
+// скрипт на страницу не тянется.
+let CAPTCHA_KEY = null, CAPTCHA_WIDGET = null;
+function mountCaptcha() {
+  if (!CAPTCHA_KEY || CAPTCHA_WIDGET !== null) return;
+  const draw = () => {
+    CAPTCHA_WIDGET = window.turnstile.render("#authCaptcha",
+      { sitekey: CAPTCHA_KEY, appearance: "interaction-only" });
+  };
+  if (window.turnstile) return draw();
+  const sc = document.createElement("script");
+  sc.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
+  sc.async = true;
+  sc.onload = draw;
+  document.head.appendChild(sc);
+}
 api("/api/config").then((c) => {
+  CAPTCHA_KEY = (c && c.captcha_sitekey) || null;
+  if (CAPTCHA_KEY) mountCaptcha();
   AI_OK = !!(c && c.ai);
   VOTES_HIDDEN = !!(c && (c.hidden || []).includes("votes"));
 }).catch(() => {});

@@ -33,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
 
-from . import (alignment, auth, db, dialectic, graphview, schemes,
+from . import (alignment, antiabuse, auth, db, dialectic, graphview, schemes,
                values as values_mod, value_candidates, lang as lang_mod, dialogue as dialogue_mod, embed as embed_mod, mail,
                material, poi, taxonomy, voteweight,
                votedialogue, pools as pools_mod)
@@ -659,6 +659,8 @@ class RegisterIn(BaseModel):
     # 2026-08, and the content licence and data terms have to be accepted by
     # someone who was shown them (vault: data-deletion-model).
     accept_terms: bool = False
+    # токен Cloudflare Turnstile; нужен, только когда задан TURNSTILE_SECRET
+    captcha: str | None = None
 
 
 # Deliberately loose: the point is to catch a typo like "ivan@" or a pasted
@@ -704,6 +706,14 @@ async def register(body: RegisterIn, response: Response, request: Request):
     # thing this is meant to avoid.
     if not EMAIL_RE.fullmatch(email):
         raise HTTPException(400, "нужна почта — по ней восстанавливается доступ")
+    # Одноразовый ящик — главный инструмент фермы аккаунтов; живому человеку
+    # он не нужен: почта здесь — единственный путь восстановить доступ.
+    if antiabuse.disposable(email):
+        raise HTTPException(400, "одноразовые почтовые ящики не подходят — "
+                                 "по этой почте восстанавливается доступ")
+    ip = antiabuse.client_ip(request)
+    if not await asyncio.to_thread(antiabuse.verify_captcha, body.captcha, ip):
+        raise HTTPException(400, "проверка «я не робот» не прошла — обновите страницу")
 
     color = _PALETTE[sum(username.encode()) % len(_PALETTE)]
     author_id = await db.add_user(
@@ -739,6 +749,7 @@ async def register(body: RegisterIn, response: Response, request: Request):
             await asyncio.to_thread(mail.send_already_registered, email, link)
         return {"ok": True, "check_email": True}
 
+    await antiabuse.record(author_id, ip, "register")
     await _send_verification(author_id, email)
     # Сессия НЕ выдаётся: регистрация считается завершённой только после того,
     # как человек доказал адрес (Alex, 2026-08-14). Иначе аккаунт с чужой или
@@ -1255,7 +1266,8 @@ async def config():
     # ai — есть ли общий ключ модели. Без него разбор, оценка и сбор позиций
     # честно недоступны, и интерфейс должен говорить об этом прямо (Р-2, А4).
     return {"dev_tools": DEV_TOOLS, "terms_version": TERMS_VERSION,
-            "hidden": HIDDEN_SECTIONS, "ai": bool(os.environ.get("ANTHROPIC_API_KEY"))}
+            "hidden": HIDDEN_SECTIONS, "ai": bool(os.environ.get("ANTHROPIC_API_KEY")),
+            "captcha_sitekey": antiabuse.TURNSTILE_SITEKEY or None}
 
 
 @app.get("/api/stats")
@@ -4316,6 +4328,168 @@ async def opinion_settings(topic_root_id: int, body: OpinionSettingsIn):
     if body.sort is not None and body.sort not in ("size", "movement", "random"):
         raise HTTPException(400, "sort: size | movement | random")
     return await opinion_db.set_settings(topic_root_id, **body.model_dump())
+
+
+# ------------------------------------------------------ информационный сектор
+# vault: drafts/2026-09-28-info-sector. Сведения для людей, которым нужно
+# действовать (продление защиты, ВНЖ, суд). Мы не консультируем, а собираем
+# доступное (Alex 28.09). ИИ — редактор при приёме и библиотекарь при ответе.
+from . import info_ai, info_db  # noqa: E402
+
+
+def _info_400(e):
+    return HTTPException(400, str(e))
+
+
+class InfoFactIn(BaseModel):
+    title: str
+    section: str = "other"
+    kind: str = "unverified"
+    country: str | None = None
+    city: str | None = None
+    office: str | None = None
+    applies_to: str | None = None
+    body: str | None = None
+    when_text: str | None = None
+    source_url: str | None = None
+    source_title: str | None = None
+    source_quote: str | None = None
+
+
+class InfoIntakeIn(BaseModel):
+    text: str
+    url: str | None = None
+
+
+class InfoReportIn(BaseModel):
+    verdict: str | None = None           # same | differs | None — снять
+    note: str | None = None
+
+
+class InfoAskIn(BaseModel):
+    question: str
+    country: str | None = None
+
+
+@app.get("/api/info/{slug}")
+async def info_sector(slug: str, author=Depends(optional_author)):
+    try:
+        return await info_db.sector_view(slug, me=author["id"] if author else None)
+    except info_db.InfoError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.get("/api/info/{slug}/country/{country}")
+async def info_country(slug: str, country: str, author=Depends(optional_author)):
+    try:
+        return await info_db.country_view(slug, country,
+                                          me=author["id"] if author else None)
+    except info_db.InfoError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/info/{slug}/intake")
+async def info_intake(slug: str, body: InfoIntakeIn, author=Depends(verified_author)):
+    """Черновик полей из свободного текста. Публикует человек, не модель."""
+    if not await info_db.get_sector(slug):
+        raise HTTPException(404, "сектора нет")
+    text = (body.text or "").strip()
+    if len(text) < 10:
+        raise HTTPException(400, "напишите хотя бы пару предложений")
+    url = (body.url or "").strip() or None
+    if url and not re.match(r"https?://", url):
+        raise HTTPException(400, "ссылка должна начинаться с http:// или https://")
+    await spend_llm(author)
+    page = await asyncio.to_thread(info_db.fetch_text, url) if url else None
+    res = await asyncio.to_thread(info_ai.intake_sync, text, url, page)
+    res["page_read"] = page is not None if url else None
+    return res
+
+
+@app.post("/api/info/{slug}/facts")
+async def info_add_fact(slug: str, body: InfoFactIn, request: Request,
+                        author=Depends(verified_author)):
+    s = await info_db.get_sector(slug)
+    if not s:
+        raise HTTPException(404, "сектора нет")
+    data = body.model_dump()
+    try:
+        info_db.validate_fact(data)
+    except info_db.InfoError as e:
+        raise _info_400(e)
+    # сверка до записи: сведение сразу выходит со своим статусом
+    status = await asyncio.to_thread(info_db.check_quote, data["source_url"],
+                                     data["source_quote"])
+    if data["kind"] == "norm" and status != "verified":
+        # «норма» обещает читателю текст закона; несверенная цитата этого не
+        # держит — сведение уходит «непроверенным», а человек видит почему
+        data["kind"] = "unverified"
+    try:
+        fid = await info_db.add_fact(
+            s["id"], data, author["id"], quote_status=status,
+            checked_at=datetime.now(timezone.utc) if status != "none" else None)
+    except info_db.InfoError as e:
+        raise _info_400(e)
+    await antiabuse.record(author["id"], antiabuse.client_ip(request), "action",
+                           f"fact_add:{s['id']}")
+    return {"id": fid, "quote_status": status, "kind": data["kind"]}
+
+
+@app.post("/api/info/facts/{fact_id}/report")
+async def info_report(fact_id: int, body: InfoReportIn, request: Request,
+                      author=Depends(verified_author)):
+    try:
+        await info_db.set_report(fact_id, author["id"], body.verdict, body.note)
+    except info_db.InfoError as e:
+        raise _info_400(e)
+    if body.verdict:
+        await antiabuse.record(author["id"], antiabuse.client_ip(request), "action",
+                               f"fact:{fact_id}")
+    return {"ok": True}
+
+
+@app.delete("/api/info/facts/{fact_id}")
+async def info_remove(fact_id: int, author=Depends(verified_author)):
+    try:
+        await info_db.remove_fact(fact_id, author["id"], admin=is_admin_author(author))
+    except info_db.InfoError as e:
+        raise _info_400(e)
+    return {"ok": True}
+
+
+@app.post("/api/info/{slug}/ask")
+async def info_ask(slug: str, body: InfoAskIn, author=Depends(verified_author)):
+    s = await info_db.get_sector(slug)
+    if not s:
+        raise HTTPException(404, "сектора нет")
+    q = (body.question or "").strip()
+    if len(q) < 5:
+        raise HTTPException(400, "вопрос слишком короткий")
+    country = body.country if body.country in taxonomy.COUNTRIES else None
+    facts = await info_db.search(s["id"], q, country)
+    if facts:
+        await spend_llm(author)
+    res = await asyncio.to_thread(info_ai.ask_sync, q, facts)
+    res["facts"] = [{"id": f["id"], "title": f["title"], "country": f["country"],
+                     "city": f["city"], "kind": f["kind"]} for f in facts]
+    return res
+
+
+@app.post("/api/dev/info/recheck", dependencies=[Depends(admin_only)])
+async def info_recheck(limit: int = 50):
+    """Сторож свежести: заново сверить цитаты, которым пора. Звать по крону."""
+    out = {}
+    for f in await info_db.stale_facts(limit):
+        st = await asyncio.to_thread(info_db.check_quote, f["source_url"], f["source_quote"])
+        await info_db.set_quote_status(f["id"], st)
+        out[f["id"]] = st
+    return {"checked": len(out), "status": out}
+
+
+@app.get("/api/dev/account-links", dependencies=[Depends(admin_only)])
+async def account_links(min_size: int = 2):
+    """Группы аккаунтов, похожих на одного владельца. Без адресов."""
+    return await antiabuse.link_groups(min_size)
 
 
 if static_dir.exists():

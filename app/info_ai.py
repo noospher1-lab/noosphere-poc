@@ -1,0 +1,145 @@
+"""
+ИИ в информационном секторе — библиотекарь и редактор, не юрист и не автор
+(vault: drafts/2026-09-28-info-sector).
+
+Две работы, обе на маленькой модели (Haiku): рассуждать здесь не о чем, а
+значит и сочинять негде.
+
+  1. РАЗБОР (intake). Человек пишет как умеет — «вчера в ABH Лейпцига сказали,
+     что без Резерв+ не продлят» — и прикладывает ссылку, если есть. Модель
+     раскладывает текст по полям и вычищает личные данные. Ничего не решает:
+     поля показываются человеку, он правит и публикует сам; дословность
+     выдержки потом проверяет сервер, а не модель.
+  2. ОТВЕТ (ask). Только по найденным сведениям, к каждой фразе номер
+     сведения. Нет сведений — так и сказать. Номер, которого не было среди
+     найденных, выбрасывается сервером.
+
+Всё fail-open: нет ключа, модель упала, ответ не разобрался — разбор отдаёт
+пустые поля (человек заполнит форму сам), ответ отдаёт список найденных
+сведений без пересказа.
+"""
+
+import json
+import logging
+import re
+
+from . import info_db, poi, taxonomy
+
+log = logging.getLogger("noosphere.info_ai")
+
+MODEL = "claude-haiku-4-5"
+
+INTAKE_SYSTEM = (
+    "You structure a single piece of practical information contributed to a public "
+    "information base for Ukrainians abroad (temporary protection in the EU, residence "
+    "permits, court challenges, military registration requirements such as Rezerv+). "
+    "You are an editor, not a lawyer: do not add facts, do not advise, do not judge "
+    "truth. Only restate what the contributor said.\n"
+    "Return ONLY a JSON object with keys:\n"
+    '  "title": one short factual sentence in Russian stating what is known '
+    "(e.g. «В ABH Лейпцига продление без Резерв+ не оформляют»);\n"
+    '  "body": optional 1-3 sentences in Russian with details the contributor gave;\n'
+    '  "section": one of basis (the law the authorities act on), rights (laws on '
+    "equality / rights that may be violated), protection (extending temporary "
+    "protection), residence (switching to a residence permit), court (challenging in "
+    "court), other;\n"
+    '  "kind": norm (only if a law/official text is quoted), practice (what happened '
+    "to someone at an office), unverified (rumour, no source, second-hand);\n"
+    '  "country": country name in Russian or null; "city": city in Russian or null; '
+    '"office": the office/authority or null; "applies_to": who it concerns (e.g. '
+    "«мужчины 18–60») or null; \"when_text\": when it happened / applies, as given, or null;\n"
+    '  "source_quote": if PAGE TEXT is provided, the shortest passage from it that '
+    "supports the title, copied CHARACTER FOR CHARACTER in the original language — "
+    "never translated, never paraphrased; otherwise null;\n"
+    '  "source_title": title of the page if known, else null;\n'
+    '  "removed_personal": true if you removed names, phone numbers, addresses, '
+    "document numbers or other personal data from title/body.\n"
+    "Never put personal data about anyone into title or body." + poi.INJECTION_GUARD
+)
+
+ASK_SYSTEM = (
+    "You answer a person's question using ONLY the numbered facts provided from a "
+    "public information base. You are a librarian, not a lawyer: never give legal "
+    "advice, never add knowledge that is not in the facts, never guess. Answer in the "
+    "language of the question, briefly, in plain words. After every sentence that "
+    "relies on a fact, cite it as [#id]. Mention how solid each fact is when it "
+    "matters (norm with verified quote / practice with N confirmations / unverified). "
+    "If the facts do not answer the question, say so plainly and suggest asking other "
+    "people by adding the question to the base. "
+    'Return ONLY JSON: {"answer": "...", "cited": [ids], "gaps": "what is missing, or empty"}.'
+    + poi.INJECTION_GUARD
+)
+
+
+def _parse(raw):
+    m = re.search(r"\{.*\}", raw or "", re.S)
+    return json.loads(m.group(0) if m else raw)
+
+
+def intake_sync(text, url=None, page_text=None):
+    """Черновик полей сведения. Никогда не бросает."""
+    user = "CONTRIBUTION:\n" + poi.wrap_user_text(text[:4000])
+    if url:
+        user += f"\nLINK: {url}"
+    if page_text:
+        user += "\nPAGE TEXT (excerpt):\n" + poi.wrap_user_text(page_text[:12000])
+    try:
+        raw = poi.complete_messages(INTAKE_SYSTEM, [{"role": "user", "content": user}],
+                                    max_tokens=800, timeout=60, model=MODEL,
+                                    temperature=0)
+        d = _parse(raw)
+    except Exception:
+        log.warning("разбор сведения недоступен", exc_info=True)
+        return {"ok": False, "draft": {"body": text[:4000], "source_url": url}}
+    draft = {k: d.get(k) for k in ("title", "body", "section", "kind", "country", "city",
+                                   "office", "applies_to", "when_text", "source_quote",
+                                   "source_title")}
+    draft["source_url"] = url
+    # модель не решает, что допустимо — чистим до словаря сервера
+    if draft.get("section") not in info_db.SECTIONS:
+        draft["section"] = "other"
+    if draft.get("kind") not in info_db.KINDS:
+        draft["kind"] = "unverified"
+    if draft.get("country") not in taxonomy.COUNTRIES:
+        draft["country"] = None
+    if draft["kind"] == "norm" and not (url and draft.get("source_quote")):
+        draft["kind"] = "unverified"
+    return {"ok": True, "draft": draft, "removed_personal": bool(d.get("removed_personal"))}
+
+
+def _fact_line(f):
+    solid = {"norm": "norm", "practice": "practice", "unverified": "unverified"}[f["kind"]]
+    where = ", ".join(x for x in (f.get("country") or "EU/international", f.get("city")) if x)
+    s = f"[#{f['id']}] ({solid}; {where}; quote {f['quote_status']}) {f['title']}"
+    if f.get("body"):
+        s += " — " + f["body"][:600]
+    if f.get("when_text"):
+        s += f" (when: {f['when_text']})"
+    if f.get("source_quote"):
+        s += f"\n    source quote: «{f['source_quote'][:500]}»"
+    return s
+
+
+def ask_sync(question, facts):
+    """Ответ по сведениям. Никогда не бросает; ok=False — модель недоступна."""
+    if not facts:
+        return {"ok": True, "answer": "По этому вопросу в базе пока нет сведений. "
+                "Если знаете сами — добавьте; если нет — спросите людей.",
+                "cited": [], "gaps": question}
+    user = ("FACTS:\n" + "\n".join(_fact_line(f) for f in facts) +
+            "\n\nQUESTION:\n" + poi.wrap_user_text(question[:1500]))
+    try:
+        raw = poi.complete_messages(ASK_SYSTEM, [{"role": "user", "content": user}],
+                                    max_tokens=900, timeout=60, model=MODEL,
+                                    temperature=0)
+        d = _parse(raw)
+    except Exception:
+        log.warning("ответ по сведениям недоступен", exc_info=True)
+        return {"ok": False, "answer": None, "cited": [f["id"] for f in facts], "gaps": ""}
+    allowed = {f["id"] for f in facts}
+    cited = [int(i) for i in (d.get("cited") or []) if str(i).isdigit() and int(i) in allowed]
+    answer = str(d.get("answer") or "")
+    # ссылка на сведение, которого модели не давали, — выдумка: вырезаем
+    answer = re.sub(r"\[#(\d+)\]", lambda m: m.group(0) if int(m.group(1)) in allowed else "",
+                    answer)
+    return {"ok": True, "answer": answer, "cited": cited, "gaps": str(d.get("gaps") or "")}

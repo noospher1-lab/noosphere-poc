@@ -514,6 +514,9 @@
         <a href="/tos.html" target="_blank" rel="noopener">условия и политику данных</a>:
         опубликованный текст неизменен и остаётся в общем корпусе.</span>
     </label>
+    <!-- капча Cloudflare Turnstile: появляется только если на сервере задан ключ
+         (vault: decisions/2026-09-28-info-sector); обычно невидима для человека -->
+    <div id="authCaptcha" style="margin-top:8px"></div>
     <div class="actions">
       <button id="doLogin" class="primary">Войти</button>
       <button id="doRegister" class="primary" style="display:none">Создать аккаунт</button>

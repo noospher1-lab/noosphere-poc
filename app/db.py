@@ -985,8 +985,10 @@ async def init_db():
     async with pool.acquire() as conn:
         for stmt in _SCHEMA:
             await conn.execute(stmt)
-        from . import opinion_db
+        from . import opinion_db, info_db, antiabuse
         for stmt in opinion_db.SCHEMA:
+            await conn.execute(stmt)
+        for stmt in antiabuse.SCHEMA + info_db.SCHEMA:
             await conn.execute(stmt)
         for stmt in _INDEXES:
             await conn.execute(stmt)
@@ -1064,14 +1066,15 @@ async def wipe(force=False):
             "SELECT code, note FROM invites WHERE used_by IS NULL")
         # журналы только дописываются (триггер); сброс — единственный
         # сознательный обход, и только на эту транзакцию
-        from . import opinion_db
+        from . import opinion_db, info_db, antiabuse
         async with conn.transaction():
             await conn.execute("SET LOCAL noosphere.allow_wipe = 'on'")
             await conn.execute(
                 "TRUNCATE position_reactions, position_links, positions, "
                 "author_topic_poi, reactions, edges, nodes, sessions, dialogues, "
                 "usage_events, authors, events, "
-                + opinion_db.WIPE_TABLES + " RESTART IDENTITY CASCADE"
+                + opinion_db.WIPE_TABLES + ", " + info_db.WIPE_TABLES + ", "
+                + antiabuse.WIPE_TABLES + " RESTART IDENTITY CASCADE"
             )
         if kept:
             await conn.executemany(
