@@ -1473,9 +1473,23 @@ async function selectNode(id) {
   // decisions/2026-09-25-opinion-map). Раньше ссылка жила внизу, в карточке
   // позиций под формой ответа, — Alex: «находится в недосягаемости».
   if (isRoot) {
+    // «Сведения» — практическое «что делать» по ЭТОМУ вопросу, поэтому живут
+    // рядом с картой позиций под корнем обсуждения, а не в общей шапке сайта
+    // (Alex 28.09: раздел принадлежит конкретному вопросу).
+    const row = el("div", "root-btns");
+    row.style.cssText = "display:flex;flex-wrap:wrap;gap:8px";
     const mapBtn = el("a", "map-btn", "Карта позиций →");
     mapBtn.href = `/opinion.html?root=${node.id}`;
-    card.appendChild(mapBtn);
+    row.appendChild(mapBtn);
+    card.appendChild(row);
+    api(`/api/info/for-problem/${node.id}`).then((list) => {
+      for (const sct of list || []) {
+        const b = el("a", "map-btn", "Сведения →");
+        b.href = "/info.html?s=" + encodeURIComponent(sct.slug);
+        b.title = sct.title;
+        row.appendChild(b);
+      }
+    }).catch(() => {});
   }
   // на что опирается довод — у своего можно сменить (метка, не текст)
   if (!isRoot || node.kind !== "problem") {
@@ -2695,14 +2709,6 @@ async function problemCard(nodeId) {
   try { p = await api(`/api/problems/${nodeId}`); }
   catch (e) { body.textContent = "не загрузилось: " + e.message; return card; }
   body.className = ""; body.innerHTML = "";
-
-  // практический раздел «что делать» по этой проблеме — первой строкой
-  for (const sct of p.info_sectors || []) {
-    const a = el("a", "info-link", "Сведения: " + sct.title + " →");
-    a.href = "/info.html?s=" + encodeURIComponent(sct.slug);
-    a.style.cssText = "display:inline-flex;align-items:center;min-height:44px;font-weight:600";
-    body.appendChild(a);
-  }
 
   if (p.causes) {
     body.appendChild(el("div", "section-title", "Причины и составные части"));

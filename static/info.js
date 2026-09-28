@@ -185,8 +185,7 @@ function render() {
       <a href="#common">Общее для всех</a>
       <a href="#ask">Спросить</a>
       <a href="#add">+ Добавить сведение</a>
-      ${v.sector.problem_id ? `<a href="/n/${v.sector.problem_id}">Обсуждение: законно ли требование</a>
-        <a href="/opinion.html?root=${v.sector.problem_id}">Карта позиций</a>` : ""}
+      ${v.sector.problem_id ? `<a href="/n/${v.sector.problem_id}">← К обсуждению</a>` : ""}
     </nav>
     <div class="note">Здесь не консультируют. Здесь собрано то, что доступно: тексты законов и разъяснения
       ведомств со ссылками, сообщения СМИ и юристов, опыт людей. Как этим распорядиться — решаете вы. У каждого
