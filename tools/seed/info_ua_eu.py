@@ -39,11 +39,10 @@ SECTOR = {
     "slug": "ua-eu",
     "title": "Украинцы в ЕС: временная защита, ВНЖ, суд",
     "intro": (
-        "С 31.07.2026 новым заявителям временную защиту в ЕС дают только при "
-        "подтверждении воинского учёта (решение Совета ЕС 2026/1912); у кого защита "
-        "уже была, её продлили до 04.03.2028. Здесь собрано, что известно: закон, на "
-        "котором это основано, нормы о правах и равенстве, пути продления, перехода "
-        "на вид на жительство и оспаривания — сначала для всех, потом по странам."),
+        "Решение Совета ЕС 2026/1912 продлевает временную защиту до 04.03.2028, а новым "
+        "заявителям даёт её только при выполнении воинских обязанностей перед Украиной. "
+        "Страны применяют это по-своему и с разных дат. Здесь собрано, что известно — "
+        "сначала общее для всех, потом по странам."),
     # связь с обсуждением «законно ли это требование» — проблема из посева 25.09
     "problem_title": "Резерв+ как условие временной защиты в ЕС",
 }
@@ -66,8 +65,10 @@ COMMON = [
                      "granted to those fleeing Ukraine until 4 March 2028"},
     {"section": "basis", "kind": "norm", "ord": 11,
      "title": "Новым заявителям защиту дают только при выполнении воинских обязанностей",
-     "body": "Это и есть основание, на которое ссылаются страны, требуя штамп о выезде "
-             "или документ из Резерв+.",
+     "body": "На это решение ссылаются страны, требуя штамп о выезде или е-ВОД (документ "
+             "из Резерв+). Даты: решение принято 30.07.2026, опубликовано 04.08, действует "
+             "с 05.08; условие касается заявлений с 31.07. Страны называют свои даты "
+             "начала (например, Эстония — 14.08, Швейцария — 20.08).",
      "applies_to": "новые заявители с воинской обязанностью по закону Украины",
      "when_text": "для заявлений с 31.07.2026",
      "source_url": EEAS, "source_title": "EEAS: сообщение Совета ЕС от 15.07.2026",
@@ -83,7 +84,7 @@ COMMON = [
      "source_quote": "This limitation will only apply to new applicants for temporary "
                      "protection. It will not apply to those already benefiting from "
                      "temporary protection in the EU."},
-    {"section": "basis", "kind": "practice", "ord": 13,
+    {"section": "basis", "kind": "report", "ord": 13,
      "title": "Исключение — только при непрерывной защите в той же стране",
      "body": "Пересказ текста решения 2026/1912 юридической фирмой. Если защита прерывалась "
              "(например, её сняли и человек подаёт заново), он считается новым заявителем.",
@@ -101,7 +102,7 @@ COMMON = [
                      "legally and therefore satisfy military obligations. This could also be "
                      "done by showing a document, in paper or electronic format, that confirms "
                      "exemption or compliance with military obligations."},
-    {"section": "basis", "kind": "practice", "ord": 15,
+    {"section": "basis", "kind": "report", "ord": 15,
      "title": "Под временной защитой в ЕС — 4,38 млн человек (на 31.05.2026)",
      "source_url": EEAS, "source_title": "EEAS: сообщение Совета ЕС от 15.07.2026",
      "source_quote": "As of 31 May 2026, 4.38 million people who fled Ukraine are under "
@@ -121,17 +122,16 @@ COMMON = [
                      "it submit a proposal to the Council, to extend that temporary protection "
                      "by up to one year."},
     {"section": "basis", "kind": "norm", "ord": 18,
-     "title": "Совет ЕС в 2025 году договорился о постепенном переходе с защиты на другие статусы",
+     "title": "Совет ЕС: у тех, кто подходит, должна быть возможность перейти с защиты на другие статусы",
      "body": "Работа, учёба, семья — основания для более долгих видов на жительство.",
      "source_url": EEAS, "source_title": "EEAS: сообщение Совета ЕС от 15.07.2026",
      "source_quote": "This approach includes providing opportunities to transition to "
                      "longer-term legal resident statuses based on employment, education or "
                      "family grounds for instance for those eligible."},
 
-    {"section": "basis", "kind": "practice", "ord": 19,
+    {"section": "basis", "kind": "report", "ord": 19,
      "title": "Со стороны Украины: консульства с августа 2026 не обслуживают мужчин 18–60 без военно-учётного документа",
-     "body": "Постановление КМУ №981 от 29.07.2026. Отсюда — трудности с паспортом, которые потом "
-             "мешают и с защитой в ЕС.",
+     "body": "Постановление КМУ №981 от 29.07.2026, в пересказе УНИАН.",
      "source_url": "https://www.unian.ua/society/mobilizaciya-posolstva-ne-budut-obslugovuvati-"
                    "cholovikiv-bez-viyskovo-oblikovykh-dokumentiv-13459719.html",
      "source_title": "УНИАН",
@@ -166,7 +166,7 @@ COMMON = [
      "source_quote": "Equality between women and men must be ensured in all areas, including "
                      "employment, work and pay."},
     {"section": "rights", "kind": "norm", "ord": 23,
-     "title": "Европейская конвенция о правах человека: права без дискриминации по полу",
+     "title": "ЕКПЧ: права по Конвенции — без дискриминации, в том числе по полу",
      "body": "Ст. 14 ЕКПЧ действует вместе с другими правами Конвенции (например, "
              "на уважение частной и семейной жизни, ст. 8).",
      "source_url": "https://rm.coe.int/1680063765",
@@ -178,8 +178,7 @@ COMMON = [
     {"section": "rights", "kind": "norm", "ord": 24,
      "title": "Пакт ООН: каждый свободен покидать любую страну, включая свою",
      "body": "Ст. 12(2) Международного пакта о гражданских и политических правах. Украина "
-             "в военное положение заявила об отступлении от этой статьи (см. посев «Права "
-             "украинцев за рубежом»).",
+             "на время военного положения заявила об отступлении от обязательств по этой статье.",
      "source_url": "https://www.ohchr.org/sites/default/files/ccpr.pdf",
      "source_title": "МПГПП, ст. 12(2) (ООН, PDF)",
      "source_quote": "Everyone shall be free to leave any country, including his own."},
@@ -203,26 +202,24 @@ COMMON = [
      "source_quote": "Persons enjoying temporary protection must be able to lodge an "
                      "application for asylum at any time."},
 
-    {"section": "rights", "kind": "practice", "ord": 28,
-     "title": "МИД Украины: правило ЕС не делит по полу — Резерв+ могут спросить и у женщин на учёте",
+    {"section": "rights", "kind": "report", "ord": 28,
+     "title": "МИД Украины: правило ЕС не делит по полу — е-ВОД могут спросить и у женщин на учёте",
      "source_url": "https://news.liga.net/en/society/news/the-foreign-ministry-explained-why-women-"
                    "are-asked-for-rezerv-in-some-eu-countries-when-applying-for-protection",
      "source_title": "LIGA.net со ссылкой на МИД Украины",
      "source_quote": "In reality, however, the new European Union rule is gender-neutral and can "
                      "apply to both men and women with the relevant military status."},
-    {"section": "court", "kind": "practice", "ord": 37,
-     "title": "Адвокат: решение 2026/1912 применяется с учётом пропорциональности, прав ребёнка и права на обжалование",
-     "body": "Разбор адвоката Андрея Денисенко: на что можно опираться, оспаривая конкретный "
-             "отказ — не принят альтернативный документ, не учтена семья или здоровье, "
-             "затянута проверка.",
+    {"section": "court", "kind": "report", "ord": 37,
+     "title": "Адвокат: решение 2026/1912 должно применяться с учётом пропорциональности, прав ребёнка и права на обжалование",
+     "body": "Мнение адвоката Андрея Денисенко.",
      "source_url": "https://www.village-justice.com/articles/protection-temporaire-des-ukrainiens-"
                    "obligations-militaires-une-personne-fuyant,59119.html",
      "source_title": "Village de la Justice (адвокат Andrii Denysenko)",
      "source_quote": "Elle doit être appliquée en tenant compte notamment du principe de "
                      "proportionnalité, des droits de l’enfant, du droit à un recours effectif et "
                      "des autres garanties applicables."},
-    {"section": "court", "kind": "practice", "ord": 38,
-     "title": "Примеры оснований для спора: отказ из-за отсутствия одного документа, непринятие другого доказательства",
+    {"section": "court", "kind": "report", "ord": 38,
+     "title": "Адвокат: примеры оснований для спора — отказ из-за отсутствия одного документа, непринятие другого доказательства",
      "source_url": "https://www.village-justice.com/articles/protection-temporaire-des-ukrainiens-"
                    "obligations-militaires-une-personne-fuyant,59119.html",
      "source_title": "Village de la Justice (адвокат Andrii Denysenko)",
@@ -231,7 +228,7 @@ COMMON = [
 
     # --- суд
     {"section": "court", "kind": "norm", "ord": 30,
-     "title": "Отказ в защите можно обжаловать в суде той страны, где отказали",
+     "title": "Отказ в защите можно обжаловать в той стране, где отказали",
      "source_url": EUR, "source_title": "Директива 2001/55/ЕС, ст. 29",
      "source_quote": "Persons who have been excluded from the benefit of temporary protection "
                      "or family reunification by a Member State shall be entitled to mount a "
@@ -272,7 +269,7 @@ COMMON = [
      "source_title": "ДФЕС, ст. 263",
      "source_quote": "The proceedings provided for in this Article shall be instituted within "
                      "two months of the publication of the measure"},
-    {"section": "court", "kind": "practice", "ord": 35,
+    {"section": "court", "kind": "report", "ord": 35,
      "title": "Жалоба в ЕСПЧ — в течение четырёх месяцев после окончательного решения внутри страны",
      "body": "С 01.02.2022 (Протокол № 15). Сначала нужно пройти суды страны.",
      "source_url": "https://www.lawsociety.ie/news/news/Stories/reduced-time-limit-for-ecthr-applications",
@@ -302,16 +299,16 @@ COUNTRIES = [
      "source_title": "Germany4Ukraine (портал правительства Германии)",
      "source_quote": "residence permits for temporary protection that are still valid on 1 "
                      "February 2027 are automatically extended to 4 March 2028."},
-    {"country": "Германия", "section": "protection", "kind": "practice",
-     "applies_to": "мужчины 23–60, прибывшие с 31.07.2026",
-     "title": "Новоприбывшим мужчинам 23–60 защиту дают только при законном выезде или освобождении",
+    {"country": "Германия", "section": "protection", "kind": "report",
+     "applies_to": "новоприбывшие мужчины призывного возраста",
+     "title": "Новоприбывшим мужчинам призывного возраста защиту больше не дают автоматически — нужно подтвердить законный выезд или освобождение",
      "source_url": "https://nv.ua/ukr/world/geopolitics/timchasoviy-zahist-u-nimechchini-novi-"
                    "pravila-dlya-ukrajinskih-cholovikiv-mobilizaciynogo-viku-50632450.html",
      "source_title": "NV со ссылкой на МВД Германии (13.08.2026)",
      "source_quote": "Німеччина від 31 липня більше не надає автоматичний тимчасовий захист "
                      "новоприбулим українським чоловікам мобілізаційного віку, якщо ті не "
                      "підтвердять законність виїзду з України або звільнення від військової служби."},
-    {"country": "Германия", "section": "protection", "kind": "practice",
+    {"country": "Германия", "section": "protection", "kind": "report",
      "title": "Отказ во временной защите не означает автоматической обязанности уехать; можно просить убежище",
      "body": "МВД Германии при этом подчеркнуло: сама по себе воинская обязанность в Украине "
              "не даёт оснований для убежища — рассматривается индивидуально.",
@@ -321,7 +318,7 @@ COUNTRIES = [
      "source_quote": "Відмова у тимчасовому захисті не означає, що український чоловік "
                      "автоматично повинен залишити Німеччину."},
     {"country": "Германия", "section": "residence", "kind": "norm",
-     "title": "В первые 90 дней можно подать на другой вид на жительство — для работы или учёбы",
+     "title": "В первые 90 дней после въезда можно подать на другой вид на жительство — для работы или учёбы",
      "source_url": "https://www.germany4ukraine.de/EN/einreise-aufenthalt-und-rueckkehr/"
                    "ukraine-aufenthaltserlaubnis/seite_node.html",
      "source_title": "Germany4Ukraine (портал правительства Германии)",
@@ -330,7 +327,7 @@ COUNTRIES = [
                      "work in Germany."},
 
     # --- Польша
-    {"country": "Польша", "section": "residence", "kind": "practice",
+    {"country": "Польша", "section": "residence", "kind": "report",
      "title": "Карта побыту CUKR: на 3 года для тех, у кого статус UKR непрерывно не меньше года",
      "body": "Условия: статус PESEL UKR на 04.06.2025 и на день подачи, непрерывно не менее "
              "365 дней. Подача только онлайн через портал MOS, до 04.03.2027. Сборы: 100 и 340 злотых.",
@@ -340,23 +337,23 @@ COUNTRIES = [
      "source_title": "УВКБ ООН в Польше: карта побыту CUKR",
      "source_quote": "Подати заяву на PESEL CUKR можна до 04.03.2027 . Карта побиту CUKR дійсна "
                      "протягом 3 років з дати видачі ."},
-    {"country": "Польша", "section": "residence", "kind": "practice",
-     "title": "С картой CUKR теряются часть прав статуса UKR",
+    {"country": "Польша", "section": "residence", "kind": "report",
+     "title": "После подачи на карту CUKR теряется часть прав статуса UKR",
      "body": "Бесплатное проживание в центрах, часть медицинских льгот, социальная помощь. "
-             "УВКБ ООН советует прежде посоветоваться с бесплатными юристами НКО.",
+             "УВКБ ООН рекомендует перед подачей обратиться к бесплатным юристам НКО.",
      "source_url": "https://help.unhcr.org/poland/uk/%D0%BA%D0%B0%D1%80%D1%82%D0%B0-%D0%BF%D0%BE"
                    "%D0%B1%D0%B8%D1%82%D1%83-cukr/",
      "source_title": "УВКБ ООН в Польше: карта побыту CUKR",
      "source_quote": "Зверніть увагу: після подання заяви ви втратите деякі права, пов’язані з "
                      "вашим поточним статусом PESEL UKR ."},
-    {"country": "Польша", "section": "residence", "kind": "practice",
+    {"country": "Польша", "section": "residence", "kind": "report",
      "title": "Выезд из Польши больше чем на 6 месяцев лишает карты CUKR",
      "source_url": "https://help.unhcr.org/poland/uk/%D0%BA%D0%B0%D1%80%D1%82%D0%B0-%D0%BF%D0%BE"
                    "%D0%B1%D0%B8%D1%82%D1%83-cukr/",
      "source_title": "УВКБ ООН в Польше: карта побыту CUKR",
      "source_quote": "Якщо ви залишите Польщу на термін понад 6 місяців , ви втратите дозвіл на "
                      "тимчасове проживання"},
-    {"country": "Польша", "section": "protection", "kind": "practice",
+    {"country": "Польша", "section": "protection", "kind": "report",
      "title": "Повторно временную защиту в Польше не дают, если она уже была в другой стране ЕС",
      "source_url": "https://visitukraine.today/departure/poland/ukraine-citizenship/temporary-protection",
      "source_title": "Visit Ukraine",
@@ -382,16 +379,17 @@ COUNTRIES = [
                      "продовження тимчасового захисту до 31 березня 2028 ."},
     {"country": "Чехия", "section": "protection", "kind": "norm",
      "applies_to": "новые заявители 18–60 с воинской обязанностью",
-     "title": "Новым заявителям 18–60 нужен е-ВОД из Резерв+ на бумаге и показ профиля в приложении",
-     "body": "Скриншот не принимают. 18–22: регистрация в Резерв+ и е-ВОД; 23–60: в е-ВОД "
-             "должна быть отметка об освобождении. Либо штамп о выезде в паспорте и е-ВОД.",
+     "title": "Новым заявителям 18–60 с воинской обязанностью нужен распечатанный е-ВОД",
+     "body": "По порталу МВД: скриншот не принимают, профиль в Резерв+ просят показать на "
+             "телефоне. 18–22: регистрация в Резерв+ и е-ВОД; 23–60: в е-ВОД должна быть "
+             "отметка об освобождении. Либо штамп о выезде в паспорте и е-ВОД.",
      "source_url": "https://ipc.gov.cz/uk/https-ipc-gov-cz-prodlouzeni-docasne-ochrany-do-roku-"
                    "2028-a-uprava-podminek-pro-jeji-udeleni-ua/",
      "source_title": "МВД Чехии, портал для иностранцев (04.08.2026)",
      "source_quote": "Особи з військовим обов’язком віком 23–60 років (необхідно підтвердити, "
                      "що в їхньому е-ВОД , в роздрукованому вигляді, міститься інформація про "
                      "звільнення від виконання військового обов’язку)."},
-    {"country": "Чехия", "section": "protection", "kind": "practice",
+    {"country": "Чехия", "section": "protection", "kind": "report",
      "title": "МВД Чехии ожидает, что новоприбывших станет меньше «на десятки процентов»",
      "source_url": "https://news.liga.net/ua/politics/news/chekhiia-otsinyla-novi-pravyla-yes-"
                    "shchodo-rezervu-obmezhyt-kilkist-novoprybulykh-na-desiatky-vidsotkiv",
@@ -399,7 +397,7 @@ COUNTRIES = [
      "source_quote": "Це рішення обмежить кількість новоприбулих на десятки відсотків."},
 
     # --- Венгрия
-    {"country": "Венгрия", "section": "protection", "kind": "practice",
+    {"country": "Венгрия", "section": "protection", "kind": "report",
      "title": "Карты временной защиты действуют до 04.03.2028, даже если на карте другая дата",
      "body": "Постановление правительства 145/2026 от 04.09.2026.",
      "when_text": "до 04.03.2028",
@@ -407,34 +405,34 @@ COUNTRIES = [
      "source_title": "УВКБ ООН в Венгрии",
      "source_quote": "Temporary Protection cards are valid until 4 March 2028, even if a "
                      "different expiry date is printed on the card"},
-    {"country": "Венгрия", "section": "protection", "kind": "practice",
+    {"country": "Венгрия", "section": "protection", "kind": "report",
      "applies_to": "мужчины призывного возраста",
-     "title": "По данным УВКБ ООН, в Венгрии условия не изменились — право сохраняют и мужчины призывного возраста",
-     "body": "Как это сочетается с решением ЕС 2026/1912 — не разъяснено; ждём подтверждений "
-             "от людей, подававших в Венгрии после 31.07.2026.",
+     "title": "По данным УВКБ ООН, в Венгрии все, у кого было право на защиту, его сохраняют — включая мужчин призывного возраста",
+     "body": "Как это сочетается с решением ЕС 2026/1912 — не разъяснено. Нужны подтверждения "
+             "людей, подававших в Венгрии после 31.07.2026.",
      "source_url": "https://help.unhcr.org/hungary/temporary-protection/",
      "source_title": "УВКБ ООН в Венгрии",
      "source_quote": "Everyone who was previously eligible remains eligible, including "
                      "military-aged men."},
 
     # --- Словакия
-    {"country": "Словакия", "section": "protection", "kind": "practice",
+    {"country": "Словакия", "section": "protection", "kind": "report",
      "applies_to": "мужчины, новые и повторные заявления",
-     "title": "Штамп о выезде не старше 90 дней до подачи или документ Резерв+ на бумаге",
+     "title": "Мужчинам: штамп о выезде не старше 90 дней или распечатанный е-ВОД",
      "source_url": "https://sport.znaj.ua/559806-rezerv-uzhe-nedostatno-slovachchina-zhorstkishe-"
                    "filtruvatime-ukrajinskih-cholovikiv",
      "source_title": "ЗНАЙ ЮА",
      "source_quote": "штамп має бути поставлений не раніше ніж за 90 днів до дати подання заяви."},
 
     # --- Испания
-    {"country": "Испания", "section": "protection", "kind": "practice",
-     "title": "Инструкция полиции требует выписку из Резерв+ с переводом на испанский",
+    {"country": "Испания", "section": "protection", "kind": "report",
+     "title": "Инструкция полиции требует выписку из Резерв+ с переводом на испанский (по сообщению СМИ)",
      "source_url": "https://cv.znaj.ua/558548-ispaniya-vidmovlyaye-cholovikam-u-timchasovomu-"
                    "zahisti-pereviryayut-rezerv-proyshli-lishe-troye",
      "source_title": "ЗНАЙ ЮА",
      "source_quote": "Документ прямо вимагає від заявників витяг із застосунку «Резерв+» у "
                      "перекладі іспанською мовою."},
-    {"country": "Испания", "city": "Аликанте", "section": "protection", "kind": "unverified",
+    {"country": "Испания", "city": "Аликанте", "section": "protection", "kind": "report",
      "title": "Волонтёры в полиции Аликанте: одобряют только «снят с учёта» или «непригоден»",
      "body": "Пересказ слов волонтёров в СМИ; нужны подтверждения людей, подававших в Аликанте.",
      "source_url": "https://cv.znaj.ua/558548-ispaniya-vidmovlyaye-cholovikam-u-timchasovomu-"
@@ -442,7 +440,7 @@ COUNTRIES = [
      "source_title": "ЗНАЙ ЮА"},
 
     # --- Бельгия
-    {"country": "Бельгия", "city": "Брюссель", "section": "protection", "kind": "practice",
+    {"country": "Бельгия", "city": "Брюссель", "section": "protection", "kind": "report",
      "title": "Больше 150 жалоб на отказы за первые 2,5 недели в одном центре помощи",
      "source_url": "https://tsn.ua/svit/rezerv-teper-mozut-vymahaty-navit-u-zinok-shcho-"
                    "zminylosia-dlya-ukrayintsiv-u-yes-3154013.html",
@@ -451,11 +449,11 @@ COUNTRIES = [
                      "скарг через відмови у тимчасовому захисті."},
 
     # --- Болгария
-    {"country": "Болгария", "city": "Варна", "section": "protection", "kind": "unverified",
+    {"country": "Болгария", "city": "Варна", "section": "protection", "kind": "report",
      "applies_to": "женщины",
-     "title": "Женщинам отказывают из-за отсутствия отметки в Резерв+; агентство признало «внутренние инструкции»",
-     "body": "Страница источника закрыта для автоматической проверки; содержание подтверждено "
-             "поисковой выдачей 25.09.2026. Нужны подтверждения людей.",
+     "title": "По сообщению СМИ, женщинам отказывают из-за отсутствия отметки в Резерв+; агентство сослалось на «внутренние инструкции»",
+     "body": "Страницу не удалось открыть автоматически; текст виден в поисковике на 25.09.2026. "
+             "Нужны подтверждения людей.",
      "source_url": "https://ukranews.com/news/1172013-v-bolgarii-zhenshhinam-iz-ukrainy-"
                    "otkazyvayut-vo-vremennoj-zashhite-iz-za-otsutstviya-otmetki-o",
      "source_title": "Украинские новости"},
@@ -476,7 +474,7 @@ COUNTRIES = [
                      "document which confirms that you have complied with your military "
                      "obligations or are exempt from them."},
     {"country": "Финляндия", "section": "protection", "kind": "norm",
-     "title": "Текущие разрешения действуют до 04.03.2027; о продлении до 2028 Migri сообщит отдельно",
+     "title": "О продлении разрешений до 04.03.2028 Migri сообщит отдельно",
      "source_url": "https://migri.fi/en/-/temporary-protection-continues-until-4-march-2028-with-certain-exceptions",
      "source_title": "Migri (миграционная служба Финляндии)",
      "source_quote": "We will provide further instructions and information separately when we "
@@ -490,18 +488,18 @@ COUNTRIES = [
                      "apply for a residence permit on some other grounds."},
 
     # --- Латвия
-    {"country": "Латвия", "section": "protection", "kind": "practice",
+    {"country": "Латвия", "section": "protection", "kind": "report",
      "title": "PMLP: новые заявители с 31.07.2026 подтверждают воинский статус; Резерв+ — лишь пример документа",
      "body": "Разъяснение PMLP от 12.08.2026 в пересказе LSM. Штамп о выезде — не единственный "
-             "вариант; «Резерв+ обязателен для всех» — неверно.",
+             "вариант; по разъяснению PMLP, обязательным для всех Резерв+ не назван.",
      "source_url": "https://ukr.lsm.lv/stattja/novini/ukraina/20.08.2026-rezerv-moze-znadobitisya-i-"
                    "zinkam-shho-zminilosya-dlya-ukrayinciv-yaki-oformlyuyut-timcasovii-zaxist-u-latviyi.a659503/",
      "source_title": "LSM (общественное вещание Латвии)",
      "source_quote": "Альтернативою є офіційний документ у паперовій або цифровій формі; PMLP "
                      "прямо наводить «Резерв+» як приклад."},
-    {"country": "Латвия", "section": "protection", "kind": "practice",
+    {"country": "Латвия", "section": "protection", "kind": "report",
      "applies_to": "женщины",
-     "title": "Документ из Резерв+ могут попросить и у женщин, но обязательным для всех он не назван",
+     "title": "е-ВОД могут попросить и у женщин, но обязательным для всех он не назван",
      "source_url": "https://ukr.lsm.lv/stattja/novini/ukraina/20.08.2026-rezerv-moze-znadobitisya-i-"
                    "zinkam-shho-zminilosya-dlya-ukrayinciv-yaki-oformlyuyut-timcasovii-zaxist-u-latviyi.a659503/",
      "source_title": "LSM (общественное вещание Латвии)",
@@ -549,7 +547,7 @@ COUNTRIES = [
                      "military obligations or that you are exempt from the compulsory military "
                      "service requirement in Ukraine."},
     {"country": "Швеция", "section": "protection", "kind": "norm",
-     "title": "Доказательства: штамп о выезде не старше 90 дней, е-ВОД из Резерв+ или другой официальный документ",
+     "title": "Доказательства: штамп о выезде не старше 90 дней, е-ВОД (документ из Резерв+) или другой официальный документ",
      "source_url": "https://www.migrationsverket.se/nyheter/news-archive/2026-09-10-stricter-rules-"
                    "when-the-temporary-protection-directive-is-extended.html",
      "source_title": "Migrationsverket (10.09.2026)",
@@ -566,7 +564,7 @@ COUNTRIES = [
                      "permit is valid until 4 March 2027, and you will have the opportunity to "
                      "apply for an extension of your residence permit at the beginning of 2027."},
     {"country": "Швеция", "section": "residence", "kind": "norm",
-     "title": "С 11.06.2026 можно перейти на ВНЖ для работы, бизнеса или учёбы, не выезжая из Швеции",
+     "title": "С 11.06.2026 можно подать на другой вид на жительство, не выезжая из Швеции",
      "source_url": "https://www.migrationsverket.se/nyheter/news-archive/2026-06-11-new-rules-for-"
                    "people-from-ukraine-from-11-june.html",
      "source_title": "Migrationsverket (11.06.2026)",
@@ -575,16 +573,16 @@ COUNTRIES = [
                      "without having to leave Sweden."},
 
     # --- Австрия
-    {"country": "Австрия", "section": "protection", "kind": "practice",
+    {"country": "Австрия", "section": "protection", "kind": "report",
      "title": "Право на пребывание — до 04.03.2028, новую «синюю карту» присылают автоматически",
-     "body": "Важно: при смене адреса сразу сообщить в Meldeamt, иначе карта не дойдёт. "
-             "Право действует и до получения новой карты.",
+     "body": "По данным ÖIF, новую карту присылают по зарегистрированному адресу — при переезде "
+             "его меняют в Meldeamt. Право действует и до получения новой карты.",
      "source_url": "https://www.integrationsfonds.at/ukraine/",
      "source_title": "ÖIF (Австрийский интеграционный фонд)",
      "source_quote": "Bei Verlängerung des Aufenthaltsrechts wird allen bereits registrierten "
                      "Vertriebenen mit aufrechtem Wohnsitz in Österreich automatisch ein neuer "
                      "Ausweis mit verlängertem Gültigkeitsdatum zugesendet."},
-    {"country": "Австрия", "section": "residence", "kind": "practice",
+    {"country": "Австрия", "section": "residence", "kind": "report",
      "title": "С картой переселенца нельзя сразу перейти на «Daueraufenthalt – EU»",
      "source_url": "https://www.integrationsfonds.at/ukraine/",
      "source_title": "ÖIF (Австрийский интеграционный фонд)",
@@ -592,33 +590,33 @@ COUNTRIES = [
                      "Umstieg auf „Daueraufenthalt – EU“ nicht möglich."},
 
     # --- Франция
-    {"country": "Франция", "section": "protection", "kind": "practice",
-     "title": "Разрешение APS действует 6 месяцев и продлевается в префектуре; с 01.05.2026 — пошлина 100 €",
+    {"country": "Франция", "section": "protection", "kind": "report",
+     "title": "Адвокат: разрешение APS действует 6 месяцев и продлевается в префектуре; с 01.05.2026 — пошлина 100 €",
      "body": "Разбор адвоката со ссылками на Кодекс о въезде и страницу префектуры полиции Парижа.",
      "source_url": "https://kohenavocats.com/protection-temporaire-ukrainiens-prolongation-2028-restrictions-renouvellement-recours/",
      "source_title": "Адвокат Hassan Kohen, Париж (27.09.2026)",
      "source_quote": "Depuis le 1er mai 2026, un timbre fiscal de 100 euros est perçu à partir du "
                      "deuxième renouvellement"},
-    {"country": "Франция", "section": "protection", "kind": "practice",
-     "title": "Непрерывность статуса важна: пропуск продления может сделать вас «новым заявителем»",
+    {"country": "Франция", "section": "protection", "kind": "report",
+     "title": "Адвокат: при перерыве в защите человека могут считать новым заявителем",
      "source_url": "https://kohenavocats.com/protection-temporaire-ukrainiens-prolongation-2028-restrictions-renouvellement-recours/",
      "source_title": "Адвокат Hassan Kohen, Париж (27.09.2026)",
      "source_quote": "La continuité du statut, sans interruption, devient ainsi une condition à "
                      "protéger jalousement"},
-    {"country": "Франция", "section": "protection", "kind": "practice",
-     "title": "Защита, оформленная в другой стране ЕС, мешает продлению во Франции, пока её не снимут",
+    {"country": "Франция", "section": "protection", "kind": "report",
+     "title": "Адвокат: пока действует защита в другой стране ЕС, префектура может отказать в продлении",
      "source_url": "https://kohenavocats.com/protection-temporaire-ukrainiens-prolongation-2028-restrictions-renouvellement-recours/",
      "source_title": "Адвокат Hassan Kohen, Париж (27.09.2026)",
      "source_quote": "tant qu’un titre actif subsiste dans un autre État membre, la préfecture "
                      "française peut refuser"},
-    {"country": "Франция", "section": "residence", "kind": "practice",
-     "title": "На обычный вид на жительство можно подать без долгосрочной визы",
+    {"country": "Франция", "section": "residence", "kind": "report",
+     "title": "Адвокат: на обычный вид на жительство можно подать без долгосрочной визы",
      "source_url": "https://kohenavocats.com/protection-temporaire-ukrainiens-prolongation-2028-restrictions-renouvellement-recours/",
      "source_title": "Адвокат Hassan Kohen, Париж (27.09.2026)",
      "source_quote": "Il est possible de demander dès à présent un titre de séjour sans visa long "
                      "séjour préalable"},
-    {"country": "Франция", "section": "court", "kind": "practice",
-     "title": "Отказ в продлении обжалуют в административном суде, и быстро",
+    {"country": "Франция", "section": "court", "kind": "report",
+     "title": "Адвокат: отказ в продлении оспаривают в административном суде; он советует не тянуть",
      "source_url": "https://kohenavocats.com/protection-temporaire-ukrainiens-prolongation-2028-restrictions-renouvellement-recours/",
      "source_title": "Адвокат Hassan Kohen, Париж (27.09.2026)",
      "source_quote": "chaque refus doit être contesté vite, devant le tribunal administratif."},
@@ -646,13 +644,13 @@ COUNTRIES = [
                      "of two years thereafter."},
 
     # --- Италия
-    {"country": "Италия", "section": "protection", "kind": "practice",
+    {"country": "Италия", "section": "protection", "kind": "report",
      "title": "Разрешения по временной защите продлены декретом 201/2025 до 04.03.2027; акт на 2028 пока не найден",
      "source_url": "https://help.unhcr.org/italy/forms-of-protection-in-italy/temporary-protection/",
      "source_title": "УВКБ ООН в Италии",
      "source_quote": "201/2025 until 4 March 2027 , in line with decisions taken by the European Union."},
-    {"country": "Италия", "section": "residence", "kind": "practice",
-     "title": "Разрешение по временной защите можно перевести в рабочее",
+    {"country": "Италия", "section": "residence", "kind": "report",
+     "title": "Разрешение по временной защите можно перевести в рабочее, если выполнены требования закона",
      "source_url": "https://help.unhcr.org/italy/forms-of-protection-in-italy/temporary-protection/",
      "source_title": "УВКБ ООН в Италии",
      "source_quote": "Yes, a temporary protection residence permit can be converted into a work "
@@ -660,7 +658,7 @@ COUNTRIES = [
 
     # --- Польша (официально)
     {"country": "Польша", "section": "protection", "kind": "norm",
-     "title": "Условие о воинских обязанностях не касается тех, у кого защита в Польше непрерывна с 04.08.2026 и раньше",
+     "title": "Условие о воинских обязанностях не касается тех, у кого защита в Польше была на 04.08.2026 (или раньше) и не прерывалась",
      "source_url": "https://www.gov.pl/web/udsc/przedluzenie-ochrony-czasowej-do-4-marca-2028-r",
      "source_title": "Управление по делам иностранцев Польши (UDSC)",
      "source_quote": "Ograniczenia dotyczącego wypełnienia obowiązków wojskowych nie stosuje się do "
@@ -669,7 +667,7 @@ COUNTRIES = [
                      "ochronny w tym państwie członkowskim."},
 
     # --- Словакия (официально через пресс-службу)
-    {"country": "Словакия", "section": "protection", "kind": "practice",
+    {"country": "Словакия", "section": "protection", "kind": "report",
      "applies_to": "мужчины 18–60, новые и повторные заявления с 06.08.2026",
      "title": "18–22: достаточно регистрации в Резерв+; 23–60: нужна запись об освобождении или снятии с учёта",
      "body": "Документ из Резерв+ — с официальным переводом на словацкий или английский; "
@@ -678,18 +676,18 @@ COUNTRIES = [
      "source_title": "Topky.sk со слов пресс-службы полиции",
      "source_quote": "Muži vo veku 23 až 60 rokov musia preukázať záznam o vyradení z plnenia "
                      "vojenských záväzkov, teda skutočné oslobodenie alebo vyradenie z evidencie."},
-    {"country": "Словакия", "section": "protection", "kind": "practice",
-     "title": "Документ из Резерв+ нужен в официальном переводе на словацкий (или английский)",
+    {"country": "Словакия", "section": "protection", "kind": "report",
+     "title": "е-ВОД нужен в официальном переводе на словацкий (или английский)",
      "source_url": "https://www.topky.sk/cl/10/9467657/Docasne-utocisko-sa-meni--Muzi-z-Ukrajiny-musia-po-novom-splnit-novu-podmienku",
      "source_title": "Topky.sk со слов пресс-службы полиции",
      "source_quote": "doklad z aplikácie „Reserv+“ musí byť predložený v úradnom preklade do "
                      "slovenského jazyka, pričom akceptovaný je aj úradný preklad do anglického jazyka."},
 
     # --- Румыния
-    {"country": "Румыния", "section": "protection", "kind": "unverified",
+    {"country": "Румыния", "section": "protection", "kind": "report",
      "title": "Сообщения об изъятии паспортов и обязательном Резерв+ официально не подтверждены",
      "body": "Люди в соцсетях пишут, что 05.08.2026 у мужчин, перешедших границу вне пунктов "
-             "пропуска, изымали паспорта. Проверка СМИ: на официальных ресурсах Румынии и у УВКБ "
+             "пропуска, изымали паспорта. По проверке СтопКор: на официальных ресурсах Румынии и у УВКБ "
              "ООН такого правила нет. Нужны свидетельства людей.",
      "source_url": "https://www.stopcor.org/ukr/section-uanews/news-pasporti-ta-rezerv-scho-vidomo-"
                    "pro-novi-perevirki-ukraintsiv-u-rumunii-06-08-2026.html",
@@ -701,8 +699,8 @@ COUNTRIES = [
     # --- Швейцария (официально)
     {"country": "Швейцария", "section": "protection", "kind": "norm",
      "title": "Статус S продлён до марта 2028; для новых — только при соблюдении воинских обязанностей",
-     "body": "Решение Федерального совета 19.08.2026. Касается призывного возраста, резервистов "
-             "и добровольцев ВСУ; тех, у кого статус S уже есть, не касается.",
+     "body": "Решение Федерального совета 19.08.2026. Касается прежде всего призывного возраста, "
+             "резервистов и добровольцев ВСУ; тех, у кого статус S уже есть, не касается.",
      "source_url": "https://www.admin.ch/de/newnsb/hFEfxUQEMQFg",
      "source_title": "Федеральный совет Швейцарии",
      "source_quote": "Die Einschränkung betrifft insbesondere ukrainische Personen im "
@@ -711,8 +709,9 @@ COUNTRIES = [
 
     # --- Великобритания
     {"country": "Великобритания", "section": "residence", "kind": "norm",
-     "title": "Ukraine Permission Extension: ещё 24 месяца, подавать за 90 дней до окончания",
-     "body": "Великобритания не в ЕС: временной защиты ЕС там нет, есть свои схемы для украинцев.",
+     "title": "Ukraine Permission Extension: ещё 24 месяца; подавать можно в последние 90 дней перед окончанием",
+     "body": "Касается тех, кто получил первые 18 месяцев по UPE. Великобритания не в ЕС: "
+             "временной защиты ЕС там нет, есть свои схемы для украинцев.",
      "source_url": "https://assets.publishing.service.gov.uk/media/6a22a27456e988a798b386d5/"
                    "Ukraine_Permission_Extension_Scheme.pdf",
      "source_title": "Home Office, руководство по UPE (08.06.2026)",
@@ -721,7 +720,7 @@ COUNTRIES = [
                      "expiring may apply for an additional 24‑month period of permission under the scheme."},
 
     # --- Молдова
-    {"country": "Молдова", "section": "protection", "kind": "practice",
+    {"country": "Молдова", "section": "protection", "kind": "report",
      "title": "Временная защита в Молдове — до 01.03.2027",
      "body": "Молдова не в ЕС; решение 2026/1912 на неё не распространяется.",
      "source_url": "https://help.unhcr.org/moldova/temporary-protection/",
@@ -730,16 +729,16 @@ COUNTRIES = [
                      "time (until 01.03.2027)"},
 
     # --- вне ЕС (из посева 25.09)
-    {"country": "Норвегия", "section": "protection", "kind": "practice",
+    {"country": "Норвегия", "section": "protection", "kind": "report",
      "applies_to": "мужчины 18–60, заявления с 05.05.2026",
-     "title": "Мужчины 18–60 выведены из коллективной защиты — только индивидуальное убежище",
+     "title": "Мужчин 18–60, как правило, больше не берут под коллективную защиту — их заявление рассматривают как просьбу об убежище",
      "body": "Норвегия ввела это раньше решения ЕС.",
      "source_url": "https://www.utrop.no/nyheter/nytt/386263/", "source_title": "Utrop",
      "source_quote": "Menn mellom 18 og 60 år som søker om beskyttelse i Norge fra og med "
                      "5. mai 2026 , er som hovedregel ikke lenger omfattet av ordningen med "
                      "midlertidig kollektiv beskyttelse. De får i stedet asylsøknaden "
                      "vurdert individuelt."},
-    {"country": "Швейцария", "section": "protection", "kind": "practice",
+    {"country": "Швейцария", "section": "protection", "kind": "report",
      "title": "Статус S для новых заявлений с 20.08.2026 — с условием о воинских обязанностях",
      "body": "Уже получивших статус S не касается.",
      "source_url": "https://www.pravda.com.ua/eng/news/2026/08/19/8049319/",
@@ -747,13 +746,13 @@ COUNTRIES = [
      "source_quote": "The restrictions will not apply to Ukrainian citizens who have already "
                      "been granted S status. The new provision applies to all new "
                      "applications submitted from 20 August 2026."},
-    {"country": "Исландия", "section": "protection", "kind": "practice",
-     "title": "С 23.08.2026 нужно доказать право на выезд; обязанности бывают «независимо от возраста и пола»",
+    {"country": "Исландия", "section": "protection", "kind": "report",
+     "title": "Воинские обязанности могут быть «независимо от возраста и пола» — так пишут юристы о новых правилах Исландии",
      "source_url": "https://eiglaw.com/iceland-issues-new-rules-for-collective-protection-applications/",
      "source_title": "EIG Law",
      "source_quote": "Ukrainian citizens who are not subject to conscription may nevertheless "
                      "have obligations relating to military service, regardless of age or gender."},
-    {"country": "Дания", "section": "protection", "kind": "practice",
+    {"country": "Дания", "section": "protection", "kind": "report",
      "applies_to": "мужчины 23–60 без освобождения",
      "title": "С 25.06.2026 мужчины 23–60 без освобождения не получают вид на жительство по спецзакону",
      "body": "Дания не участвует в решении ЕС о временной защите и ввела своё правило.",
@@ -777,7 +776,7 @@ async def _author():
     return aid
 
 
-async def run(url, check=True):
+async def run(url, check=True, replace=False):
     db.DATABASE_URL = url
     await db.close_pool()
     await db.init_pool()
@@ -789,6 +788,18 @@ async def run(url, check=True):
             SECTOR["problem_title"])
     sid = await info_db.ensure_sector(SECTOR["slug"], SECTOR["title"], SECTOR["intro"], problem)
     aid = await _author()
+    if replace:
+        # Пересев после правки текстов: снимаем прежний посев (его автор —
+        # служебный Claude) и тестовые «ТЕСТ:» записи; сведения живых людей
+        # не трогаем. Снятие — пометкой, событие пишется как обычно.
+        async with pool.acquire() as conn:
+            gone = await conn.fetch(
+                "UPDATE info_facts SET deleted_at = now() WHERE sector_id = $1 "
+                "AND deleted_at IS NULL AND (author_id = $2 OR title LIKE 'ТЕСТ%') "
+                "RETURNING id", sid, aid)
+            for r in gone:
+                await db._log(conn, "info_fact_removed", {"id": r["id"], "reason": "reseed"})
+        print(f"снято перед пересевом: {len(gone)}")
     added = skipped = 0
     stats = {}
     for f in COMMON + COUNTRIES:
@@ -818,10 +829,12 @@ def main():
     ap = argparse.ArgumentParser(description="Посев: украинцы в ЕС — сведения")
     ap.add_argument("--url", default=DEFAULT_URL)
     ap.add_argument("--no-check", action="store_true", help="не сверять цитаты (без сети)")
+    ap.add_argument("--replace", action="store_true",
+                    help="снять прежний посев и тестовые записи, залить заново")
     a = ap.parse_args()
     if "opmap" in a.url:
         raise SystemExit("отказ: в синтетическую базу реальную тему не сеем")
-    asyncio.run(run(a.url, check=not a.no_check))
+    asyncio.run(run(a.url, check=not a.no_check, replace=a.replace))
 
 
 if __name__ == "__main__":

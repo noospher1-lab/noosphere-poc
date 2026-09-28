@@ -330,6 +330,9 @@ async function termsNotice() {
 // «при регистрации». Пришедший войти видит два поля и кнопку «Войти»;
 // пришедший заводить аккаунт — пять полей, согласие и «Создать аккаунт».
 let AUTH_MODE = "login";
+// капча регистрации: объявлена здесь, выше setAuthMode — иначе вызов до
+// строки объявления падал бы на «нельзя обратиться до инициализации»
+let CAPTCHA_KEY = null, CAPTCHA_WIDGET = null;
 
 function setAuthMode(mode) {
   AUTH_MODE = mode === "register" ? "register" : "login";
@@ -339,6 +342,9 @@ function setAuthMode(mode) {
   }
   // у строки согласия свой display (flex) — его нельзя затирать пустой строкой
   $("#authTermsLine").style.display = reg ? "flex" : "none";
+  // капча — только когда человек открыл регистрацию: скрипт Cloudflare не
+  // должен грузиться у каждого читателя (ревью 28.09, С-7)
+  if (reg) mountCaptcha();
   $("#doLogin").style.display = reg ? "none" : "";
   $("#doRegister").style.display = reg ? "" : "none";
   $("#forgotLine").style.display = reg ? "none" : "";
@@ -456,7 +462,7 @@ async function doAuthOnce(path) {
       $("#authErr").textContent = "нужно принять условия и политику данных";
       return;
     }
-    if (CAPTCHA_KEY && window.turnstile && CAPTCHA_WIDGET !== null) {
+    if (CAPTCHA_KEY && window.turnstile && CAPTCHA_WIDGET !== null && CAPTCHA_WIDGET !== "loading") {
       body.captcha = window.turnstile.getResponse(CAPTCHA_WIDGET) || undefined;
     }
   }
@@ -484,7 +490,7 @@ async function doAuthOnce(path) {
     let msg = e.message;
     try { msg = JSON.parse(msg).detail || msg; } catch (_) { /* raw */ }
     $("#authErr").textContent = msg;
-    if (CAPTCHA_WIDGET !== null && window.turnstile) window.turnstile.reset(CAPTCHA_WIDGET);
+    if (CAPTCHA_WIDGET !== null && CAPTCHA_WIDGET !== "loading" && window.turnstile) window.turnstile.reset(CAPTCHA_WIDGET);
     // «адрес не подтверждён» — не тупик: даём выслать письмо заново прямо тут,
     // войти-то человек всё равно не может
     if (/не подтверждён/i.test(msg)) offerResend(body.username, body.password);
@@ -1971,7 +1977,6 @@ let VOTES_HIDDEN = false;   // голосования закрыты (NOOSPHERE_
 // Капча регистрации (Turnstile). Скрипт Cloudflare грузится, только если на
 // сервере задан ключ: без него регистрация работает как раньше, и чужой
 // скрипт на страницу не тянется.
-let CAPTCHA_KEY = null, CAPTCHA_WIDGET = null;
 function mountCaptcha() {
   if (!CAPTCHA_KEY || CAPTCHA_WIDGET !== null) return;
   const draw = () => {
@@ -1979,15 +1984,22 @@ function mountCaptcha() {
       { sitekey: CAPTCHA_KEY, appearance: "interaction-only" });
   };
   if (window.turnstile) return draw();
+  CAPTCHA_WIDGET = "loading";
   const sc = document.createElement("script");
   sc.src = "https://challenges.cloudflare.com/turnstile/v0/api.js";
   sc.async = true;
   sc.onload = draw;
+  // заблокирован (блокировщик, сеть) — говорим прямо, а не «обновите страницу»
+  sc.onerror = () => {
+    CAPTCHA_WIDGET = null;
+    $("#authErr").textContent = "Не загрузилась проверка «я не робот» (Cloudflare). "
+      + "Отключите блокировщик для этого сайта или попробуйте другую сеть.";
+  };
   document.head.appendChild(sc);
 }
 api("/api/config").then((c) => {
   CAPTCHA_KEY = (c && c.captcha_sitekey) || null;
-  if (CAPTCHA_KEY) mountCaptcha();
+  if (CAPTCHA_KEY && AUTH_MODE === "register") mountCaptcha();
   AI_OK = !!(c && c.ai);
   VOTES_HIDDEN = !!(c && (c.hidden || []).includes("votes"));
 }).catch(() => {});

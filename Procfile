@@ -1,4 +1,7 @@
 # Один воркер намеренно: SSE-хаб живёт в памяти процесса (hub.bind_loop), и
 # второй воркер получил бы свою копию — часть подписчиков перестала бы видеть
 # события. Масштабировать можно только вертикально, пока хаб не вынесен наружу.
-web: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --proxy-headers --forwarded-allow-ips='*'
+# --no-access-log: журнал доступа писал настоящий IP рядом с действием
+# («/api/info/facts/12/report»), а мы обещаем хранить только отпечаток адреса
+# 30 дней (vault: decisions/2026-09-28-info-sector, ревью 28.09, С-3).
+web: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --proxy-headers --forwarded-allow-ips='*' --no-access-log

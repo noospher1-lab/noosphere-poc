@@ -71,7 +71,7 @@ def test_validation():
     with pytest.raises(info_db.InfoError):
         info_db.validate_fact({"title": "X", "city": "Лейпциг"})         # город без страны
     f = info_db.validate_fact({"title": "  В   ABH  отказали ", "country": "Германия",
-                               "city": "Лейпциг", "kind": "practice", "section": "protection"})
+                               "city": "Лейпциг", "kind": "experience", "section": "protection"})
     assert f["title"] == "В ABH отказали" and f["city"] == "Лейпциг"
 
 
@@ -102,7 +102,7 @@ def test_ask_without_model_is_fail_open(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("нет ключа")
     monkeypatch.setattr(info_ai.poi, "complete_messages", boom)
-    facts = [{"id": 3, "kind": "practice", "country": "Германия", "city": None,
+    facts = [{"id": 3, "kind": "experience", "country": "Германия", "city": None,
               "quote_status": "none", "title": "t", "body": None, "when_text": None,
               "source_quote": None}]
     r = info_ai.ask_sync("вопрос", facts)
@@ -117,7 +117,7 @@ def test_intake_output_is_clamped_to_server_vocabulary(monkeypatch):
                         '"country": "ФРГ", "source_quote": null}')
     d = info_ai.intake_sync("какой-то текст про продление")["draft"]
     assert d["section"] == "other" and d["country"] is None
-    assert d["kind"] == "unverified"            # норма без ссылки и выдержки не норма
+    assert d["kind"] == "experience"            # норма без ссылки и выдержки не норма
 
 
 # ------------------------------------------------------------ с базой
@@ -153,7 +153,7 @@ def test_linked_accounts_count_once_but_nobody_is_erased():
         sid = await info_db.ensure_sector("t", "Тест")
         fid = await info_db.add_fact(sid, {"title": "В ABH Лейпцига не продлевают без Резерв+",
                                            "country": "Германия", "city": "Лейпциг",
-                                           "kind": "practice", "section": "protection"}, owner)
+                                           "kind": "experience", "section": "protection"}, owner)
         for x in (a, b, farm1, farm2):
             await info_db.set_report(fid, x, "same")
         v = await info_db.country_view("t", "Германия")
@@ -189,7 +189,7 @@ def test_same_action_from_same_network_links_accounts():
         x = await db.add_user("x1", "h", "X", invite_required=False)
         y = await db.add_user("y1", "h", "Y", invite_required=False)
         sid = await info_db.ensure_sector("t", "Тест")
-        fid = await info_db.add_fact(sid, {"title": "Сведение"}, owner)
+        fid = await info_db.add_fact(sid, {"title": "Сведение", "country": "Чехия"}, owner)
         for u in (x, y):
             await info_db.set_report(fid, u, "same")
             await antiabuse.record(u, "8.8.4.4", "action", f"fact:{fid}")
@@ -206,14 +206,14 @@ def test_sector_view_puts_common_law_first_and_counts_countries():
                                      "section": "basis", "source_url": "https://e.eu",
                                      "source_quote": "temporary protection"}, owner)
         await info_db.add_fact(sid, {"title": "Практика", "country": "Польша",
-                                     "kind": "practice"}, owner)
+                                     "kind": "experience"}, owner)
         await info_db.add_fact(sid, {"title": "Город", "country": "Польша", "city": "Краков",
-                                     "kind": "unverified"}, owner)
+                                     "kind": "report", "source_url": "https://news.example"}, owner)
         v = await info_db.sector_view("ua")
         assert [f["title"] for f in v["common"]] == ["Директива 2001/55/ЕС"]
         pl = v["countries"][0]
         assert pl["country"] == "Польша" and pl["facts"] == 2 and pl["cities"] == ["Краков"]
-        assert pl["practice"] == 1 and pl["unverified"] == 1
+        assert pl["experience"] == 1 and pl["report"] == 1
         found = await info_db.search(sid, "в Кракове что?", "Польша")
         assert found and found[0]["title"] == "Город"
     _run(body)
@@ -225,7 +225,88 @@ def test_daily_limit_on_new_facts():
         u = await db.add_user("u", "h", "U", invite_required=False)
         sid = await info_db.ensure_sector("t", "Тест")
         for i in range(info_db.FACTS_PER_DAY):
-            await info_db.add_fact(sid, {"title": f"С{i}"}, u)
+            await info_db.add_fact(sid, {"title": f"С{i}", "country": "Чехия"}, u)
         with pytest.raises(info_db.InfoError):
-            await info_db.add_fact(sid, {"title": "лишнее"}, u)
+            await info_db.add_fact(sid, {"title": "лишнее", "country": "Чехия"}, u)
+        with pytest.raises(info_db.InfoError):
+            await info_db.fact_limit_left(u)      # проверка ДО сверки ссылки
+    _run(body)
+
+
+
+# ------------------------------------------------------------ правки по ревью 28.09
+
+def test_kinds_have_their_own_requirements():
+    # опыт — всегда в стране (иначе встаёт в «Суть — для всех» рядом с законами)
+    with pytest.raises(info_db.InfoError):
+        info_db.validate_fact({"title": "Мне отказали", "kind": "experience"})
+    # «сообщают» — пересказ источника, без ссылки не бывает
+    with pytest.raises(info_db.InfoError):
+        info_db.validate_fact({"title": "СМИ пишут", "kind": "report", "country": "Чехия"})
+    # кривая ссылка роняла страницу у всех посетителей
+    for bad in ("http://exa mple.com", "https://", "http://[::1"):
+        with pytest.raises(info_db.InfoError):
+            info_db.validate_fact({"title": "x", "kind": "report", "source_url": bad})
+
+
+def test_internal_networks_incl_cgnat_and_nat64_are_blocked():
+    for ip in ("100.64.1.1", "64:ff9b::a00:1", "::ffff:127.0.0.1", "10.1.2.3", "fd00::1"):
+        assert info_db._bad_ip(ip), ip
+    assert not info_db._bad_ip("8.8.8.8")
+
+
+def test_peer_check_after_connect_refuses_internal_address():
+    class Sock:
+        closed = False
+        def getpeername(self):
+            return ("127.0.0.1", 80)
+        def close(self):
+            self.closed = True
+    sk = Sock()
+    with pytest.raises(info_db._PeerGuard):
+        info_db._check_peer(sk)
+    assert sk.closed
+
+
+def test_client_ip_takes_the_address_our_proxy_appended():
+    class R:
+        headers = {"x-forwarded-for": "1.1.1.1, 203.0.113.9"}
+        client = None
+    assert antiabuse.client_ip(R()) == "203.0.113.9"
+
+
+def test_captcha_needs_both_keys(monkeypatch):
+    monkeypatch.setattr(antiabuse, "TURNSTILE_SECRET", "s")
+    monkeypatch.setattr(antiabuse, "TURNSTILE_SITEKEY", "")
+    assert not antiabuse.captcha_enabled()
+    assert antiabuse.verify_captcha(None, "1.2.3.4")      # без sitekey не закрываем вход
+
+
+def test_intake_survives_non_object_answer(monkeypatch):
+    monkeypatch.setattr(info_ai.poi, "complete_messages", lambda *a, **k: '["список"]')
+    assert info_ai.intake_sync("текст про продление защиты")["ok"] is False
+
+
+@needs_db
+def test_norm_is_not_marked_and_links_expire():
+    async def body(db):
+        owner = await db.add_user("owner", "h", "Автор", invite_required=False)
+        a = await db.add_user("anna", "h", "А", invite_required=False)
+        b = await db.add_user("boris", "h", "Б", invite_required=False)
+        sid = await info_db.ensure_sector("t", "Тест")
+        fid = await info_db.add_fact(sid, {"title": "Закон", "kind": "norm",
+                                           "source_url": "https://e.eu", "source_quote": "q"}, owner)
+        with pytest.raises(info_db.InfoError):
+            await info_db.set_report(fid, a, "same")
+        await antiabuse.record(a, "5.6.7.8", "register")
+        await antiabuse.record(b, "5.6.7.8", "register")
+        assert await antiabuse.independent_count([a, b]) == 1
+        # связь старше срока больше не склеивает — соседи не навсегда «один человек»
+        pool = db._pool_or_raise()
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE account_links SET created_at = now() - interval '91 days'")
+        assert await antiabuse.independent_count([a, b]) == 2
+        await antiabuse.purge()
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT count(*) FROM account_links") == 0
     _run(body)

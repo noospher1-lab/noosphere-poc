@@ -44,6 +44,8 @@ async def lifespan(app):
     # startup: open the pool, ensure schema, bind the SSE hub to this loop
     await db.init_pool()
     await db.init_db()
+    # отпечатки адресов и связи аккаунтов живут ограниченный срок — чистим и на старте
+    await antiabuse.purge()
     hub.bind_loop(asyncio.get_running_loop())
     # модель эмбеддингов — в фоне: первый старт качает ~240 МБ, healthcheck
     # этого ждать не должен; до загрузки поиск похожих идёт триграммами
@@ -584,8 +586,9 @@ _login_calls: dict[str, deque] = defaultdict(deque)
 
 
 def _login_throttle(request: Request, bucket: str):
-    ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-          or (request.client.host if request.client else "?"))
+    # последний адрес X-Forwarded-For: первый подставляет сам клиент, и тормоз
+    # перебора паролей обходился бы подменой заголовка (ревью 28.09, С-4)
+    ip = antiabuse.client_ip(request) or "?"
     q = _login_calls[f"{bucket}:{ip}"]
     now = time.monotonic()
     while q and now - q[0] > 60.0:
@@ -1267,7 +1270,7 @@ async def config():
     # честно недоступны, и интерфейс должен говорить об этом прямо (Р-2, А4).
     return {"dev_tools": DEV_TOOLS, "terms_version": TERMS_VERSION,
             "hidden": HIDDEN_SECTIONS, "ai": bool(os.environ.get("ANTHROPIC_API_KEY")),
-            "captcha_sitekey": antiabuse.TURNSTILE_SITEKEY or None}
+            "captcha_sitekey": antiabuse.TURNSTILE_SITEKEY if antiabuse.captcha_enabled() else None}
 
 
 @app.get("/api/stats")
@@ -4341,10 +4344,21 @@ def _info_400(e):
     return HTTPException(400, str(e))
 
 
+# Сколько чужих страниц сервер качает одновременно. Сверка ссылки — сетевой
+# запрос в общем пуле потоков; без потолка пачка сведений со ссылкой на
+# медленный сайт занимала весь пул, и вставали почта и модель (ревью 28.09, Б-2).
+_FETCH_SLOTS = asyncio.Semaphore(int(os.environ.get("NOOSPHERE_FETCH_SLOTS", "4")))
+
+
+async def _fetch_limited(fn, *args):
+    async with _FETCH_SLOTS:
+        return await asyncio.to_thread(fn, *args)
+
+
 class InfoFactIn(BaseModel):
     title: str
     section: str = "other"
-    kind: str = "unverified"
+    kind: str = "experience"
     country: str | None = None
     city: str | None = None
     office: str | None = None
@@ -4388,19 +4402,28 @@ async def info_country(slug: str, country: str, author=Depends(optional_author))
         raise HTTPException(404, str(e))
 
 
+@app.get("/api/info/fact/{fact_id}")
+async def info_fact_place(fact_id: int):
+    """Где сведение: ссылка /info.html#f29 должна открыть его страну."""
+    place = await info_db.fact_place(fact_id)
+    if not place:
+        raise HTTPException(404, "Такого сведения нет — возможно, его сняли")
+    return place
+
+
 @app.post("/api/info/{slug}/intake")
 async def info_intake(slug: str, body: InfoIntakeIn, author=Depends(verified_author)):
     """Черновик полей из свободного текста. Публикует человек, не модель."""
     if not await info_db.get_sector(slug):
-        raise HTTPException(404, "сектора нет")
+        raise HTTPException(404, "Такого раздела сведений нет")
     text = (body.text or "").strip()
     if len(text) < 10:
-        raise HTTPException(400, "напишите хотя бы пару предложений")
+        raise HTTPException(400, "Напишите хотя бы пару предложений")
     url = (body.url or "").strip() or None
-    if url and not re.match(r"https?://", url):
-        raise HTTPException(400, "ссылка должна начинаться с http:// или https://")
+    if url and not info_db._public_host(url):
+        raise HTTPException(400, "Ссылка не похожа на адрес страницы — проверьте её")
     await spend_llm(author)
-    page = await asyncio.to_thread(info_db.fetch_text, url) if url else None
+    page = await _fetch_limited(info_db.fetch_text, url) if url else None
     res = await asyncio.to_thread(info_ai.intake_sync, text, url, page)
     res["page_read"] = page is not None if url else None
     return res
@@ -4411,19 +4434,21 @@ async def info_add_fact(slug: str, body: InfoFactIn, request: Request,
                         author=Depends(verified_author)):
     s = await info_db.get_sector(slug)
     if not s:
-        raise HTTPException(404, "сектора нет")
+        raise HTTPException(404, "Такого раздела сведений нет")
     data = body.model_dump()
     try:
         info_db.validate_fact(data)
+        # лимит — до сверки: сверка ходит в сеть (ревью 28.09, Б-2)
+        await info_db.fact_limit_left(author["id"])
     except info_db.InfoError as e:
         raise _info_400(e)
     # сверка до записи: сведение сразу выходит со своим статусом
-    status = await asyncio.to_thread(info_db.check_quote, data["source_url"],
-                                     data["source_quote"])
+    status = await _fetch_limited(info_db.check_quote, data["source_url"],
+                                  data["source_quote"])
     if data["kind"] == "norm" and status != "verified":
-        # «норма» обещает читателю текст закона; несверенная цитата этого не
-        # держит — сведение уходит «непроверенным», а человек видит почему
-        data["kind"] = "unverified"
+        # «норма» обещает читателю текст закона или ведомства; несверенная
+        # цитата этого не держит — сведение уходит пересказом источника
+        data["kind"] = "report"
     try:
         fid = await info_db.add_fact(
             s["id"], data, author["id"], quote_status=status,
@@ -4461,10 +4486,10 @@ async def info_remove(fact_id: int, author=Depends(verified_author)):
 async def info_ask(slug: str, body: InfoAskIn, author=Depends(verified_author)):
     s = await info_db.get_sector(slug)
     if not s:
-        raise HTTPException(404, "сектора нет")
+        raise HTTPException(404, "Такого раздела сведений нет")
     q = (body.question or "").strip()
     if len(q) < 5:
-        raise HTTPException(400, "вопрос слишком короткий")
+        raise HTTPException(400, "Напишите вопрос хотя бы в несколько слов")
     country = body.country if body.country in taxonomy.COUNTRIES else None
     facts = await info_db.search(s["id"], q, country)
     if facts:
@@ -4480,7 +4505,7 @@ async def info_recheck(limit: int = 50):
     """Сторож свежести: заново сверить цитаты, которым пора. Звать по крону."""
     out = {}
     for f in await info_db.stale_facts(limit):
-        st = await asyncio.to_thread(info_db.check_quote, f["source_url"], f["source_quote"])
+        st = await _fetch_limited(info_db.check_quote, f["source_url"], f["source_quote"])
         await info_db.set_quote_status(f["id"], st)
         out[f["id"]] = st
     return {"checked": len(out), "status": out}

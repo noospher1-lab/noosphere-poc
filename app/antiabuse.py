@@ -39,6 +39,17 @@ log = logging.getLogger("noosphere.antiabuse")
 # «пачкой» и действия подряд, а старые адреса только копят опасные данные.
 SIGNAL_DAYS = int(os.environ.get("NOOSPHERE_SIGNAL_DAYS", "30"))
 
+# Сколько живёт связь пары. Без срока соседи по общежитию, однажды
+# зарегистрированные подряд, оставались бы «одним человеком» навсегда
+# (ревью 28.09, С-2; Alex: «делай как предлагаешь» — 90 дней).
+LINK_DAYS = int(os.environ.get("NOOSPHERE_LINK_DAYS", "90"))
+
+# Секрет отпечатков меняется сам раз в столько дней: из базового секрета и
+# номера периода выводится ключ периода. Тот, у кого окажется дамп базы,
+# не переберёт адреса, пока не знает базового секрета — а на проде он живёт в
+# переменных Railway, не в базе (ревью 28.09, С-3).
+ROTATE_DAYS = 30
+
 # Регистрации с одного адреса ближе этого окна — один владелец. Шире нельзя:
 # соседи по общежитию регистрируются в разные дни, ферма — пачкой.
 REGISTER_WINDOW_HOURS = 2
@@ -102,6 +113,15 @@ _secret: bytes | None = None
 
 
 async def _get_secret(conn) -> bytes:
+    """Ключ ТЕКУЩЕГО периода. Базовый секрет — из NOOSPHERE_SIGNAL_SECRET;
+    без переменной (стенд, тесты) — из базы, с предупреждением в лог."""
+    import time
+    base = await _base_secret(conn)
+    period = int(time.time() // (ROTATE_DAYS * 86400))
+    return hmac.new(base, f"period:{period}".encode(), hashlib.sha256).digest()
+
+
+async def _base_secret(conn) -> bytes:
     global _secret
     if _secret is not None:
         return _secret
@@ -109,6 +129,8 @@ async def _get_secret(conn) -> bytes:
     if env:
         _secret = env.encode()
         return _secret
+    log.warning("NOOSPHERE_SIGNAL_SECRET не задан — секрет отпечатков лежит в базе; "
+                "на проде задайте переменную")
     val = await conn.fetchval(
         "SELECT value FROM instance_secrets WHERE name = 'signal'")
     if val is None:
@@ -122,10 +144,12 @@ async def _get_secret(conn) -> bytes:
 
 
 def client_ip(request) -> str:
-    """Адрес клиента. За прокси Railway настоящий — первый в X-Forwarded-For
-    (так же читает _login_throttle)."""
-    return (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-            or (request.client.host if request.client else ""))
+    """Адрес клиента. Берём ПОСЛЕДНИЙ адрес X-Forwarded-For — его дописал наш
+    прокси (Railway). Первый присылает сам клиент, и ферма подставляла бы
+    туда что угодно, обходя склейку (ревью 28.09, С-4). Если прокси
+    заменяет заголовок целиком, последний = единственный — тоже верно."""
+    xff = [x.strip() for x in request.headers.get("x-forwarded-for", "").split(",") if x.strip()]
+    return xff[-1] if xff else (request.client.host if request.client else "")
 
 
 def _net(ip: str) -> str:
@@ -171,9 +195,7 @@ async def record(author_id: int, ip: str, kind: str, context: str | None = None)
         pool = db._pool_or_raise()
         async with pool.acquire() as conn:
             h = await _hash(conn, ip)
-            await conn.execute(
-                "DELETE FROM account_signals WHERE created_at < now() - make_interval(days => $1)",
-                SIGNAL_DAYS)
+            await _purge(conn)
             await conn.execute(
                 "INSERT INTO account_signals (author_id, kind, net_hash, context) "
                 "VALUES ($1, $2, $3, $4)", author_id, kind, h, context)
@@ -198,6 +220,26 @@ async def record(author_id: int, ip: str, kind: str, context: str | None = None)
         log.warning("отпечаток не записан", exc_info=True)
 
 
+async def _purge(conn):
+    await conn.execute(
+        "DELETE FROM account_signals WHERE created_at < now() - make_interval(days => $1)",
+        SIGNAL_DAYS)
+    await conn.execute(
+        "DELETE FROM account_links WHERE created_at < now() - make_interval(days => $1)",
+        LINK_DAYS)
+
+
+async def purge():
+    """Чистка по сроку — на старте сервера, а не только при новых действиях:
+    иначе в тихий месяц отпечатки жили бы дольше обещанных 30 дней."""
+    try:
+        pool = db._pool_or_raise()
+        async with pool.acquire() as conn:
+            await _purge(conn)
+    except Exception:
+        log.warning("чистка отпечатков не удалась", exc_info=True)
+
+
 async def clusters(author_ids) -> dict[int, int]:
     """Автор → представитель его группы связанных аккаунтов (union-find по
     account_links, включая связи через третьих лиц)."""
@@ -214,10 +256,12 @@ async def clusters(author_ids) -> dict[int, int]:
                 UNION
                 SELECT CASE WHEN l.a = c.id THEN l.b ELSE l.a END
                 FROM account_links l JOIN comp c ON c.id IN (l.a, l.b)
+                WHERE l.created_at > now() - make_interval(days => $2)
             )
             SELECT l.a, l.b FROM account_links l
-            WHERE l.a IN (SELECT id FROM comp) OR l.b IN (SELECT id FROM comp)
-            """, ids)
+            WHERE (l.a IN (SELECT id FROM comp) OR l.b IN (SELECT id FROM comp))
+              AND l.created_at > now() - make_interval(days => $2)
+            """, ids, LINK_DAYS)
     parent: dict[int, int] = {}
 
     def find(x):
@@ -281,14 +325,16 @@ def disposable(email: str) -> bool:
 
 
 def captcha_enabled() -> bool:
-    return bool(TURNSTILE_SECRET)
+    # только оба ключа: секрет без sitekey закрыл бы регистрацию всем —
+    # форма не показала бы капчу, а сервер её требовал (ревью 28.09, С-7)
+    return bool(TURNSTILE_SECRET and TURNSTILE_SITEKEY)
 
 
 def verify_captcha(token: str | None, ip: str) -> bool:
     """Проверка Turnstile. Без секрета — выключена (стенд, тесты). Сеть
     Cloudflare легла — пропускаем: капча первый слой, не единственный, и
     закрывать регистрацию из-за чужого сбоя хуже, чем пропустить бота."""
-    if not TURNSTILE_SECRET:
+    if not captcha_enabled():
         return True
     if not token:
         return False

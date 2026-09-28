@@ -5,10 +5,15 @@
 Alex 28.09: «мы никого не консультируем, а собираем доступную информацию, а
 люди уже ей распоряжаются как хотят». Отсюда устройство:
 
-  - СВЕДЕНИЕ — не вердикт «правда/ложь», а утверждение и то, на чём оно
-    держится: норма (текст закона, цитата сверена с источником), практика
-    (так было с людьми — держится на числе независимых подтверждений) или
-    непроверенное.
+  - СВЕДЕНИЕ — не вердикт «правда/ложь», а утверждение и то, на что оно
+    опирается. Три вида (Alex 28.09, «делай как предлагаешь»):
+      норма  — текст закона или официальное разъяснение ведомства, цитата
+               сверена с источником;
+      сообщают — СМИ, юристы, помогающие организации: пересказ со ссылкой;
+      опыт людей — то, что внесли сами люди; у опыта всегда есть страна,
+               и опирается он на число независимых подтверждений.
+    Раньше «практикой» называли и статьи СМИ, и опыт людей, а легенда
+    обещала «так было с людьми» — агенты студии 28.09 поймали расхождение.
   - Порядок чтения — сначала суть для всех (закон-основание, законы о правах
     и равенстве, общие пути), потом страна, потом город, если в городе своя
     практика (Alex 28.09).
@@ -33,16 +38,19 @@ SECTION_NAMES = {
     "basis": "Закон-основание",
     "rights": "Права и равенство",
     "protection": "Продление защиты",
-    "residence": "Переход на ВНЖ",
+    "residence": "Переход на вид на жительство",
     "court": "Оспаривание в суде",
     "other": "Другое",
 }
-KINDS = ("norm", "practice", "unverified")
+KINDS = ("norm", "report", "experience")
 QUOTE_STATUSES = ("verified", "mismatch", "unreachable", "unchecked", "none")
 
 # лимиты от вбросов (Alex 28.09: «будем мониторить и ограничивать лимиты»)
 FACTS_PER_DAY = 20
 REPORTS_PER_DAY = 100
+# ключ advisory-замка «действия одного аккаунта в секторе»: без него два
+# параллельных запроса оба видят «19 из 20» и оба проходят (ревью 28.09, С-5)
+AUTHOR_LOCK = 7101
 
 
 class InfoError(Exception):
@@ -89,6 +97,14 @@ SCHEMA = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS info_facts_sector ON info_facts (sector_id, country, section)",
+    # переход со старых видов (стенд 28.09): статьи и разборы — «сообщают»,
+    # то, что внесли люди, — «опыт людей»
+    """
+    UPDATE info_facts f SET kind = CASE
+        WHEN f.kind = 'practice' AND NOT COALESCE(a.is_service, FALSE) THEN 'experience'
+        ELSE 'report' END
+    FROM authors a WHERE a.id = f.author_id AND f.kind IN ('practice', 'unverified')
+    """,
     # «у меня так же / у меня иначе». Один голос на человека и сведение —
     # повторное нажатие меняет, а не добавляет.
     """
@@ -133,23 +149,76 @@ def html_to_text(raw: str) -> str:
     return html.unescape(raw)
 
 
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _bad_ip(ip) -> bool:
+    ip = ipaddress.ip_address(ip)
+    if ip.version == 6:
+        if ip.ipv4_mapped is not None:
+            return _bad_ip(ip.ipv4_mapped)
+        if ip in _NAT64:
+            return _bad_ip(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+    return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+            or ip.is_multicast or ip.is_unspecified or ip in _CGNAT)
+
+
 def _public_host(url: str) -> bool:
     """Только внешние адреса: сервер не должен ходить по ссылке пользователя
     во внутреннюю сеть (Railway, localhost, метаданные облака)."""
     from urllib.parse import urlparse
-    u = urlparse(url)
-    if u.scheme not in ("http", "https") or not u.hostname:
+    try:
+        u = urlparse(url)
+        host, port = u.hostname, u.port
+    except ValueError:
+        return False
+    if u.scheme not in ("http", "https") or not host:
         return False
     try:
-        infos = socket.getaddrinfo(u.hostname, u.port or (443 if u.scheme == "https" else 80))
+        infos = socket.getaddrinfo(host, port or (443 if u.scheme == "https" else 80))
     except OSError:
         return False
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved \
-                or ip.is_multicast or ip.is_unspecified:
-            return False
-    return True
+    return not any(_bad_ip(info[4][0]) for info in infos)
+
+
+class _PeerGuard(Exception):
+    pass
+
+
+def _check_peer(sock):
+    """Второй замок — после соединения. Имя резолвится дважды (проверка и
+    соединение), и злонамеренный DNS может во второй раз вернуть внутренний
+    адрес (DNS-rebinding, ревью 28.09, С-1). Здесь проверяется адрес, к
+    которому соединились на самом деле."""
+    if _bad_ip(sock.getpeername()[0]):
+        sock.close()
+        raise _PeerGuard("соединение с внутренним адресом")
+
+
+import http.client  # noqa: E402
+
+
+class _GuardHTTP(http.client.HTTPConnection):
+    def connect(self):
+        super().connect()
+        _check_peer(self.sock)
+
+
+class _GuardHTTPS(http.client.HTTPSConnection):
+    def connect(self):
+        super().connect()
+        _check_peer(self.sock)
+
+
+class _GuardHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_GuardHTTP, req)
+
+
+class _GuardHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_GuardHTTPS, req, context=self._context)
 
 
 class _SafeRedirect(urllib.request.HTTPRedirectHandler):
@@ -162,10 +231,29 @@ class _SafeRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-_OPENER = urllib.request.build_opener(_SafeRedirect)
+_OPENER = urllib.request.build_opener(_SafeRedirect, _GuardHTTPHandler, _GuardHTTPSHandler)
+
+# Весь запрос к чужому сайту — не дольше этого. timeout сокета ограничивает
+# одну операцию, и медленный сайт, отдающий по байту, держал бы поток
+# минутами (ревью 28.09, Б-2).
+FETCH_DEADLINE = 20
 
 
-def fetch_text(url: str, limit=3_000_000, timeout=15) -> str | None:
+def _read(r, limit, deadline):
+    import time
+    chunks, size = [], 0
+    while size < limit:
+        if time.monotonic() > deadline:
+            return None
+        c = r.read(65536)
+        if not c:
+            break
+        chunks.append(c)
+        size += len(c)
+    return b"".join(chunks)
+
+
+def fetch_text(url: str, limit=3_000_000, timeout=10) -> str | None:
     """Текст страницы или None, если не достать (закрыта для роботов, PDF,
     нет сети). Синхронно — звать через asyncio.to_thread."""
     if not _public_host(url):
@@ -173,15 +261,20 @@ def fetch_text(url: str, limit=3_000_000, timeout=15) -> str | None:
     req = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0 (compatible; NoosphereQuoteCheck/1.0; +https://noosphere.live)",
         "Accept-Language": "uk,ru,en,de,pl,cs;q=0.8"})
+    import time
+    deadline = time.monotonic() + FETCH_DEADLINE
     try:
         with _OPENER.open(req, timeout=timeout) as r:
             ctype = r.headers.get("content-type", "")
             if "pdf" in ctype or url.lower().split("?")[0].endswith(".pdf"):
                 # законы ЕС, ЕСПЧ и ООН часто есть только в PDF
-                return _pdf_text(r.read(limit * 5))
+                data = _read(r, limit * 5, deadline)
+                return _pdf_text(data) if data else None
             if "html" not in ctype and "text" not in ctype and "xml" not in ctype:
                 return None
-            raw = r.read(limit)
+            raw = _read(r, limit, deadline)
+            if raw is None:
+                return None
             charset = r.headers.get_content_charset() or "utf-8"
     except Exception:
         return None
@@ -246,26 +339,40 @@ def _clean(s, n):
 def validate_fact(d: dict) -> dict:
     section = d.get("section") or "other"
     if section not in SECTIONS:
-        raise InfoError(f"неизвестный раздел: {section!r}")
-    kind = d.get("kind") or "unverified"
+        raise InfoError("Такого раздела нет — выберите из списка")
+    kind = d.get("kind") or "experience"
     if kind not in KINDS:
-        raise InfoError(f"неизвестный вид сведения: {kind!r}")
+        raise InfoError("Такого вида сведения нет — выберите из списка")
     country = _clean(d.get("country"), 80)
     if country and country not in taxonomy.COUNTRIES:
-        raise InfoError(f"неизвестная страна: {country!r}")
+        raise InfoError("Такой страны нет в списке — выберите из списка")
     city = _clean(d.get("city"), 80)
     if city and not country:
-        raise InfoError("город указан без страны")
+        raise InfoError("Указан город — выберите и страну")
+    # у опыта всегда есть страна: иначе случай из одного города встаёт в
+    # «Суть — для всех» рядом с законами ЕС (UX 28.09, Б2)
+    if kind == "experience" and not country:
+        raise InfoError("Опыт людей всегда в какой-то стране — выберите страну")
     title = _clean(d.get("title"), 200)
     if not title:
-        raise InfoError("нужно короткое утверждение — что именно известно")
+        raise InfoError("Нужно короткое утверждение — что именно известно")
     url = _clean(d.get("source_url"), 1000)
-    if url and not re.match(r"https?://", url):
-        raise InfoError("ссылка должна начинаться с http:// или https://")
+    if url:
+        from urllib.parse import urlparse
+        try:
+            ok = urlparse(url).scheme in ("http", "https") and bool(urlparse(url).hostname) \
+                and not re.search(r"\s", url)
+        except ValueError:
+            ok = False
+        if not ok:
+            # кривая ссылка роняла страницу у всех посетителей (ревью 28.09, Б-1)
+            raise InfoError("Ссылка не похожа на адрес страницы — проверьте её")
     quote = _clean(d.get("source_quote"), 2000)
     # «норма» — это текст закона; без источника она неотличима от пересказа
     if kind == "norm" and not (url and quote):
-        raise InfoError("норма — это текст закона: нужна ссылка и дословная выдержка")
+        raise InfoError("Норма — это текст закона или ведомства: нужна ссылка и дословная выдержка")
+    if kind == "report" and not url:
+        raise InfoError("«Сообщают» — пересказ источника: нужна ссылка на него")
     return {
         "section": section, "kind": kind, "country": country, "city": city,
         "office": _clean(d.get("office"), 200),
@@ -306,6 +413,23 @@ async def ensure_sector(slug, title, intro=None, problem_id=None):
     return sid
 
 
+async def _check_fact_limit(conn, author_id):
+    n = await conn.fetchval(
+        "SELECT count(*) FROM info_facts WHERE author_id = $1 "
+        "AND created_at > now() - interval '1 day'", author_id)
+    if n >= FACTS_PER_DAY:
+        raise InfoError(f"Не больше {FACTS_PER_DAY} сведений в сутки. Продолжить можно завтра.")
+
+
+async def fact_limit_left(author_id):
+    """Проверка лимита ДО сверки ссылки: сверка — сетевой запрос к чужому
+    сайту, и без этой проверки аккаунт сверх лимита всё равно занимал бы
+    потоки сервера (ревью 28.09, Б-2)."""
+    pool = db._pool_or_raise()
+    async with pool.acquire() as conn:
+        await _check_fact_limit(conn, author_id)
+
+
 async def add_fact(sector_id, data: dict, author_id, quote_status="unchecked",
                    checked_at=None, recheck_days=30, limit=True):
     f = validate_fact(data)
@@ -313,11 +437,8 @@ async def add_fact(sector_id, data: dict, author_id, quote_status="unchecked",
     async with pool.acquire() as conn:
         async with conn.transaction():
             if limit and author_id is not None:
-                n = await conn.fetchval(
-                    "SELECT count(*) FROM info_facts WHERE author_id = $1 "
-                    "AND created_at > now() - interval '1 day'", author_id)
-                if n >= FACTS_PER_DAY:
-                    raise InfoError(f"не больше {FACTS_PER_DAY} сведений в сутки — это защита от вбросов")
+                await conn.execute("SELECT pg_advisory_xact_lock($1, $2)", AUTHOR_LOCK, author_id)
+                await _check_fact_limit(conn, author_id)
             fid = await conn.fetchval(
                 """
                 INSERT INTO info_facts (sector_id, section, country, city, office,
@@ -365,9 +486,9 @@ async def remove_fact(fact_id, author_id, admin=False):
             row = await conn.fetchrow(
                 "SELECT author_id, deleted_at FROM info_facts WHERE id = $1", fact_id)
             if not row or row["deleted_at"]:
-                raise InfoError("сведения нет")
+                raise InfoError("Такого сведения нет — возможно, его сняли")
             if not admin and row["author_id"] != author_id:
-                raise InfoError("снять сведение может только тот, кто его внёс")
+                raise InfoError("Снять сведение может только тот, кто его внёс")
             await conn.execute("UPDATE info_facts SET deleted_at = now() WHERE id = $1", fact_id)
             await db._log(conn, "info_fact_removed", {"id": fact_id}, author_id)
 
@@ -380,12 +501,17 @@ async def set_report(fact_id, author_id, verdict, note=None):
     pool = db._pool_or_raise()
     async with pool.acquire() as conn:
         async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock($1, $2)", AUTHOR_LOCK, author_id)
             row = await conn.fetchrow(
-                "SELECT author_id FROM info_facts WHERE id = $1 AND deleted_at IS NULL", fact_id)
+                "SELECT author_id, kind FROM info_facts WHERE id = $1 AND deleted_at IS NULL",
+                fact_id)
             if row is None:
-                raise InfoError("сведения нет")
+                raise InfoError("Такого сведения нет — возможно, его сняли")
             if row["author_id"] == author_id:
-                raise InfoError("своё сведение подтверждают другие люди")
+                raise InfoError("Ваше сведение отмечают другие люди")
+            # у текста закона нечего подтверждать «у меня так же» (Alex 28.09)
+            if row["kind"] == "norm" and verdict is not None:
+                raise InfoError("Норму не отмечают — это текст закона или ведомства")
             if verdict is None:
                 await conn.execute(
                     "DELETE FROM info_reports WHERE fact_id = $1 AND author_id = $2",
@@ -395,7 +521,7 @@ async def set_report(fact_id, author_id, verdict, note=None):
                     "SELECT count(*) FROM info_reports WHERE author_id = $1 "
                     "AND created_at > now() - interval '1 day'", author_id)
                 if n >= REPORTS_PER_DAY:
-                    raise InfoError("слишком много отметок за сутки — это защита от накрутки")
+                    raise InfoError(f"Не больше {REPORTS_PER_DAY} отметок в сутки. Продолжить можно завтра.")
                 await conn.execute(
                     """
                     INSERT INTO info_reports (fact_id, author_id, verdict, note)
@@ -476,7 +602,7 @@ def _geo_of(country):
 async def sector_view(slug_or_id, me=None):
     s = await get_sector(slug_or_id)
     if not s:
-        raise InfoError("сектора нет")
+        raise InfoError("Такого раздела сведений нет")
     facts = await sector_facts(s["id"], me=me)
     common = [f for f in facts if not f["country"]]
     countries: dict[str, dict] = {}
@@ -484,8 +610,8 @@ async def sector_view(slug_or_id, me=None):
         if not f["country"]:
             continue
         c = countries.setdefault(f["country"], {"country": f["country"], "facts": 0,
-                                                "norm": 0, "practice": 0,
-                                                "unverified": 0, "cities": set(),
+                                                "norm": 0, "report": 0,
+                                                "experience": 0, "cities": set(),
                                                 "regions": _geo_of(f["country"])})
         c["facts"] += 1
         c[f["kind"]] += 1
@@ -506,9 +632,9 @@ async def sector_view(slug_or_id, me=None):
 async def country_view(slug_or_id, country, me=None):
     s = await get_sector(slug_or_id)
     if not s:
-        raise InfoError("сектора нет")
+        raise InfoError("Такого раздела сведений нет")
     if country not in taxonomy.COUNTRIES:
-        raise InfoError("неизвестная страна")
+        raise InfoError("Такой страны нет в списке")
     facts = await sector_facts(s["id"], me=me, country=country)
     return {"sector": {"id": s["id"], "slug": s["slug"], "title": s["title"]},
             "country": country,
@@ -553,5 +679,17 @@ async def search(sector_id, question, country=None, limit=12):
     ranked = sorted((dict(r) for r in rows),
                     key=lambda r: (-(r["hits"] + (2 if country and r["country"] == country else 0)),
                                    r["id"]))
-    return [r for r in ranked if r["hits"] or (country and r["country"] == country)][:limit] \
-        or ranked[:limit]
+    # без совпадений — пусто, а не «первые 12 подряд»: иначе сведения, не
+    # связанные с вопросом, выдавались за подходящие (QA 28.09)
+    return [r for r in ranked if r["hits"] or (country and r["country"] == country)][:limit]
+
+
+async def fact_place(fact_id):
+    """Где лежит сведение — чтобы ссылка /info.html#f29 открыла нужную страну."""
+    pool = db._pool_or_raise()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT f.id, f.country, s.slug FROM info_facts f "
+            "JOIN info_sectors s ON s.id = f.sector_id "
+            "WHERE f.id = $1 AND f.deleted_at IS NULL", fact_id)
+    return dict(row) if row else None

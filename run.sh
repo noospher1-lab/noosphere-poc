@@ -9,7 +9,7 @@ cd "$(dirname "$0")" || exit 1
 pkill -9 -f "uvicorn app.main" 2>/dev/null
 sleep 1
 
-setsid nohup uvicorn app.main:app --port 8000 > uvicorn.log 2>&1 < /dev/null &
+setsid nohup uvicorn app.main:app --port 8000 --no-access-log > uvicorn.log 2>&1 < /dev/null &
 disown 2>/dev/null
 
 # 20 tries, not 6: startup (pool + schema migrations) regularly takes longer
