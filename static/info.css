@@ -165,3 +165,5 @@ label.f textarea { min-height: 90px; resize: vertical; }
 
 label.f textarea.short { min-height: 64px; }
 .by-ai { border-color: #6b5a2c !important; background: #1d1a12 !important; }
+
+label.f select + input[name=section_own] { margin-top: 6px; }

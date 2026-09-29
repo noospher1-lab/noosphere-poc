@@ -497,7 +497,9 @@ PUBLIC_URL = os.environ.get("PUBLIC_URL", "http://localhost:8000").rstrip("/")
 # 10.09.2026 — черновики и разговор с ИИ стали храниться на сервере. Кто
 # принимал прошлую редакцию, увидит уведомление при входе (п. 12 самих условий
 # это и обещает).
-TERMS_VERSION = os.environ.get("TERMS_VERSION", "2026-09-10")
+# 2026-09-29: отпечаток адреса вместо адреса, Cloudflare Turnstile, сведения —
+# существенное изменение (п. 12 условий): участники примут его при входе
+TERMS_VERSION = os.environ.get("TERMS_VERSION", "2026-09-29")
 
 SESSION_COOKIE = "session"
 SESSION_DAYS = 30
