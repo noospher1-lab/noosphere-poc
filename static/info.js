@@ -413,6 +413,13 @@ function countrySelect(name, value, emptyLabel) {
 }
 
 let ASK_BUSY = false;
+// хранилище браузера бывает недоступно (приватный режим) — тогда просто без памяти
+function loadAsk() {
+  try { return JSON.parse(sessionStorage.getItem("noo-ask:" + ROOT) || "null"); } catch { return null; }
+}
+function saveAsk(v) {
+  try { sessionStorage.setItem("noo-ask:" + ROOT, JSON.stringify(v)); } catch { /* без памяти */ }
+}
 function renderAsk() {
   const box = $("#ask-box");
   if (!ME) { box.innerHTML = `<a href="${esc(loginUrl())}">Войдите</a>, чтобы спросить. Читать сведения можно без входа.`; return; }
@@ -422,6 +429,25 @@ function renderAsk() {
     <div class="btns"><button class="btn primary" id="ask-go">Спросить</button>
       ${CFG.ai ? "" : `<span class="muted">ИИ сейчас выключен — покажем сведения, где есть слова из вопроса.</span>`}</div>
     <div id="ask-out"></div>`;
+  const out0 = $("#ask-out");
+  // номер в ответе — обычный шаг истории: «Назад» возвращает к ответу, а не
+  // уводит со страницы (Alex 29.09: «при нажатии назад — совсем другая страница»)
+  out0.addEventListener("click", (e) => {
+    const a = e.target.closest("[data-go]");
+    if (!a) return;
+    e.preventDefault();
+    history.replaceState(null, "", "#ask-out");
+    history.pushState(null, "", "#f" + a.dataset.go);
+    reveal(a.dataset.go);
+  });
+  // последний вопрос и ответ — пока открыта вкладка: уход в обсуждение и назад
+  // больше не стирает ответ
+  const saved = loadAsk();
+  if (saved) {
+    box.querySelector("[name=q]").value = saved.q || "";
+    if (saved.country) box.querySelector("[name=ask_country]").value = saved.country;
+    out0.innerHTML = saved.html || "";
+  }
   $("#ask-go").onclick = async () => {
     // двойной клик отправлял два запроса — на проде это два платных вызова (QA 28.09)
     if (ASK_BUSY) return;
@@ -444,11 +470,7 @@ function renderAsk() {
         : (list ? `<p class="msg">ИИ сейчас недоступен. Сведения, где есть слова из вашего вопроса:</p>${list}`
                 : `<p class="msg">Таких сведений не нашлось. Если знаете ответ — <a href="#add">добавьте сведение</a>.</p>`);
       if (r.gaps) out.insertAdjacentHTML("beforeend", `<p class="muted">Чего не хватает: ${esc(r.gaps)}</p>`);
-      out.querySelectorAll("[data-go]").forEach(a => a.addEventListener("click", (e) => {
-        e.preventDefault();
-        history.replaceState(null, "", "#f" + a.dataset.go);
-        reveal(a.dataset.go);
-      }));
+      saveAsk({ q, country: box.querySelector("[name=ask_country]").value || "", html: out.innerHTML });
     } catch (e) { out.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; }
     finally { ASK_BUSY = false; $("#ask-go") && ($("#ask-go").disabled = false); }
   };
