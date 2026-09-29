@@ -358,9 +358,25 @@ def check_quote(url: str | None, quote: str | None) -> str:
     for p in parts:
         i = page.find(p, pos)
         if i < 0:
-            return "mismatch"
+            # PDF клеит номер сноски к слову («54,0008:», «forces9,»): слова те же,
+            # поэтому в конце слова допускаем до трёх цифр сноски (PDF ООН, 29.09)
+            m = re.compile(_footnote_tolerant(p)).search(page, pos)
+            if not m:
+                return "mismatch"
+            pos = m.end()
+            continue
         pos = i + len(p)
     return "verified"
+
+
+def _footnote_tolerant(part):
+    out = []
+    for k, ch in enumerate(part):
+        out.append(re.escape(ch))
+        nxt = part[k + 1] if k + 1 < len(part) else ""
+        if ch.isalnum() and not nxt.isalnum():
+            out.append(r"(?:\d{1,3})?")
+    return "".join(out)
 
 
 # ------------------------------------------------------------ запись
@@ -544,9 +560,12 @@ async def set_report(fact_id, author_id, verdict, note=None):
                 raise InfoError("Такого сведения нет — возможно, его сняли")
             if row["author_id"] == author_id:
                 raise InfoError("Ваше сведение отмечают другие люди")
-            # у текста закона нечего подтверждать «у меня так же» (Alex 28.09)
-            if row["kind"] == "norm" and verdict is not None:
-                raise InfoError("Норму не отмечают — это текст закона или ведомства")
+            # «у меня так же» — только про опыт людей: под законом, статистикой
+            # или заявлением государства это бессмыслица («у меня так же» под
+            # числом погибших — Alex 29.09)
+            if row["kind"] != "experience" and verdict is not None:
+                raise InfoError("Отмечают только опыт людей — у закона и сообщений источника "
+                                "подтверждать «у меня так же» нечего")
             if verdict is None:
                 await conn.execute(
                     "DELETE FROM info_reports WHERE fact_id = $1 AND author_id = $2",
@@ -1087,3 +1106,13 @@ async def expand_refs(text):
         return (f"{m.group(0)} [сведение обсуждения, {kinds.get(f['kind'], f['kind'])}: "
                 f"«{f['title']}»; {src}]")
     return FACT_REF.sub(sub, text)
+
+
+async def unchecked_facts(limit=300):
+    pool = db._pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, source_url, source_quote FROM info_facts WHERE deleted_at IS NULL "
+            "AND quote_status = 'unchecked' AND source_url IS NOT NULL "
+            "AND source_quote IS NOT NULL ORDER BY id LIMIT $1", limit)
+    return [dict(r) for r in rows]

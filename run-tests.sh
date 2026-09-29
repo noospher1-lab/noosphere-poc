@@ -50,6 +50,8 @@ psql -h 127.0.0.1 -p "$PGPORT" -U noosphere -d postgres -tAc \
 # затирает тестовые — тест «разбор ссылается на узел из другого обсуждения»
 # падал, как только 14.09 поставили fastembed. Включить: NOOSPHERE_EMBED=1.
 export NOOSPHERE_EMBED="${NOOSPHERE_EMBED:-0}"
+# тесты не ходят в сеть сверять цитаты сведений при старте приложения
+export NOOSPHERE_INFO_STARTUP_CHECK=0
 
 export TEST_DATABASE_URL="postgresql://noosphere@127.0.0.1:$PGPORT/noosphere_test"
 echo "TEST_DATABASE_URL → noosphere_test на порту $PGPORT"

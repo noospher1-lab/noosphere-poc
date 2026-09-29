@@ -101,7 +101,7 @@ function factCard(f, ctx) {
   const own = ME && f.author && f.author.id === ME.id;
   const n = (v, ind) => v ? ` · ${v}${ind !== v ? ` <span class="ind">(независимых ${ind})</span>` : ""}` : "";
   let reports = "";
-  if (f.kind !== "norm") {
+  if (f.kind === "experience") {
     reports = own ? `<span class="muted">ваше сведение отмечают другие люди</span>` : `
       <button class="rep same" data-v="same" aria-pressed="${f.mine === "same"}">у меня так же${n(f.same, f.same_independent)}</button>
       <button class="rep differs" data-v="differs" aria-pressed="${f.mine === "differs"}">у меня иначе${n(f.differs, f.differs_independent)}</button>`;
@@ -114,6 +114,7 @@ function factCard(f, ctx) {
       <span class="kind ${f.kind}" title="${esc(KIND[f.kind]?.[1] || "")}">${KIND[f.kind]?.[0] || f.kind}</span>
       <div class="title">${esc(f.title)}</div>
     </div>
+    ${f.kind === "report" && f.source_url ? `<div class="byline">по данным: ${esc(f.source_title ? f.source_title + " (" + hostOf(f.source_url) + ")" : hostOf(f.source_url))}</div>` : ""}
     ${meta ? `<div class="where">${esc(meta)}</div>` : ""}
     ${f.body ? `<div class="body">${esc(f.body)}</div>` : ""}
     ${f.source_quote ? `<blockquote>${esc(f.source_quote)}</blockquote>` : ""}
@@ -189,7 +190,7 @@ function render() {
     <p class="crumbs"><a href="/n/${FROM || v.topic.id}">${FROM ? "← К доводу" : "← К обсуждению"}</a></p>
     <h1><span class="muted small-h">Сведения ·</span> ${esc(v.topic.title)}</h1>
     <nav class="toc toc-top">
-      ${v.countries.length ? `<a class="primary" href="#countries">Моя страна →</a>` : ""}
+      ${v.countries.length ? `<a class="primary" href="#countries">По странам →</a>` : ""}
       ${v.common.length ? `<a href="#common">Общее для всех</a>` : ""}
       <a href="#ask">Спросить</a>
       <a href="#add">+ Добавить сведение</a>
@@ -286,7 +287,7 @@ async function openCountry(name, scroll = true) {
   const n = v.national.length + v.cities.reduce((s, c) => s + c.facts.length, 0);
   box.innerHTML = `<div class="country">
       <h2>${esc(name)}</h2>
-      ${n ? "" : `<p class="empty">По этой стране сведений пока нет. Общие правила — выше, в «Общее для всех». Если знаете, как здесь продлевают защиту или переходят на вид на жительство, добавьте.</p>`}
+      ${n ? "" : `<p class="empty">По этой стране сведений пока нет. Общее для всех — выше. Если знаете что-то по этой стране — добавьте.</p>`}
       ${v.national.length ? bySection(v.national, "country") : ""}
       ${v.cities.map(c => `<div class="city"><h3 class="cityname">${esc(c.city)}</h3>${bySection(c.facts, "country")}</div>`).join("")}
       <div class="btns"><button class="btn" data-add-country="${esc(name)}">+ Добавить сведение по стране «${esc(name)}»</button></div>
@@ -334,7 +335,7 @@ function bindFacts(root) {
       form.hidden = false;
       form.innerHTML = `
         <label class="f">${b.dataset.v === "same" ? "Где и когда было так же?" : "Как было у вас?"} (можно не писать)
-          <textarea name="note" maxlength="500" placeholder="Например: 20.09, ведомство в Лейпциге"></textarea></label>
+          <textarea name="note" maxlength="500" placeholder="Например: когда и где это было"></textarea></label>
         <p class="muted small">Заметку увидят все. Без имён и номеров документов.</p>
         <div class="btns"><button class="btn primary" data-go>Отметить</button><button class="btn" data-cancel>Отмена</button></div>`;
       form.querySelector("[data-cancel]").onclick = () => { form.hidden = true; form.innerHTML = ""; };
@@ -406,7 +407,7 @@ function renderAsk() {
   const box = $("#ask-box");
   if (!ME) { box.innerHTML = `<a href="${esc(loginUrl())}">Войдите</a>, чтобы спросить. Читать сведения можно без входа.`; return; }
   box.innerHTML = `
-    <label class="f">Ваш вопрос<textarea name="q" placeholder="Например: что нужно, чтобы продлить защиту в Германии?"></textarea></label>
+    <label class="f">Ваш вопрос<textarea name="q" placeholder="Спросите своими словами — ИИ ответит по сведениям этого обсуждения"></textarea></label>
     <label class="f">Страна${countrySelect("ask_country", CURRENT, "любая страна")}</label>
     <div class="btns"><button class="btn primary" id="ask-go">Спросить</button>
       ${CFG.ai ? "" : `<span class="muted">ИИ сейчас выключен — покажем сведения, где есть слова из вопроса.</span>`}</div>
@@ -451,7 +452,7 @@ function renderAdd() {
   box.innerHTML = `
     <div id="step1">
       <p class="muted" id="add-country-hint">${PRESET_COUNTRY ? "Страна: " + esc(PRESET_COUNTRY) : ""}</p>
-      <label class="f">Что вы знаете или что с вами было<textarea name="text" placeholder="Например: 20.09 в ведомстве по делам иностранцев Лейпцига продление оформили только после е-ВОД из Резерв+."></textarea></label>
+      <label class="f">Что вы знаете или что с вами было<textarea name="text" placeholder="Что произошло, где и когда, откуда вы это знаете. Можно дать ссылку ниже."></textarea></label>
       <label class="f">Ссылка на источник, если есть<input name="url" inputmode="url" placeholder="https://…" /></label>
       <div class="btns">
         <button class="btn primary" id="intake"${CFG.ai ? "" : " hidden"}>Разложить по полям</button>
@@ -511,8 +512,8 @@ function fields(d, scroll = true, byAI = false) {
         <datalist id="info-sections">${VIEW.suggested_sections.map(x => `<option value="${esc(x)}">`).join("")}</datalist></label>
       <label class="f">Страна (для опыта людей — обязательно)${countrySelect("country", d.country || PRESET_COUNTRY || CURRENT, "— для всех (ЕС и международное право)")}</label>
       <label class="f">Город (если так только в этом городе)<input name="city" maxlength="80" value="${esc(d.city || "")}" /></label>
-      <label class="f">Ведомство<input name="office" maxlength="200" value="${esc(d.office || "")}" placeholder="например, ведомство по делам иностранцев (ABH)" /></label>
-      <label class="f">Кого касается<input name="applies_to" maxlength="200" value="${esc(d.applies_to || "")}" placeholder="например, мужчины 18–60" /></label>
+      <label class="f">Ведомство<input name="office" maxlength="200" value="${esc(d.office || "")}" placeholder="кто это решает или сообщает" /></label>
+      <label class="f">Кого касается<input name="applies_to" maxlength="200" value="${esc(d.applies_to || "")}" placeholder="кого это касается, если известно" /></label>
       <label class="f">Когда<input name="when_text" maxlength="100" value="${esc(d.when_text || "")}" placeholder="например, 20.09.2026 или с 01.10.2026" /></label>
       <label class="f">Ссылка<input name="source_url" inputmode="url" value="${esc(d.source_url || "")}" /></label>
     </div>

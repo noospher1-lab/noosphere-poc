@@ -46,6 +46,10 @@ async def lifespan(app):
     await db.init_db()
     # отпечатки адресов и связи аккаунтов живут ограниченный срок — чистим и на старте
     await antiabuse.purge()
+    # несверенные цитаты (строки масштаба после переноса в сведения) — сверить в
+    # фоне: иначе висели «цитата ещё не сверена» (Alex 29.09)
+    if os.environ.get("NOOSPHERE_INFO_STARTUP_CHECK", "1") != "0":
+        asyncio.create_task(_info_check_unchecked())
     hub.bind_loop(asyncio.get_running_loop())
     # модель эмбеддингов — в фоне: первый старт качает ~240 МБ, healthcheck
     # этого ждать не должен; до загрузки поиск похожих идёт триграммами
@@ -54,6 +58,17 @@ async def lifespan(app):
     yield
     # shutdown
     await db.close_pool()
+
+
+async def _info_check_unchecked(limit=300):
+    """Сверить цитаты сведений, которые ни разу не сверялись. Ошибки не роняют
+    сервер: не вышло — статус остаётся прежним до ночного сторожа."""
+    try:
+        for f in await info_db.unchecked_facts(limit):
+            st = await _fetch_limited(info_db.check_quote, f["source_url"], f["source_quote"])
+            await info_db.set_quote_status(f["id"], st)
+    except Exception:
+        log.warning("сверка несверенных цитат на старте не удалась", exc_info=True)
 
 
 async def _embed_warm_and_backfill():

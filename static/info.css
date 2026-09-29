@@ -69,6 +69,7 @@ h3.cityname { text-transform: none; letter-spacing: 0; font-family: var(--sans);
 .fact .head { display: flex; gap: 10px; align-items: flex-start; }
 .fact .title { font-weight: 600; font-size: 16px; line-height: 1.4; }
 .fact .where { color: var(--dim); font-size: 13px; margin-top: 6px; }
+.fact .byline { color: var(--ivory); font-size: 13px; margin-top: 6px; opacity: .85; }
 .fact .body { margin-top: 8px; color: var(--ivory); white-space: pre-line; }
 .fact blockquote { margin: 10px 0 0; padding: 8px 12px; border-left: 2px solid var(--line2);
   background: var(--panel2); border-radius: 0 6px 6px 0; color: #d6d8df; font-size: 14px; }

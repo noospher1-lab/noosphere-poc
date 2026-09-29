@@ -509,3 +509,14 @@ def test_answer_in_wrong_language_is_rewritten(monkeypatch):
     r = info_ai.ask_sync("як оскаржити відмову?", facts, "Ukrainian", ["Чехия"])
     assert "оскаржити" in r["answer"] and len(calls) == 2
     assert "THE PERSON'S COUNTRY: Чехия" in calls[0] and "Rewrite it in Ukrainian" in calls[1]
+
+
+def test_pdf_footnote_numbers_do_not_break_a_verbatim_quote(monkeypatch):
+    page = ("OHCHR estimates the total to be 51,000–54,0008: 14,200-14,400 killed "
+            "(estimated 4,400 Ukrainian forces9, and 6,500 members of armed groups10). "
+            + "текст страницы " * 30)
+    monkeypatch.setattr(info_db, "fetch_text", lambda url: page)
+    q = ("to be 51,000–54,000: 14,200-14,400 killed (estimated 4,400 Ukrainian forces, "
+         "and 6,500 members of armed groups)")
+    assert info_db.check_quote("https://x", q) == "verified"
+    assert info_db.check_quote("https://x", "to be 61,000–54,000") == "mismatch"
