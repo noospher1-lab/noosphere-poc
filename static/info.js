@@ -228,9 +228,11 @@ function render() {
     <div class="card" id="ask-box"></div>
 
     <h2 id="add">Добавить сведение</h2>
-    <p class="muted">Расскажите своими словами, что знаете или что с вами было. Имена, адреса и номера
-      документов не пишите. ИИ разложит текст по полям, вы проверите и опубликуете. Если дадите ссылку,
-      сервер откроет страницу и проверит, есть ли там ваша выдержка дословно.</p>
+    <p class="muted">${CFG.ai
+      ? "Расскажите своими словами, что знаете или что с вами было. ИИ разложит текст по полям, вы проверите и опубликуете."
+      : "ИИ сейчас выключен — заполните поля сами: одной фразой, что известно, и где это было."}
+      Имена, адреса и номера документов не пишите. Если дадите ссылку, сервер откроет страницу и
+      проверит, есть ли там ваша выдержка дословно.</p>
     <div class="card" id="add-box"></div>`;
 
   bindFacts($("main"));
@@ -443,7 +445,6 @@ function renderAdd() {
       <p class="muted" id="add-country-hint">${PRESET_COUNTRY ? "Страна: " + esc(PRESET_COUNTRY) : ""}</p>
       <label class="f">Что вы знаете или что с вами было<textarea name="text" placeholder="Например: 20.09 в ведомстве по делам иностранцев Лейпцига продление оформили только после е-ВОД из Резерв+."></textarea></label>
       <label class="f">Ссылка на источник, если есть<input name="url" inputmode="url" placeholder="https://…" /></label>
-      ${CFG.ai ? "" : `<p class="muted">ИИ сейчас выключен — нажмите «Заполнить вручную».</p>`}
       <div class="btns">
         <button class="btn primary" id="intake"${CFG.ai ? "" : " hidden"}>Разложить по полям</button>
         <button class="btn${CFG.ai ? "" : " primary"}" id="manual">Заполнить вручную</button>
@@ -453,6 +454,13 @@ function renderAdd() {
     <div id="step2" hidden></div>
     <p class="msg" id="pub-msg"></p>`;
   if (FLASH) { const m = $("#pub-msg"); m.className = "msg " + FLASH.cls; m.innerHTML = FLASH.html; FLASH = null; }
+  // ИИ выключен — свободный рассказ разложить некому: сразу поля (текст над
+  // формой говорит то же самое)
+  if (!CFG.ai) {
+    $("#step1").hidden = true;
+    fields({}, false);
+    return;
+  }
   $("#intake").onclick = async (ev) => {
     const b = ev.currentTarget; b.disabled = true;
     const text = box.querySelector("[name=text]").value.trim();
@@ -474,7 +482,7 @@ function renderAdd() {
     source_url: box.querySelector("[name=url]").value.trim() });
 }
 
-function fields(d) {
+function fields(d, scroll = true) {
   const s2 = $("#step2");
   const opt = (arr, val) => arr.map(([k, t]) => `<option value="${k}"${k === val ? " selected" : ""}>${esc(t)}</option>`).join("");
   const kind = d.kind || (d.source_url ? "report" : "experience");
@@ -486,7 +494,7 @@ function fields(d) {
         ["experience", "опыт людей — так было со мной или со знакомыми"],
         ["report", "сообщают — пересказ СМИ, юриста, организации (нужна ссылка)"],
         ["norm", "норма — текст закона или ведомства (нужны ссылка и выдержка)"]], kind)}</select></label>
-      <label class="f">Раздел — выберите или впишите свой<input name="section" list="info-sections" maxlength="60" value="${esc(d.section || VIEW.suggested_sections[0] || "")}" />
+      <label class="f">Раздел — выберите или впишите свой<input name="section" list="info-sections" maxlength="60" value="${esc(d.section || "")}" placeholder="например, ${esc(VIEW.suggested_sections.find(x => !/^Закон|^Права/.test(x)) || "Масштаб")}" />
         <datalist id="info-sections">${VIEW.suggested_sections.map(x => `<option value="${esc(x)}">`).join("")}</datalist></label>
       <label class="f">Страна (для опыта людей — обязательно)${countrySelect("country", d.country || PRESET_COUNTRY || CURRENT, "— для всех (ЕС и международное право)")}</label>
       <label class="f">Город (если так только в этом городе)<input name="city" maxlength="80" value="${esc(d.city || "")}" /></label>
@@ -524,7 +532,7 @@ function fields(d) {
       $("#pub-msg [data-go]")?.addEventListener("click", (e) => { e.preventDefault(); reveal(String(r.id)); });
     } catch (e) { msg.className = "msg err"; msg.textContent = e.message; b.disabled = false; }
   };
-  s2.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (scroll) s2.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 // ------------------------------------------------------------ старт
