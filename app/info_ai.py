@@ -85,6 +85,14 @@ ASK_SYSTEM = (
     "unless a fact says exactly that). Do not ask the person clarifying questions — answer "
     "with what the facts say for the country given. If "
     "facts differ by age, sex or date, say which fact applies to whom.\n"
+    "SCOPE: a fact marked EU/international describes only the EU-level decision. It "
+    "does not say how a particular country issues, renews or re-registers documents, "
+    "which dates stand on them, or whether anything happens automatically there. Never "
+    "draw such conclusions from an EU fact («действует автоматически», «продлевать не "
+    "требуется» are forbidden unless a fact about that very country says so). When the "
+    "question is about what happens in a country and no fact of that country covers it, "
+    "say plainly that there is no information about that country on this yet, and that "
+    "the EU decision alone does not describe what the country does with documents.\n"
     "After every sentence that relies on a fact, cite it as [#с<id>]. Mention how solid "
     "each fact is when it "
     "matters (norm with verified quote / report of a source / experience of people with "
@@ -177,6 +185,13 @@ def ask_sync(question, facts, lang=None, countries=None):
             "\n\nQUESTION:\n" + poi.wrap_user_text(question[:1500]))
     if countries:
         user += "\n\nTHE PERSON'S COUNTRY: " + ", ".join(countries) + " — do not ask about it."
+        # «до 2028, продлевать не нужно» по Болгарии вывелось из общего сведения
+        # ЕС, а болгарские карточки действуют до 04.03.2027 (Alex, 29.09)
+        have = {f.get("country") for f in facts}
+        missing = [c for c in countries if c not in have]
+        if missing:
+            user += ("\nNO FACTS OF THIS COUNTRY IN THE LIST: " + ", ".join(missing) +
+                     " — say so; do not apply EU facts to it as if they were national rules.")
     system = ASK_SYSTEM
     if lang:
         # на украинский вопрос ответ шёл по-русски (UX 29.09, дважды), хотя язык

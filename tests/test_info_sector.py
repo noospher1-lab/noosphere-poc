@@ -521,3 +521,23 @@ def test_pdf_footnote_numbers_do_not_break_a_verbatim_quote(monkeypatch):
          "and 6,500 members of armed groups)")
     assert info_db.check_quote("https://x", q) == "verified"
     assert info_db.check_quote("https://x", "to be 61,000–54,000") == "mismatch"
+
+
+def test_ask_marks_country_without_its_own_facts(monkeypatch):
+    # «до 2028, продлевать не требуется» по Болгарии выводилось из сведения ЕС
+    # (Alex, 29.09): модели прямо говорят, что сведений этой страны нет
+    calls = []
+
+    def fake(system, messages, **k):
+        calls.append((system, messages[0]["content"]))
+        return '{"answer": "По Болгарии сведений нет [#с7].", "cited": [7]}'
+    monkeypatch.setattr(info_ai.poi, "complete_messages", fake)
+    eu = {"id": 7, "kind": "norm", "country": None, "city": None, "quote_status": "verified",
+          "title": "ЕС продлил до 04.03.2028", "body": None, "when_text": None,
+          "source_quote": None}
+    info_ai.ask_sync("нужно ли продлевать?", [eu], None, ["Болгария"])
+    system, user = calls[0]
+    assert "SCOPE" in system and "NO FACTS OF THIS COUNTRY IN THE LIST: Болгария" in user
+    bg = dict(eu, id=8, country="Болгария")
+    info_ai.ask_sync("нужно ли продлевать?", [eu, bg], None, ["Болгария"])
+    assert "NO FACTS OF THIS COUNTRY" not in calls[1][1]
