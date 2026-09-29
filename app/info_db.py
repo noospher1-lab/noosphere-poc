@@ -782,7 +782,9 @@ async def topic_view(root_or_slug, me=None):
         "topic": {"id": t["id"], "title": t["title"] or (t["text"] or "")[:120],
                   "kind": t["kind"]},
         "sections": sections,
-        "suggested_sections": sections + [s for s in DEFAULT_SECTIONS if s not in sections],
+        # в форме — только разделы ЭТОГО обсуждения; чужие по умолчанию («Права и
+        # равенство» под причинами войны) сбивали (Alex 29.09). Пусто — минимум.
+        "suggested_sections": sections or ["Закон-основание", SCALE_SECTION],
         "common": common,
         "countries": sorted(countries.values(), key=lambda c: c["country"]),
         "related": rel,

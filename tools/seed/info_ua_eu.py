@@ -816,6 +816,20 @@ async def run(url, check=True, replace=False):
         if await info_db.find_fact(problem, f["title"], f.get("country")):
             skipped += 1
             continue
+        # то же самое (ссылка + выдержка) уже лежит строкой «Масштаба» из посева
+        # 25.09 — в этом или связанном обсуждении: одна мысль — один узел, строка
+        # масштаба уступает место сведению с разделом и заголовком (так же делал
+        # перенос масштаба в сведения, info_db.migrate_scale)
+        if f.get("source_url") and f.get("source_quote"):
+            key = (info_db.canon_url(f["source_url"]), info_db.normalize(f["source_quote"]))
+            async with pool.acquire() as conn:
+                for r in await conn.fetch(
+                        "SELECT id, source_url, source_quote FROM info_facts WHERE deleted_at IS NULL "
+                        "AND section = $1 AND author_id = $2 AND source_url IS NOT NULL",
+                        info_db.SCALE_SECTION, aid):
+                    if (info_db.canon_url(r["source_url"]), info_db.normalize(r["source_quote"] or "")) == key:
+                        await conn.execute("UPDATE info_facts SET deleted_at = now() WHERE id = $1", r["id"])
+                        await db._log(conn, "info_fact_removed", {"id": r["id"], "reason": "same as seed fact"})
         status = "none"
         if f.get("source_url") and f.get("source_quote"):
             status = await asyncio.to_thread(info_db.check_quote, f["source_url"],

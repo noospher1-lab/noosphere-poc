@@ -65,6 +65,9 @@ const KIND = {
   report: ["сообщают", "пересказ источника: СМИ, юристы, помогающие организации"],
   experience: ["опыт людей", "так было с людьми — опирается на число подтверждений"],
 };
+// пояснение к разделу в списке формы — чтобы «Масштаб» не был загадкой (Alex 29.09)
+const SECTION_NOTE = { "Масштаб": "где и в каких объёмах", "Закон-основание": "законы и решения",
+  "Права и равенство": "нормы о правах и дискриминации" };
 // подсказки к привычным разделам; раздел — подпись обсуждения, у других свои
 const SECTION_HINT = {
   "Закон-основание": "На чём основаны действия: законы и решения. Страны применяют их с разных дат — смотрите свою страну.",
@@ -234,7 +237,7 @@ function render() {
 
     <h2 id="add">Добавить сведение</h2>
     <p class="muted">${CFG.ai
-      ? "Расскажите своими словами, что знаете или что с вами было. ИИ разложит текст по полям, вы проверите и опубликуете."
+      ? "ИИ разложит ваш рассказ по полям, вы проверите и опубликуете."
       : "ИИ сейчас выключен — заполните поля сами: одной фразой, что известно, и где это было."}
       Имена, адреса и номера документов не пишите. Если дадите ссылку, сервер откроет страницу и
       проверит, есть ли там ваша выдержка дословно.</p>
@@ -452,7 +455,7 @@ function renderAdd() {
   box.innerHTML = `
     <div id="step1">
       <p class="muted" id="add-country-hint">${PRESET_COUNTRY ? "Страна: " + esc(PRESET_COUNTRY) : ""}</p>
-      <label class="f">Что вы знаете или что с вами было<textarea name="text" placeholder="Что произошло, где и когда, откуда вы это знаете. Можно дать ссылку ниже."></textarea></label>
+      <label class="f">Расскажите своими словами<textarea name="text" placeholder="Что произошло, где и когда. Если это из статьи или закона — ссылка ниже."></textarea></label>
       <label class="f">Ссылка на источник, если есть<input name="url" inputmode="url" placeholder="https://…" /></label>
       <div class="btns">
         <button class="btn primary" id="intake"${CFG.ai ? "" : " hidden"}>Разложить по полям</button>
@@ -508,9 +511,13 @@ function fields(d, scroll = true, byAI = false) {
         ["experience", "опыт людей — так было со мной или со знакомыми"],
         ["report", "сообщают — пересказ СМИ, юриста, организации (нужна ссылка)"],
         ["norm", "норма — текст закона или ведомства (нужны ссылка и выдержка)"]], kind)}</select></label>
-      <label class="f">Раздел — выберите или впишите свой<input name="section" list="info-sections" maxlength="60" value="${esc(d.section || "")}" placeholder="например, ${esc(VIEW.suggested_sections.find(x => !/^Закон|^Права/.test(x)) || "Масштаб")}" />
-        <datalist id="info-sections">${VIEW.suggested_sections.map(x => `<option value="${esc(x)}">`).join("")}</datalist></label>
-      <label class="f">Страна (для опыта людей — обязательно)${countrySelect("country", d.country || PRESET_COUNTRY || CURRENT, "— для всех (ЕС и международное право)")}</label>
+      <label class="f">Раздел<select name="section">
+          <option value="">— выберите раздел —</option>
+          ${VIEW.suggested_sections.map(x => `<option value="${esc(x)}"${x === d.section ? " selected" : ""}>${esc(x)}${SECTION_NOTE[x] ? " — " + SECTION_NOTE[x] : ""}</option>`).join("")}
+          <option value="__own"${d.section && !VIEW.suggested_sections.includes(d.section) ? " selected" : ""}>свой раздел…</option>
+        </select>
+        <input name="section_own" maxlength="60" placeholder="название своего раздела" value="${esc(d.section && !VIEW.suggested_sections.includes(d.section) ? d.section : "")}" /></label>
+      <label class="f">Страна (для опыта людей — обязательно)${countrySelect("country", d.country || PRESET_COUNTRY || CURRENT, "— для всех, без страны")}</label>
       <label class="f">Город (если так только в этом городе)<input name="city" maxlength="80" value="${esc(d.city || "")}" /></label>
       <label class="f">Ведомство<input name="office" maxlength="200" value="${esc(d.office || "")}" placeholder="кто это решает или сообщает" /></label>
       <label class="f">Кого касается<input name="applies_to" maxlength="200" value="${esc(d.applies_to || "")}" placeholder="кого это касается, если известно" /></label>
@@ -522,6 +529,11 @@ function fields(d, scroll = true, byAI = false) {
     <p class="muted small">Сведение увидят все: вместе с ним показываются ваш логин и дата.</p>
     <div class="btns"><button class="btn primary" id="publish">Опубликовать</button></div>
     <p class="msg" id="fields-msg"></p>`;
+  // раздел — список разделов обсуждения; «свой раздел…» открывает поле названия
+  const secSel = s2.querySelector("[name=section]"), secOwn = s2.querySelector("[name=section_own]");
+  const syncSec = () => { secOwn.hidden = secSel.value !== "__own"; };
+  secSel.addEventListener("change", () => { syncSec(); if (!secOwn.hidden) secOwn.focus(); });
+  syncSec();
   const tt = s2.querySelector("[name=title]");
   const grow = () => { tt.style.height = "auto"; tt.style.height = tt.scrollHeight + 2 + "px"; };
   tt.addEventListener("input", grow); grow();
@@ -536,6 +548,7 @@ function fields(d, scroll = true, byAI = false) {
     const get = (n) => (s2.querySelector(`[name=${n}]`).value || "").trim() || null;
     const body = Object.fromEntries(["title", "section", "kind", "country", "city", "office",
       "applies_to", "when_text", "source_url", "source_quote", "body"].map(n => [n, get(n)]));
+    if (body.section === "__own") body.section = get("section_own");
     const msg = $("#fields-msg");
     if (!body.title) { msg.className = "msg err"; msg.textContent = "Напишите утверждение — одной фразой, что известно."; return; }
     if (body.kind === "experience" && !body.country) { msg.className = "msg err"; msg.textContent = "Опыт людей всегда в какой-то стране — выберите страну."; return; }
