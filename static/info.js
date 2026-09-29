@@ -19,6 +19,8 @@ const qs = new URLSearchParams(location.search);
 // Сведения — слой обсуждения: адрес — корень обсуждения (?root=128). Старый
 // адрес со словом (?s=ua-eu) сервер ещё понимает.
 const ROOT = qs.get("root") || qs.get("s") || "";
+// пришли из довода по карточке сведения — назад к этому доводу (UX 29.09)
+const FROM = /^\d+$/.test(qs.get("from") || "") ? qs.get("from") : null;
 
 async function api(path, opts = {}) {
   let r;
@@ -182,7 +184,7 @@ function render() {
   const listed = v.countries.map(c => c.country).sort((a, b) => a.localeCompare(b, "ru"));
   const rel = (v.related || []).map(r => `<li><a href="/info.html?root=${r.id}">${r.rel === "cause" ? "↑ причина" : "↓ порождает"}: ${esc(r.title || "#" + r.id)}</a> <span class="muted">· сведений: ${r.facts}</span></li>`).join("");
   $("main").innerHTML = `
-    <p class="crumbs"><a href="/n/${v.topic.id}">← К обсуждению</a></p>
+    <p class="crumbs"><a href="/n/${FROM || v.topic.id}">${FROM ? "← К доводу" : "← К обсуждению"}</a></p>
     <h1><span class="muted small-h">Сведения ·</span> ${esc(v.topic.title)}</h1>
     <nav class="toc toc-top">
       ${v.countries.length ? `<a class="primary" href="#countries">Моя страна →</a>` : ""}
@@ -418,7 +420,7 @@ function renderAsk() {
     try {
       const r = await api(`/api/info/${ROOT}/ask`, { method: "POST",
         body: { question: q, country: box.querySelector("[name=ask_country]").value || null } });
-      const ans = r.answer ? esc(r.answer).replace(/\[#[сСcCsS]?(\d+)\]/g, '<a href="#f$1" data-go="$1">[#с$1]</a>') : "";
+      const ans = r.answer ? esc(r.answer).replace(/#[сСcCsS](\d+)/g, '<a href="#f$1" data-go="$1">#с$1</a>') : "";
       const where = r.country ? `<p class="muted small">Искал по сведениям для всех и по стране: ${esc(r.country)}.</p>` : "";
       const note = `<p class="muted small">Это пересказ собранных сведений, сделанный ИИ, — не консультация. Проверяйте по источникам в карточках.</p>`;
       const list = r.facts?.length
@@ -517,6 +519,9 @@ function fields(d, scroll = true, byAI = false) {
     <p class="muted small">Сведение увидят все: вместе с ним показываются ваш логин и дата.</p>
     <div class="btns"><button class="btn primary" id="publish">Опубликовать</button></div>
     <p class="msg" id="fields-msg"></p>`;
+  const tt = s2.querySelector("[name=title]");
+  const grow = () => { tt.style.height = "auto"; tt.style.height = tt.scrollHeight + 2 + "px"; };
+  tt.addEventListener("input", grow); grow();
   // что заполнил ИИ — видно: человек проверяет именно эти поля (UX 29.09)
   if (byAI) for (const [k, v] of Object.entries(d)) {
     if (!v || k === "source_url") continue;

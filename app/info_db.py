@@ -796,10 +796,40 @@ async def stale_facts(limit=200):
     return [dict(r) for r in rows]
 
 
+_FACT_VECS: dict[int, tuple[str, list]] = {}      # id сведения → (хеш текста, вектор)
+SEM_FLOOR = 0.45
+
+
+async def _semantic(rows, question):
+    """Близость сведений к вопросу по смыслу — многоязычная модель (та же, что
+    ищет похожие проблемы). «як оскаржити?» должен находить русское «отказ можно
+    обжаловать» (UX 29.09). Модели нет — пусто, поиск остаётся по словам."""
+    from . import embed
+    try:
+        qv = await embed.query_vector(question)
+        if qv is None:
+            return {}
+        need = []
+        for r in rows:
+            txt = " ".join(str(r.get(k) or "") for k in ("title", "body", "country", "city"))
+            h = embed.text_hash(txt)
+            if _FACT_VECS.get(r["id"], (None,))[0] != h:
+                need.append((r["id"], h, txt))
+        if need:
+            vecs = await embed.embed([t for _, _, t in need])
+            for (fid, h, _), v in zip(need, vecs):
+                _FACT_VECS[fid] = (h, v)
+        return {r["id"]: embed.cosine(qv, _FACT_VECS[r["id"]][1])
+                for r in rows if r["id"] in _FACT_VECS}
+    except Exception:
+        return {}
+
+
 async def search(root, question, country=None, limit=16):
-    """Кандидаты для ответа: слова вопроса против утверждения, пояснения и
-    выдержки + всё по стране человека. Без эмбеддингов — стенд их не грузит,
-    а сведений в обсуждении сотни, не миллионы."""
+    """Кандидаты для ответа: слова вопроса (по основе) и смысловая близость
+    против утверждения, пояснения и выдержки + всё по странам человека.
+    country — строка или список стран."""
+    countries = [country] if isinstance(country, str) else list(country or [])
     words = [w for w in re.findall(r"\w{4,}", (question or "").lower())][:12]
     pool = db._pool_or_raise()
     async with pool.acquire() as conn:
@@ -813,14 +843,19 @@ async def search(root, question, country=None, limit=16):
                            LIKE '%' || left(w, greatest(4, length(w) - 2)) || '%') AS hits
             FROM info_facts f
             WHERE f.topic_root_id = $1 AND f.deleted_at IS NULL
-              AND (f.country IS NULL OR $2::text IS NULL OR f.country = $2)
-            """, root, country, words)
-    ranked = sorted((dict(r) for r in rows),
-                    key=lambda r: (-(r["hits"] + (3 if country and r["country"] == country else 0)),
-                                   r["id"]))
-    # без совпадений — пусто, а не «первые 12 подряд»: иначе сведения, не
+              AND (f.country IS NULL OR cardinality($2::text[]) = 0 OR f.country = ANY($2::text[]))
+            """, root, countries, words)
+    rows = [dict(r) for r in rows]
+    sem = await _semantic(rows, question)
+    for r in rows:
+        r["sim"] = sem.get(r["id"], 0.0)
+        r["mine"] = bool(countries) and r["country"] in countries
+    ranked = sorted(rows, key=lambda r: (-(r["hits"] + (3 if r["mine"] else 0)
+                                           + (4 * r["sim"] if r["sim"] >= SEM_FLOOR else 0)),
+                                         r["id"]))
+    # без совпадений — пусто, а не «первые подряд»: иначе сведения, не
     # связанные с вопросом, выдавались за подходящие (QA 28.09)
-    return [r for r in ranked if r["hits"] or (country and r["country"] == country)][:limit]
+    return [r for r in ranked if r["hits"] or r["mine"] or r["sim"] >= SEM_FLOOR][:limit]
 
 
 async def fact_place(fact_id):
@@ -938,19 +973,27 @@ _COUNTRY_ALIASES = {
 }
 
 
-def country_from_text(text):
-    """Первая страна, названная в тексте (по основе слова, с украинскими и
-    английскими названиями), или None. Совпадение — с начала слова, и после
-    основы не больше трёх букв окончания: иначе «индивидуально» нашло бы
-    Индию, а «катастрофа» — Катар."""
+_ORIGIN = re.compile(r"(?:^|\s)(?:из|изо|з|із|зі|from)\s+$")
+
+
+def countries_from_text(text):
+    """Страны, названные в тексте, по порядку (по основе слова, с украинскими и
+    английскими названиями). Совпадение — с начала слова, и после основы не
+    больше трёх букв окончания: иначе «индивидуально» нашло бы Индию.
+
+    Не считаются: Украина и любая страна после «из / з / from» — это откуда
+    человек, а не где он (QA 29.09: «приехал из Украины в Чехию» искал по Украине
+    и не видел ни одного чешского сведения)."""
     t = " " + (text or "").lower().translate(_UA) + " "
     hits = []
 
     def scan(stem, country, max_tail=3):
         for m in re.finditer(r"(?<![\w])" + re.escape(stem) + r"(\w*)", t):
-            if len(m.group(1)) <= max_tail:
-                hits.append((m.start(), country))
-                return
+            if len(m.group(1)) > max_tail:
+                continue
+            if country == "Украина" or _ORIGIN.search(t[:m.start()]):
+                continue
+            hits.append((m.start(), country))
 
     for alias, country in _COUNTRY_ALIASES.items():
         scan(alias.lower().translate(_UA).strip(), country, max_tail=4)
@@ -962,26 +1005,74 @@ def country_from_text(text):
             scan(name[:-1], c)                   # Чехия → «чехи»: Чехии, Чехію
         else:
             scan(name, c, 0)                     # короткие — только целым словом
-    return min(hits)[1] if hits else None
+    out = []
+    for _, c in sorted(hits):
+        if c not in out:
+            out.append(c)
+    return out
+
+
+def country_from_text(text):
+    found = countries_from_text(text)
+    return found[0] if found else None
+
+
+def canon_url(url):
+    """Ссылка без хвоста метрик, якоря, «www.» и конечного «/» — для сравнения."""
+    from urllib.parse import urlparse, parse_qsl, urlencode
+    try:
+        u = urlparse((url or "").strip())
+    except ValueError:
+        return (url or "").strip()
+    host = (u.hostname or "").lower().removeprefix("www.")
+    q = urlencode([(k, v) for k, v in parse_qsl(u.query)
+                   if not k.lower().startswith(("utm_", "fbclid", "gclid"))])
+    return f"{host}{u.path.rstrip('/')}" + (f"?{q}" if q else "")
 
 
 async def find_duplicate(root, url, quote):
-    """Живое сведение обсуждения с той же ссылкой и той же выдержкой."""
+    """Живое сведение обсуждения с той же ссылкой (без хвоста и www) и той же
+    выдержкой — или выдержкой, одна из которых содержит другую: ИИ берёт
+    выдержку чуть шире, и почти-дубль проходил (QA 29.09, #с205)."""
     if not url or not (quote or "").strip():
         return None
+    q = normalize(quote)
+    key = canon_url(url)
     pool = db._pool_or_raise()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, source_quote FROM info_facts WHERE topic_root_id = $1 "
-            "AND source_url = $2 AND deleted_at IS NULL", root, url)
-    q = normalize(quote)
-    return next((r["id"] for r in rows if normalize(r["source_quote"] or "") == q), None)
+            "SELECT id, source_url, source_quote FROM info_facts WHERE topic_root_id = $1 "
+            "AND source_url IS NOT NULL AND deleted_at IS NULL", root)
+    for r in rows:
+        if canon_url(r["source_url"]) != key:
+            continue
+        other = normalize(r["source_quote"] or "")
+        if other and (q == other or (min(len(q), len(other)) >= 30 and (q in other or other in q))):
+            return r["id"]
+    return None
 
 
 async def facts_with_source(root, url):
+    key = canon_url(url)
     pool = db._pool_or_raise()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, title FROM info_facts WHERE topic_root_id = $1 AND source_url = $2 "
-            "AND deleted_at IS NULL ORDER BY id LIMIT 5", root, url)
-    return [dict(r) for r in rows]
+            "SELECT id, title, source_url FROM info_facts WHERE topic_root_id = $1 "
+            "AND source_url IS NOT NULL AND deleted_at IS NULL ORDER BY id", root)
+    return [{"id": r["id"], "title": r["title"]} for r in rows
+            if canon_url(r["source_url"]) == key][:5]
+
+
+async def expand_refs(text):
+    """«#с12» → «#с12 [сведение обсуждения: утверждение]» — для оценки довода
+    (PoI), чтобы она видела, на что ссылка: иначе публично называла «#с109»
+    «ссылкой к статье 109» (UX 29.09). Сам текст узла не меняется."""
+    ids = fact_refs(text)
+    if not ids:
+        return text
+    facts = {f["id"]: f for f in await facts_brief(ids)}
+
+    def sub(m):
+        f = facts.get(int(m.group(1)))
+        return f"{m.group(0)} [сведение обсуждения: {f['title']}]" if f else m.group(0)
+    return FACT_REF.sub(sub, text)

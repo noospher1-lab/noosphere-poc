@@ -1427,7 +1427,7 @@ async function selectNode(id) {
   card.appendChild(tw);
   // «#с123» в тексте — ссылка на сведение обсуждения: карточки под текстом, а
   // сам текст не трогаем — по его точным позициям работает ответ на фрагмент
-  const refs = factRefsBlock(node.text);
+  const refs = factRefsBlock(node.text, node.id);
   if (refs) card.appendChild(refs);
   // отзыв виден сразу под текстом: читать довод, не зная, что автор от него
   // отказался, — значит спорить с призраком
@@ -1797,7 +1797,7 @@ const STANCE_WORD = { agree: "за", disagree: "против" };
 // «#с123» — кириллическая «с» (допустимы и латинские c/s): «#123» уже значит узел.
 const FACT_REF = /#[сСcCsS](\d{1,9})\b/g;
 const FACT_KIND = { norm: "норма", report: "сообщают", experience: "опыт людей" };
-function factRefsBlock(text) {
+function factRefsBlock(text, fromNode) {
   const ids = [...new Set([...String(text || "").matchAll(FACT_REF)].map(m => m[1]))].slice(0, 20);
   if (!ids.length) return null;
   const box = el("div", "fact-refs");
@@ -1809,7 +1809,7 @@ function factRefsBlock(text) {
     const found = new Set(facts.map(f => String(f.id)));
     for (const f of facts) {
       const c = el("a", "fact-ref");
-      c.href = `/info.html?root=${f.topic_root_id}#f${f.id}`;
+      c.href = `/info.html?root=${f.topic_root_id}${fromNode ? "&from=" + fromNode : ""}#f${f.id}`;
       c.append(el("span", "fr-kind " + f.kind, FACT_KIND[f.kind] || f.kind),
                el("span", "fr-title", f.title));
       const where = [f.country, f.city, f.place_note].filter(Boolean).join(", ");
@@ -1824,6 +1824,66 @@ function factRefsBlock(text) {
       list.appendChild(el("div", "muted", `#с${id} — такого сведения нет или его сняли`));
   }).catch(() => { list.textContent = "сведения не загрузились"; });
   return box;
+}
+
+// Выбор сведения для ссылки из довода: поиск по сведениям обсуждения, клик —
+// «#с123» в текст на место курсора.
+function factPicker(root, ta) {
+  const wrap = el("div", "fact-picker");
+  const open = el("button", "mini", "＋ сослаться на сведение");
+  open.type = "button";
+  const panel = el("div", "fp-panel");
+  panel.style.display = "none";
+  const q = el("input");
+  q.placeholder = "найти сведение: страна, слово из утверждения…";
+  const list = el("div", "fp-list");
+  panel.append(q, list);
+  wrap.append(open, panel);
+  let facts = null;
+  const draw = () => {
+    list.textContent = "";
+    const needle = q.value.trim().toLowerCase();
+    const shown = (facts || []).filter(f => !needle ||
+      (f.title + " " + (f.country || "") + " " + (f.city || "")).toLowerCase().includes(needle)).slice(0, 30);
+    if (!shown.length) list.appendChild(el("div", "muted",
+      facts && facts.length ? "ничего не нашлось" : "у этого обсуждения сведений пока нет"));
+    for (const f of shown) {
+      const b = el("button", "fp-item");
+      b.type = "button";
+      b.append(el("span", "fr-kind " + f.kind, FACT_KIND[f.kind] || f.kind),
+               el("span", null, " " + f.title + (f.country ? " — " + f.country : "")));
+      b.onclick = () => {
+        const tag = "#с" + f.id;
+        const at = ta.selectionStart ?? ta.value.length;
+        const pad = at && !/\s$/.test(ta.value.slice(0, at)) ? " " : "";
+        ta.value = ta.value.slice(0, at) + pad + tag + " " + ta.value.slice(at);
+        ta.dispatchEvent(new Event("input"));
+        ta.focus();
+        panel.style.display = "none";
+      };
+      list.appendChild(b);
+    }
+  };
+  open.onclick = async () => {
+    const show = panel.style.display === "none";
+    panel.style.display = show ? "" : "none";
+    if (!show) return;
+    if (!facts) {
+      list.textContent = "загрузка…";
+      try {
+        const v = await api(`/api/info/${root}`);
+        facts = v.common.slice();
+        for (const c of v.countries) {
+          const cv = await api(`/api/info/${root}/country/${encodeURIComponent(c.country)}`);
+          facts.push(...cv.national, ...cv.cities.flatMap(x => x.facts));
+        }
+      } catch (e) { list.textContent = "не загрузилось: " + e.message; return; }
+    }
+    draw();
+    q.focus();
+  };
+  q.addEventListener("input", draw);
+  return wrap;
 }
 
 // «#43» в тексте — ссылка на узел: люди и так ссылаются номерами
@@ -2323,7 +2383,7 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
   // ИИ только ПРЕДЛАГАЕТ: метка «признаёт» публичная, и ставить её должен
   // автор. Раньше форма отмечала её сама, и в проходе студии 29.09 довод
   // вышел «признающим» без ведома автора (Alex 29.09: «делай как предлагаешь»).
-  if (rev.concedes && onConcede) {
+  if (rev.concedes && onConcede && (!onConcede.can || onConcede.can())) {
     hint.appendChild(el("div", "section-title", "похоже, ты признаёшь часть довода"));
     hint.appendChild(el("b", null, "«" + rev.concedes + "»"));
     hint.appendChild(el("div", "muted",
@@ -2338,13 +2398,21 @@ function renderReview(hint, rev, { root, onSend, onSwitch, onSupport, onSplit,
     hint.appendChild(yes);
   }
 
-  // ценность — одной тихой строкой: отмечена в форме, можно сменить
+  // ценность — ПРЕДЛОЖЕНИЕ, как «признаёт»: ставит автор (Alex 29.09: «делай
+  // как предлагаешь»; раньше ИИ отмечал её в форме сам, и она публиковалась
+  // под доводом с формулировкой ИИ)
   if (rev.value && onValue) {
-    onValue(rev.value, rev.value_phrase || "");
     const v = el("div", "muted");
-    v.textContent = "опирается на ценность «" + rev.value_name + "»"
-      + (rev.value_phrase ? " — " + rev.value_phrase : "")
-      + " · отмечено в форме, можно сменить или снять";
+    v.textContent = "похоже, довод опирается на ценность «" + rev.value_name + "»"
+      + (rev.value_phrase ? " — " + rev.value_phrase : "") + " ";
+    const take = el("button", "mini", "отметить");
+    take.type = "button";
+    take.onclick = () => {
+      onValue(rev.value, rev.value_phrase || "");
+      take.disabled = true;
+      take.textContent = "отмечено в форме";
+    };
+    v.appendChild(take);
     hint.appendChild(v);
   }
 
@@ -3148,8 +3216,7 @@ function replyForm(parentId, parentKind) {
     "<b>После публикации текст изменить нельзя</b>: на нём строят ответы.");
   const ta = el("textarea");
   // как сослаться на сведение обсуждения — прямо в поле, иначе о #с никто не узнает
-  ta.placeholder = (parentKind === "question" ? "Твой ответ…" : "Твой довод…") +
-    "  Сослаться на сведение: #с и номер с его карточки на странице «Сведения»";
+  ta.placeholder = parentKind === "question" ? "Твой ответ…" : "Твой довод…";
   // чип якоря: показывает, на какой участок отвечаем (ответ на фрагмент)
   const chip = el("div", "anchor-chip");
   chip.style.display = "none";
@@ -3157,6 +3224,9 @@ function replyForm(parentId, parentKind) {
   const clearAnchor = () => { anchor = null; chip.style.display = "none"; };
   card.appendChild(chip);
   card.appendChild(ta);
+  // сослаться на сведение обсуждения — выбором из списка, а не поиском номера
+  // на другой странице (UX 29.09); вставляет «#с123» в текст
+  card.appendChild(factPicker(ROOT.get(parentId) ?? parentId, ta));
   const act = el("div", "actions");
   const typeSel = el("select");
   // «не доказывает» (undercut) целится в участок — доступно только с якорем.
@@ -3378,7 +3448,10 @@ function replyForm(parentId, parentKind) {
       setText: (t) => { ta.value = t; reviewedText = t.trim(); draftWrite(parentId, { text: t }); },
       connectTo: parentId,
       // разбор нашёл уступку — отмечаем в форме, автор видит и может снять
-      onConcede: (quote) => { if (typeSel.value !== "support") setConcede(quote); },
+      onConcede: Object.assign(
+        (quote) => { if (typeSel.value !== "support") setConcede(quote); },
+        // у ответа «за» признавать нечего — кнопку не показываем (QA 29.09)
+        { can: () => typeSel.value !== "support" }),
       onValue: (id, phrase) => setValue(id, phrase),
       onSend: async () => { await doSend(ta.value.trim()); },
       // advice on the card already applies to the suggested type — publish

@@ -441,3 +441,53 @@ def test_companion_gets_facts_closest_to_the_draft_and_duplicates_are_refused():
         assert await info_db.find_duplicate(root, "https://d.de", "другое") is None
         assert [x["id"] for x in await info_db.facts_with_source(root, "https://d.de")] == [de]
     _run(body)
+
+
+# ------------------------------------------------------------ повторный прогон 29.09
+
+def test_origin_country_and_ukraine_are_not_the_question_country():
+    f = info_db.countries_from_text
+    assert f("Приехал из Украины в Чехию, что делать?") == ["Чехия"]
+    assert f("Я з України, живу в Польщі") == ["Польша"]
+    assert f("про Швецию и Норвегию") == ["Швеция", "Норвегия"]
+
+
+def test_number_groups_in_answer(monkeypatch):
+    facts = [{"id": i, "kind": "norm", "country": None, "city": None, "quote_status": "verified",
+              "title": "т", "body": None, "when_text": None, "source_quote": None} for i in (7, 8)]
+    monkeypatch.setattr(info_ai.poi, "complete_messages", lambda *a, **k:
+                        '{"answer": "См. [#с7, #8, #с99].", "cited": [7, 8]}')
+    assert info_ai.ask_sync("вопрос", facts)["answer"] == "См. [#с7, #с8]."
+
+
+def test_non_json_answer_is_retried_once(monkeypatch):
+    calls = iter(["не json", '{"answer": "ok [#с7]", "cited": [7]}'])
+    monkeypatch.setattr(info_ai.poi, "complete_messages", lambda *a, **k: next(calls))
+    facts = [{"id": 7, "kind": "norm", "country": None, "city": None, "quote_status": "verified",
+              "title": "т", "body": None, "when_text": None, "source_quote": None}]
+    assert info_ai.ask_sync("вопрос", facts, "Ukrainian")["ok"] is True
+
+
+def test_url_canon_for_duplicates():
+    c = info_db.canon_url
+    assert c("https://www.a.se/x/y.html?utm_source=z#top") == c("http://a.se/x/y.html/")
+    assert c("https://a.se/x?id=1") != c("https://a.se/x?id=2")
+
+
+@needs_db
+def test_near_duplicates_and_refs_expanded_for_scoring():
+    async def body(db):
+        uid = await db.add_user("u", "h", "U", invite_required=False)
+        root = await db.add_node("Защита", kind="problem", title="Защита")
+        q = "If you received a decision on a residence permit before 5 August 2026"
+        fid = await info_db.add_fact(root, {"title": "Швеция", "kind": "report", "country": "Швеция",
+                                            "source_url": "https://www.a.se/n.html", "source_quote": q}, uid)
+        wider = q + ", your permit is valid until 4 March 2027"
+        assert await info_db.find_duplicate(root, "https://a.se/n.html?utm_source=x", wider) == fid
+        assert await info_db.find_duplicate(root, "https://a.se/n.html", "short") is None
+        t = await info_db.expand_refs(f"см. #с{fid} и #с999999")
+        assert f"#с{fid} [сведение обсуждения: Швеция]" in t and "#с999999" in t
+        found = await info_db.search(root, "Приехал из Украины, что в Швеции?",
+                                     info_db.countries_from_text("Приехал из Украины, что в Швеции?"))
+        assert [f["id"] for f in found] == [fid]
+    _run(body)

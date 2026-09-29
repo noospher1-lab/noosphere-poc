@@ -57,6 +57,11 @@ INTAKE_SYSTEM = (
     "GLOSSARY: е-ВОД / є-ВОД / e-VOD = electronic military registration document from the "
     "Ukrainian app Резерв+ (Reserv+) — it is NOT a residence permit; ВНЖ / посвідка = residence "
     "permit; ТЗ / тимчасовий захист = temporary protection.\n"
+    "SECTION FOR EXPERIENCE: a person's own case goes to the section of what it is about "
+    "(extending protection, residence permit, court…), never to a «what to do» section — "
+    "that one is only for instructions quoted from sources.\n"
+    "TITLE OF EXPERIENCE: what happened AND how it ended, if the contributor says so "
+    "(«В Аликанте потребовали выписку из Резерв+; документы приняли»).\n"
     "ONE PERSON'S CASE IS NOT A RULE: for experience, the title says what happened in that "
     "case («В Валенсии у меня потребовали выписку из Резерв+»), never a general rule "
     "(«в Испании требуют у женщин»); fill applies_to only if the contributor states who "
@@ -99,12 +104,7 @@ def intake_sync(text, url=None, page_text=None, sections=None):
     if page_text:
         user += "\nPAGE TEXT (excerpt):\n" + poi.wrap_user_text(page_text[:12000])
     try:
-        raw = poi.complete_messages(INTAKE_SYSTEM, [{"role": "user", "content": user}],
-                                    max_tokens=800, timeout=60, model=MODEL,
-                                    temperature=0)
-        d = _parse(raw)
-        if not isinstance(d, dict):
-            raise ValueError("модель вернула не объект")
+        d = _complete_json(INTAKE_SYSTEM, user, 800)
     except Exception:
         # вызов уже оплачен, но человек получает форму, а не 500 (ревью 28.09, С-8)
         log.warning("разбор сведения недоступен", exc_info=True)
@@ -141,7 +141,25 @@ def _fact_line(f):
     return s
 
 
-def ask_sync(question, facts):
+def _complete_json(system, user, max_tokens):
+    """Вызов модели и разбор JSON; не разобралось — ещё одна попытка: раз из
+    восьми ответ приходил не JSON, и человек видел «ИИ недоступен» (QA 29.09)."""
+    last = None
+    for _ in range(2):
+        raw = poi.complete_messages(system, [{"role": "user", "content": user}],
+                                    max_tokens=max_tokens, timeout=60, model=MODEL,
+                                    temperature=0)
+        try:
+            d = _parse(raw)
+            if isinstance(d, dict):
+                return d
+            last = ValueError("модель вернула не объект")
+        except ValueError as e:
+            last = e
+    raise last
+
+
+def ask_sync(question, facts, lang=None):
     """Ответ по сведениям. Никогда не бросает; ok=False — модель недоступна."""
     if not facts:
         return {"ok": True, "answer": "По этому вопросу сведений пока нет. "
@@ -150,11 +168,11 @@ def ask_sync(question, facts):
     # сведения вносят люди — это данные, а не инструкции (ревью 28.09, С-6)
     user = ("FACTS:\n" + poi.wrap_user_text("\n".join(_fact_line(f) for f in facts)) +
             "\n\nQUESTION:\n" + poi.wrap_user_text(question[:1500]))
+    if lang:
+        # на украинский вопрос ответ шёл по-русски (QA 29.09): язык — явно
+        user += f"\n\nLANGUAGE: write the answer in {lang}."
     try:
-        raw = poi.complete_messages(ASK_SYSTEM, [{"role": "user", "content": user}],
-                                    max_tokens=900, timeout=60, model=MODEL,
-                                    temperature=0)
-        d = _parse(raw)
+        d = _complete_json(ASK_SYSTEM, user, 900)
     except Exception:
         log.warning("ответ по сведениям недоступен", exc_info=True)
         return {"ok": False, "answer": None, "cited": [f["id"] for f in facts], "gaps": ""}
@@ -166,7 +184,11 @@ def ask_sync(question, facts):
             cited.append(int(m.group(0)))
     answer = str(d.get("answer") or "")
     # ссылка на сведение, которого модели не давали, — выдумка: вырезаем
-    # единый вид номера сведения — [#с12]; номер, которого модели не давали, — выдумка
-    answer = re.sub(r"\[#[сСcCsS]?(\d+)\]",
-                    lambda m: f"[#с{m.group(1)}]" if int(m.group(1)) in allowed else "", answer)
+    # единый вид номера — #с12, в том числе в группах «[#128, #с100]»; номер,
+    # которого модели не давали, — выдумка, вырезается
+    def group(m):
+        ids = [int(x) for x in re.findall(r"\d+", m.group(1))]
+        ok = [f"#с{i}" for i in ids if i in allowed]
+        return f"[{', '.join(ok)}]" if ok else ""
+    answer = re.sub(r"\[((?:\s*,?\s*#[сСcCsS]?\d+)+)\s*\]", group, answer)
     return {"ok": True, "answer": answer, "cited": cited, "gaps": str(d.get("gaps") or "")}

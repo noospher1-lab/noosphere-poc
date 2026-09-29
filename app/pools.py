@@ -102,7 +102,11 @@ def _problem_parts(problem):
             "retelling of media/lawyers/NGOs, experience = what people report "
             "happened to them. Authors cite a fact as #с<id>. Use them: if the draft "
             "states something already recorded, point to its #с<id>; if it "
-            "contradicts a recorded fact, say so and name it. Only the #с ids "
+            "contradicts a recorded fact, say so and name it. For EVERY #с id the "
+            "draft cites, check that the fact actually supports the claim it is "
+            "attached to; if not, say so plainly (a fact about women does not "
+            "support a claim about exit stamps). If the draft only repeats a "
+            "recorded fact, say which #с id already records it. Only the #с ids "
             "listed below exist: never say something is recorded unless you name its "
             "#с id from this list, never cite a fact for a claim it does not support, "
             "never invent facts that are not here:\n\n" + poi.wrap_user_text("\n".join(block)))

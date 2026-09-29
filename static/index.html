@@ -69,6 +69,13 @@
   .fr-title { font-weight: 600; }
   .fr-meta { font-size: 12.5px; color: var(--dim2); }
   .fr-quote { font-size: 13px; color: var(--dim); }
+  .fact-picker { margin: 6px 0; }
+  .fp-panel { margin-top: 6px; border: 1px solid var(--line2); border-radius: 8px; padding: 8px; }
+  .fp-panel input { width: 100%; margin-bottom: 6px; }
+  .fp-list { max-height: 260px; overflow: auto; display: grid; gap: 4px; }
+  button.fp-item { text-align: left; background: none; border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 8px; color: var(--ivory); cursor: pointer; min-height: 40px; }
+  button.fp-item:hover { border-color: var(--dim2); }
   :focus-visible { outline: 2px solid var(--bronze); outline-offset: 1px; }
 
   /* Высота считается раскладкой, а не вычитанием константы: шапка теперь

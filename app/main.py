@@ -394,6 +394,11 @@ _PARENTED_KINDS = {"question", "detail"}
 
 async def _score_later(node_id: int, text: str, kind: str = "argument", parent_text: str | None = None):
     fn = _SCORERS.get(kind, poi.score_argument)
+    # «#с12» оценка должна видеть как сведение, а не как «статью 12» (UX 29.09)
+    try:
+        text = await info_db.expand_refs(text)
+    except Exception:
+        pass
     try:
         if kind in _PARENTED_KINDS:
             score, breakdown = await asyncio.to_thread(fn, text, parent_text)
@@ -4528,14 +4533,16 @@ async def info_ask(root: str, body: InfoAskIn, author=Depends(verified_author)):
         raise HTTPException(400, "Напишите вопрос хотя бы в несколько слов")
     # страна — выбранная в форме, иначе названная в вопросе: без этого
     # сведения страны не находились (QA 29.09: Чехия, Швеция)
-    country = body.country if body.country in taxonomy.COUNTRIES else info_db.country_from_text(q)
-    facts = await info_db.search(t["id"], q, country)
+    # несколько стран в вопросе — ищем по всем; «из Украины» — не страна вопроса
+    countries = [body.country] if body.country in taxonomy.COUNTRIES \
+        else info_db.countries_from_text(q)
+    facts = await info_db.search(t["id"], q, countries)
     if facts:
         await spend_llm(author)
-    res = await asyncio.to_thread(info_ai.ask_sync, q, facts)
+    res = await asyncio.to_thread(info_ai.ask_sync, q, facts, lang_mod.detect_language(q))
     res["facts"] = [{"id": f["id"], "title": f["title"], "country": f["country"],
                      "city": f["city"], "kind": f["kind"]} for f in facts]
-    res["country"] = country
+    res["country"] = ", ".join(countries) or None
     return res
 
 
