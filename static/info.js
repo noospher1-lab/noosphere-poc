@@ -184,8 +184,10 @@ function mapSvg(counts) {
 
 // ------------------------------------------------------------ страница
 
+let SINGLE = false;
 function render() {
   const v = VIEW;
+  SINGLE = v.countries.length === 1 && !v.common.length;
   const counts = Object.fromEntries(v.countries.map(c => [c.country, c.facts]));
   const listed = v.countries.map(c => c.country).sort((a, b) => a.localeCompare(b, "ru"));
   const rel = (v.related || []).map(r => `<li><a href="/info.html?root=${r.id}">${r.rel === "cause" ? "↑ причина" : "↓ порождает"}: ${esc(r.title || "#" + r.id)}</a> <span class="muted">· сведений: ${r.facts}</span></li>`).join("");
@@ -193,7 +195,7 @@ function render() {
     <p class="crumbs"><a href="/n/${FROM || v.topic.id}">${FROM ? "← К доводу" : "← К обсуждению"}</a></p>
     <h1><span class="muted small-h">Сведения ·</span> ${esc(v.topic.title)}</h1>
     <nav class="toc toc-top">
-      ${v.countries.length ? `<a class="primary" href="#countries">По странам →</a>` : ""}
+      ${v.countries.length && !SINGLE ? `<a class="primary" href="#countries">По странам →</a>` : ""}
       ${v.common.length ? `<a href="#common">Общее для всех</a>` : ""}
       ${v.total ? `<a href="#ask">Спросить</a>` : ""}
       <a href="#add">+ Добавить сведение</a>
@@ -215,7 +217,7 @@ function render() {
       Что делает конкретная страна — ниже.</p>
     ${bySection(v.common, "common")}` : ""}
 
-    ${v.countries.length ? `<h2 id="countries">По странам</h2>
+    ${SINGLE ? `<section id="country-panel"></section>` : v.countries.length ? `<h2 id="countries">По странам</h2>
     <p class="muted">${v.countries.length} ${plural(v.countries.length, "страна", "страны", "стран")} со сведениями,
       всего сведений: ${v.total}. Выберите страну в списке или на карте.</p>
     <div class="mapwrap">
@@ -246,7 +248,7 @@ function render() {
   bindRows($("main"));
   $("main").querySelectorAll(".map [data-c]").forEach(el =>
     el.addEventListener("click", () => openCountry(el.dataset.c)));
-  if (v.countries.length) bindCountryList(counts, listed);
+  if (v.countries.length && !SINGLE) bindCountryList(counts, listed);
   if (v.total) renderAsk();     // спрашивать не по чему — блока нет
   renderAdd();
 }
@@ -285,7 +287,8 @@ async function openCountry(name, scroll = true) {
   document.querySelectorAll(".map .sel").forEach(e => e.classList.remove("sel"));
   document.querySelectorAll(`.map [data-c="${CSS.escape(name)}"]`).forEach(e => e.classList.add("sel"));
   document.querySelectorAll(".clist button").forEach(b => b.setAttribute("aria-current", b.dataset.c === name));
-  if (!location.hash.startsWith("#f")) history.replaceState(null, "", "#c=" + encodeURIComponent(name));
+  // одна страна открыта сама — адрес не меняем, иначе followHash прокрутит к ней
+  if (!location.hash.startsWith("#f") && !SINGLE) history.replaceState(null, "", "#c=" + encodeURIComponent(name));
   const askSel = $("#ask-box select[name=ask_country]");
   if (askSel) askSel.value = name;
   let v;
@@ -606,6 +609,7 @@ async function publishFact(body, b, msg) {
   catch (e) { $("main").innerHTML = `<p class="msg err">${esc(e.message)}</p>`; return; }
   document.title = "Noosphere — сведения: " + VIEW.topic.title;
   render();
+  if (SINGLE) await openCountry(VIEW.countries[0].country, false);
   await followHash();
   // ссылки [#id] и «назад/вперёд» внутри страницы (QA 28.09)
   window.addEventListener("hashchange", followHash);
