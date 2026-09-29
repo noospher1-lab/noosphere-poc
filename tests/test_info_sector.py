@@ -364,7 +364,8 @@ def test_any_discussion_has_facts_layer_and_related_links():
         await info_db.add_fact(b, {"title": "Факт Б", "country": "Чехия"}, uid)
         v = await info_db.topic_view(a)
         assert v["total"] == 0 and v["related"][0]["id"] == b and v["related"][0]["facts"] == 1
-        assert v["suggested_sections"][:2] == ["Закон-основание", "Права и равенство"]
+        # пустое обсуждение — минимум, без чужих «беженских» разделов (Alex 29.09)
+        assert v["suggested_sections"] == ["Закон-основание", "Масштаб"]
         with pytest.raises(info_db.InfoError):
             await info_db.topic_view(10 ** 7)
         # раздел — подпись обсуждения, а не список из кода

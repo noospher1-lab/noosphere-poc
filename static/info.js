@@ -195,22 +195,21 @@ function render() {
     <nav class="toc toc-top">
       ${v.countries.length ? `<a class="primary" href="#countries">По странам →</a>` : ""}
       ${v.common.length ? `<a href="#common">Общее для всех</a>` : ""}
-      <a href="#ask">Спросить</a>
+      ${v.total ? `<a href="#ask">Спросить</a>` : ""}
       <a href="#add">+ Добавить сведение</a>
     </nav>
-    <div class="note">Здесь не консультируют. Здесь собрано то, что доступно: тексты законов и разъяснения
-      ведомств со ссылками, сообщения СМИ и юристов, опыт людей. Как этим распорядиться — решаете вы. У каждого
-      сведения видно, на что оно опирается.
+    ${v.total ? `<div class="note">Сведения — собранные факты со ссылками: законы, цифры, сообщения
+      источников, опыт людей. У каждого сведения видно, на что оно опирается.
       <div class="legend">
         <span><span class="kind norm">норма</span> текст закона или разъяснение ведомства; сервер проверяет, есть ли цитата на странице</span>
         <span><span class="kind report">сообщают</span> пересказ СМИ, юристов, организаций — со ссылкой</span>
         <span><span class="kind experience">опыт людей</span> так было с людьми; «независимых» — отметки, похожие на одного человека, считаются за одну</span>
       </div>
-      <p class="muted small">Сослаться на сведение в доводе обсуждения — написать его номер, например <b>#с${(v.common[0] || {}).id || 12}</b>: под доводом появится карточка сведения.</p>
-    </div>
+      <p class="muted small">Сослаться на сведение в доводе обсуждения — написать его номер, например <b>#с${exampleId(v)}</b>: под доводом появится карточка сведения.</p>
+    </div>` : ""}
 
-    ${v.total ? "" : `<p class="empty">У этого обсуждения сведений пока нет: законов, цифр, сообщений,
-      опыта людей. Если знаете — <a href="#add">добавьте первое</a>.</p>`}
+    ${v.total ? "" : `<p class="empty">У этого обсуждения сведений пока нет — законов, цифр, сообщений
+      источников, опыта людей. Если знаете — <a href="#add">добавьте первое</a>.</p>`}
     ${v.common.length ? `<h2 id="common">Общее для всех, независимо от страны</h2>
     <p class="muted">Сначала закон и нормы о правах, потом остальное. Нажмите на строку, чтобы раскрыть.
       Что делает конкретная страна — ниже.</p>
@@ -231,9 +230,9 @@ function render() {
     <section id="country-panel"></section>` : `<section id="country-panel"></section>`}
     ${rel ? `<h2>Связанные обсуждения</h2><ul class="related">${rel}</ul>` : ""}
 
-    <h2 id="ask">Спросить по сведениям</h2>
+    ${v.total ? `    <h2 id="ask">Спросить по сведениям</h2>
     <p class="muted">ИИ отвечает только по собранным здесь сведениям и ставит их номера. Если сведений нет — так и скажет.</p>
-    <div class="card" id="ask-box"></div>
+    <div class="card" id="ask-box"></div>` : ""}
 
     <h2 id="add">Добавить сведение</h2>
     <p class="muted">${CFG.ai
@@ -248,8 +247,13 @@ function render() {
   $("main").querySelectorAll(".map [data-c]").forEach(el =>
     el.addEventListener("click", () => openCountry(el.dataset.c)));
   if (v.countries.length) bindCountryList(counts, listed);
-  renderAsk();
+  if (v.total) renderAsk();     // спрашивать не по чему — блока нет
   renderAdd();
+}
+
+// пример номера — настоящий: «#с12», которого нет, сбивал (Alex 29.09)
+function exampleId(v) {
+  return v.sample_fact;
 }
 
 function countryItems(names, counts) {

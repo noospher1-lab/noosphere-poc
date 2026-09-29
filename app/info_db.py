@@ -789,6 +789,8 @@ async def topic_view(root_or_slug, me=None):
         "countries": sorted(countries.values(), key=lambda c: c["country"]),
         "related": rel,
         "total": len(facts),
+        # настоящий номер для примера «#сN» в подсказке
+        "sample_fact": facts[0]["id"] if facts else None,
     }
 
 
