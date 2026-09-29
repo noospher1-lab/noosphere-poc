@@ -39,8 +39,10 @@ async function api(path, opts = {}) {
     // ошибка проверки полей приходит списком объектов — показывать его как
     // «[object Object]» нельзя (UX 28.09, М2)
     let msg = data.detail;
+    const extra = msg && typeof msg === "object" && !Array.isArray(msg) ? msg : null;
+    if (extra) msg = extra.message;
     if (Array.isArray(msg)) msg = "Проверьте поля формы — какое-то заполнено не так";
-    throw Object.assign(new Error(msg || `Ошибка ${r.status}`), { status: r.status });
+    throw Object.assign(new Error(msg || `Ошибка ${r.status}`), { status: r.status, extra });
   }
   return data;
 }
@@ -537,25 +539,42 @@ function fields(d, scroll = true, byAI = false) {
     if (!body.title) { msg.className = "msg err"; msg.textContent = "Напишите утверждение — одной фразой, что известно."; return; }
     if (body.kind === "experience" && !body.country) { msg.className = "msg err"; msg.textContent = "Опыт людей всегда в какой-то стране — выберите страну."; return; }
     b.disabled = true;
-    try {
-      const r = await api(`/api/info/${ROOT}/facts`, { method: "POST", body });
-      const st = { verified: "Цитата найдена на странице дословно.",
-        mismatch: "Такой выдержки на странице нет — это видно на карточке.",
-        unreachable: "Сайт не пустил автоматическую проверку — это видно на карточке.",
-        unchecked: "Цитата ещё не сверена.", none: "" }[r.quote_status] || "";
-      const downgraded = body.kind === "norm" && r.kind !== "norm"
-        ? " Цитату не удалось сверить, поэтому сведение показано как «сообщают»." : "";
-      // сообщение переживает перерисовку страницы (UX 28.09, М3)
-      FLASH = { cls: "ok", html: `Опубликовано: <a href="#f${r.id}" data-go="${r.id}">#${r.id}</a>. ${esc(st + downgraded)}` };
-      PRESET_COUNTRY = null;
-      await reload();
-      await reveal(String(r.id));
-      $("#pub-msg [data-go]")?.addEventListener("click", (e) => { e.preventDefault(); reveal(String(r.id)); });
-    } catch (e) { msg.className = "msg err"; msg.textContent = e.message; b.disabled = false; }
+    await publishFact(body, b, msg);
   };
   if (scroll) s2.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+async function publishFact(body, b, msg) {
+  try {
+    const r = await api(`/api/info/${ROOT}/facts`, { method: "POST", body });
+    const st = { verified: "Цитата найдена на странице дословно.",
+      mismatch: "Такой выдержки на странице нет — это видно на карточке.",
+      unreachable: "Сайт не пустил автоматическую проверку — это видно на карточке.",
+      unchecked: "Цитата ещё не сверена.", none: "" }[r.quote_status] || "";
+    const downgraded = body.kind === "norm" && r.kind !== "norm"
+      ? " Цитату не удалось сверить, поэтому сведение показано как «сообщают»." : "";
+    // сообщение переживает перерисовку страницы (UX 28.09, М3)
+    FLASH = { cls: "ok", html: `Опубликовано: <a href="#f${r.id}" data-go="${r.id}">#с${r.id}</a>. ${esc(st + downgraded)}` };
+    PRESET_COUNTRY = null;
+    await reload();
+    await reveal(String(r.id));
+    $("#pub-msg [data-go]")?.addEventListener("click", (e) => { e.preventDefault(); reveal(String(r.id)); });
+  } catch (e) {
+    b.disabled = false;
+    if (e.status === 409 && e.extra?.duplicate) {
+      // похожее уже есть — предупреждение, а не запрет (Alex 29.09): показать его
+      // и дать опубликовать всё равно
+      const d = e.extra.duplicate;
+      msg.className = "msg";
+      msg.innerHTML = esc(e.message) + ` <a href="#f${d}" data-go="${d}">открыть #с${d}</a> ` +
+        `<button class="btn" type="button" data-force>Опубликовать всё равно</button>`;
+      msg.querySelector("[data-go]").onclick = (ev) => { ev.preventDefault(); reveal(String(d)); };
+      msg.querySelector("[data-force]").onclick = () => publishFact({ ...body, force: true }, b, msg);
+      return;
+    }
+    msg.className = "msg err"; msg.textContent = e.message;
+  }
+}
 // ------------------------------------------------------------ старт
 
 (async () => {

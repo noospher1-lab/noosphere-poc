@@ -486,8 +486,26 @@ def test_near_duplicates_and_refs_expanded_for_scoring():
         assert await info_db.find_duplicate(root, "https://a.se/n.html?utm_source=x", wider) == fid
         assert await info_db.find_duplicate(root, "https://a.se/n.html", "short") is None
         t = await info_db.expand_refs(f"см. #с{fid} и #с999999")
-        assert f"#с{fid} [сведение обсуждения: Швеция]" in t and "#с999999" in t
+        assert f"#с{fid} [сведение обсуждения, сообщение источника: «Швеция»" in t and "#с999999" in t
         found = await info_db.search(root, "Приехал из Украины, что в Швеции?",
                                      info_db.countries_from_text("Приехал из Украины, что в Швеции?"))
         assert [f["id"] for f in found] == [fid]
     _run(body)
+
+
+def test_answer_in_wrong_language_is_rewritten(monkeypatch):
+    """Украинский вопрос → русский ответ дважды (UX 29.09): теперь язык и в
+    системной части, а ответ не на том языке переписывается."""
+    calls = []
+
+    def fake(system, messages, **k):
+        calls.append(messages[0]["content"])
+        if len(calls) == 1:
+            return '{"answer": "Отказ можно обжаловать в той стране, где отказали [#с7].", "cited": [7]}'
+        return '{"answer": "Відмову можна оскаржити в країні, де відмовили [#с7].", "cited": [7]}'
+    monkeypatch.setattr(info_ai.poi, "complete_messages", fake)
+    facts = [{"id": 7, "kind": "norm", "country": None, "city": None, "quote_status": "verified",
+              "title": "т", "body": None, "when_text": None, "source_quote": None}]
+    r = info_ai.ask_sync("як оскаржити відмову?", facts, "Ukrainian", ["Чехия"])
+    assert "оскаржити" in r["answer"] and len(calls) == 2
+    assert "THE PERSON'S COUNTRY: Чехия" in calls[0] and "Rewrite it in Ukrainian" in calls[1]

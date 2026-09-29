@@ -320,3 +320,28 @@ def test_api_ask_without_model_lists_found_facts(api):
     assert r["facts"][0]["country"] == "Польша"     # фронту нужна страна, чтобы открыть карточку
     r = c.post("/api/info/ua-eu/intake", json={"text": "ТЕСТ: в Лейпциге продлили без Резерв+"}).json()
     assert r["ok"] is False and "Лейпциге" in r["draft"]["body"]
+
+
+def test_api_duplicate_is_a_warning_not_a_ban(api):
+    """Alex 29.09: «дубли — предупреждением». Та же ссылка и выдержка — 409 с
+    номером похожего; «опубликовать всё равно» (force) проходит."""
+    c = api["vera"]
+    base = {"title": "ТЕСТ сообщение", "kind": "report", "country": "Польша",
+            "source_url": "https://www.example.org/news?utm_source=x",
+            "source_quote": "ДОСЛОВНО одна и та же выдержка из источника о защите"}
+    first = c.post("/api/info/ua-eu/facts", json=base)
+    assert first.status_code == 200, first.text
+    again = c.post("/api/info/ua-eu/facts", json={**base, "title": "ТЕСТ другое утверждение",
+                                                  "source_url": "https://example.org/news"})
+    assert again.status_code == 409
+    detail = again.json()["detail"]
+    assert detail["duplicate"] == first.json()["id"] and "всё равно" in detail["message"]
+    forced = c.post("/api/info/ua-eu/facts", json={**base, "title": "ТЕСТ другое утверждение",
+                                                   "force": True})
+    assert forced.status_code == 200 and forced.json()["id"] != first.json()["id"]
+
+
+def test_api_empty_section_becomes_other(api):
+    r = api["vera"].post("/api/info/ua-eu/facts", json={"title": "ТЕСТ без раздела",
+                                                         "country": "Польша", "section": None})
+    assert r.status_code == 200, r.text

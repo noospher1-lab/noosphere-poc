@@ -4371,7 +4371,9 @@ async def _fetch_limited(fn, *args):
 
 class InfoFactIn(BaseModel):
     title: str
-    section: str = "Другое"
+    # пусто — «Другое» (validate_fact): форма больше не навязывает раздел, и null
+    # отсюда давал 422 «проверьте поля» (проверка 29.09)
+    section: str | None = None
     kind: str = "experience"
     country: str | None = None
     city: str | None = None
@@ -4383,6 +4385,9 @@ class InfoFactIn(BaseModel):
     source_url: str | None = None
     source_title: str | None = None
     source_quote: str | None = None
+    # «похожее уже есть» — предупреждение, а не запрет (Alex 29.09): одна цитата
+    # может подтверждать и другое утверждение; force=True — «опубликовать всё равно»
+    force: bool = False
 
 
 class InfoIntakeIn(BaseModel):
@@ -4474,13 +4479,19 @@ async def info_add_fact(root: str, body: InfoFactIn, request: Request,
                         author=Depends(verified_author)):
     t = await _topic_or_404(root)
     data = body.model_dump()
+    force = data.pop("force", False)
     try:
         info_db.validate_fact(data)
-        # то же сведение (ссылка + выдержка) уже есть — второе не заводим:
-        # человек может отметить «у меня так же» (QA 29.09, #201 = #156)
-        dup = await info_db.find_duplicate(t["id"], data.get("source_url"), data.get("source_quote"))
+        # похожее (та же ссылка + та же или вложенная выдержка) уже есть —
+        # предупреждаем, а публикует человек сам (Alex 29.09: «дубли —
+        # предупреждением»); 409 с номером, клиент предлагает «всё равно»
+        dup = None if force else await info_db.find_duplicate(
+            t["id"], data.get("source_url"), data.get("source_quote"))
         if dup:
-            raise info_db.InfoError(f"Такое сведение уже есть: #с{dup}. Если у вас так же — отметьте его.")
+            raise HTTPException(409, {"message": f"Похожее сведение уже есть: #с{dup}. "
+                                                 "Если это то же самое — отметьте его «у меня так же». "
+                                                 "Если ваше о другом — опубликуйте всё равно.",
+                                      "duplicate": dup})
         # лимит — до сверки: сверка ходит в сеть (ревью 28.09, Б-2)
         await info_db.fact_limit_left(author["id"])
     except info_db.InfoError as e:
@@ -4539,7 +4550,8 @@ async def info_ask(root: str, body: InfoAskIn, author=Depends(verified_author)):
     facts = await info_db.search(t["id"], q, countries)
     if facts:
         await spend_llm(author)
-    res = await asyncio.to_thread(info_ai.ask_sync, q, facts, lang_mod.detect_language(q))
+    res = await asyncio.to_thread(info_ai.ask_sync, q, facts, lang_mod.detect_language(q),
+                                  countries)
     res["facts"] = [{"id": f["id"], "title": f["title"], "country": f["country"],
                      "city": f["city"], "kind": f["kind"]} for f in facts]
     res["country"] = ", ".join(countries) or None

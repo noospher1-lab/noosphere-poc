@@ -1842,9 +1842,11 @@ function factPicker(root, ta) {
   let facts = null;
   const draw = () => {
     list.textContent = "";
-    const needle = q.value.trim().toLowerCase();
-    const shown = (facts || []).filter(f => !needle ||
-      (f.title + " " + (f.country || "") + " " + (f.city || "")).toLowerCase().includes(needle)).slice(0, 30);
+    const needle = q.value.trim().toLowerCase().replace(/^#?[сc]?(?=\d+$)/, "");
+    // поиск и по номеру: «109», «#с109» (UX 29.09)
+    const all = (facts || []).filter(f => !needle || String(f.id) === needle ||
+      (f.title + " " + (f.country || "") + " " + (f.city || "")).toLowerCase().includes(needle));
+    const shown = all.slice(0, 30);
     if (!shown.length) list.appendChild(el("div", "muted",
       facts && facts.length ? "ничего не нашлось" : "у этого обсуждения сведений пока нет"));
     for (const f of shown) {
@@ -1863,6 +1865,8 @@ function factPicker(root, ta) {
       };
       list.appendChild(b);
     }
+    if (all.length > shown.length) list.appendChild(el("div", "muted",
+      `показаны ${shown.length} из ${all.length} — уточните поиск`));
   };
   open.onclick = async () => {
     const show = panel.style.display === "none";
@@ -1881,6 +1885,7 @@ function factPicker(root, ta) {
     }
     draw();
     q.focus();
+    panel.scrollIntoView({ block: "nearest", behavior: "smooth" });
   };
   q.addEventListener("input", draw);
   return wrap;
@@ -3430,9 +3435,9 @@ function replyForm(parentId, parentKind) {
     const root = ROOT.get(parentId) ?? parentId;
     const rev = await reviewDraft({ text, connect_to: parentId, edge_type: typeSel.value });
     reviewedText = text;
-    // ценность из разбора — в форму сразу, даже если больше заметок нет: автор
-    // видит её в форме и в подсказке после публикации, сменить может в панели
-    if (rev && rev.value) setValue(rev.value, rev.value_phrase);
+    // ценность из разбора в форму САМА не ставится: только предложение с кнопкой
+    // (Alex 29.09). Здесь был второй путь — третий прогон студии поймал, что
+    // ценность всё равно уходила в публикацию без нажатия.
     send.disabled = false; send.textContent = "отправить";
     if (reviewUnavailable(rev)) { renderUnavailable(hint, () => doSend(ta.value.trim())); return; }
     // nothing to suggest → publish silently

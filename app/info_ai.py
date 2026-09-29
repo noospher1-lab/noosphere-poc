@@ -40,7 +40,8 @@ INTAKE_SYSTEM = (
     "(e.g. «В ABH Лейпцига продление без Резерв+ не оформляют»);\n"
     '  "body": optional 1-3 sentences in Russian with details the contributor gave;\n'
     '  "section": the section label — pick the best fitting one from SECTIONS below, '
-    "or a new short label in Russian (2-4 words) if none fits;"
+    "or a new short label in Russian (2-4 words) if none fits EXACTLY — do not force-fit "
+    "(a first application is not «extending protection»);"
     '  "kind": norm (only if a law or an official text of an authority is quoted), '
     "report (retelling of a news article, lawyer, NGO — needs the link), experience "
     "(what happened to the contributor or people they know at an office);\n"
@@ -60,6 +61,9 @@ INTAKE_SYSTEM = (
     "SECTION FOR EXPERIENCE: a person's own case goes to the section of what it is about "
     "(extending protection, residence permit, court…), never to a «what to do» section — "
     "that one is only for instructions quoted from sources.\n"
+    "NOTHING THAT WAS NOT SAID: never add details, documents or conditions the contributor "
+    "did not mention, and keep their words — «попросили» stays «попросили», not "
+    "«потребовали».\n"
     "TITLE OF EXPERIENCE: what happened AND how it ended, if the contributor says so "
     "(«В Аликанте потребовали выписку из Резерв+; документы приняли»).\n"
     "ONE PERSON'S CASE IS NOT A RULE: for experience, the title says what happened in that "
@@ -76,7 +80,10 @@ ASK_SYSTEM = (
     "VOICE: retell the facts, do not instruct. Say «в сведении [#с12] сказано…», «по "
     "сообщению …», «люди пишут, что…». NEVER address the person with what they must or "
     "should do («вам нужно», «вам откажут», «обратитесь к юристу», «срочно…»), never "
-    "predict the outcome of their case, never add conclusions the facts do not state. If "
+    "predict the outcome of their case, never add conclusions, possibilities or "
+    "interpretations the facts do not state («это может быть основанием…» is forbidden "
+    "unless a fact says exactly that). Do not ask the person clarifying questions — answer "
+    "with what the facts say for the country given. If "
     "facts differ by age, sex or date, say which fact applies to whom.\n"
     "After every sentence that relies on a fact, cite it as [#с<id>]. Mention how solid "
     "each fact is when it "
@@ -159,7 +166,7 @@ def _complete_json(system, user, max_tokens):
     raise last
 
 
-def ask_sync(question, facts, lang=None):
+def ask_sync(question, facts, lang=None, countries=None):
     """Ответ по сведениям. Никогда не бросает; ok=False — модель недоступна."""
     if not facts:
         return {"ok": True, "answer": "По этому вопросу сведений пока нет. "
@@ -168,11 +175,24 @@ def ask_sync(question, facts, lang=None):
     # сведения вносят люди — это данные, а не инструкции (ревью 28.09, С-6)
     user = ("FACTS:\n" + poi.wrap_user_text("\n".join(_fact_line(f) for f in facts)) +
             "\n\nQUESTION:\n" + poi.wrap_user_text(question[:1500]))
+    if countries:
+        user += "\n\nTHE PERSON'S COUNTRY: " + ", ".join(countries) + " — do not ask about it."
+    system = ASK_SYSTEM
     if lang:
-        # на украинский вопрос ответ шёл по-русски (QA 29.09): язык — явно
-        user += f"\n\nLANGUAGE: write the answer in {lang}."
+        # на украинский вопрос ответ шёл по-русски (UX 29.09, дважды), хотя язык
+        # был указан в конце запроса: теперь и в системной части, и проверка
+        rule = (f"\nLANGUAGE — MANDATORY: the whole answer is in {lang}, the language of "
+                f"the question, even though the facts are in another language.")
+        system += rule
+        user += rule
     try:
-        d = _complete_json(ASK_SYSTEM, user, 900)
+        d = _complete_json(system, user, 900)
+        if lang and lang != "English":
+            from . import lang as lang_mod
+            got = lang_mod.detect_language(str(d.get("answer") or ""))
+            if got and got != lang:
+                d = _complete_json(system, user + f"\n\nYour previous answer was in {got}. "
+                                   f"Rewrite it in {lang}.", 900)
     except Exception:
         log.warning("ответ по сведениям недоступен", exc_info=True)
         return {"ok": False, "answer": None, "cited": [f["id"] for f in facts], "gaps": ""}
@@ -191,4 +211,7 @@ def ask_sync(question, facts, lang=None):
         ok = [f"#с{i}" for i in ids if i in allowed]
         return f"[{', '.join(ok)}]" if ok else ""
     answer = re.sub(r"\[((?:\s*,?\s*#[сСcCsS]?\d+)+)\s*\]", group, answer)
+    # и без скобок: чужой «#с999» страница сделала бы ссылкой в никуда (QA 29.09)
+    answer = re.sub(r"#[сСcCsS](\d+)",
+                    lambda m: m.group(0) if int(m.group(1)) in allowed else "", answer)
     return {"ok": True, "answer": answer, "cited": cited, "gaps": str(d.get("gaps") or "")}

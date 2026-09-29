@@ -1072,7 +1072,18 @@ async def expand_refs(text):
         return text
     facts = {f["id"]: f for f in await facts_brief(ids)}
 
+    kinds = {"norm": "норма — текст закона или ведомства", "report": "сообщение источника",
+             "experience": "опыт людей"}
+
     def sub(m):
         f = facts.get(int(m.group(1)))
-        return f"{m.group(0)} [сведение обсуждения: {f['title']}]" if f else m.group(0)
+        if not f:
+            return m.group(0)
+        # вид и сверка — иначе оценка писала «без источника» под ссылкой на
+        # сверенную норму ведомства (QA 29.09, #217 → #с156)
+        src = ("источник: " + (f.get("source_title") or f.get("source_url") or "")
+               + ("; цитата сверена со страницей" if f.get("quote_status") == "verified" else "")
+               ) if f.get("source_url") else "без ссылки"
+        return (f"{m.group(0)} [сведение обсуждения, {kinds.get(f['kind'], f['kind'])}: "
+                f"«{f['title']}»; {src}]")
     return FACT_REF.sub(sub, text)
