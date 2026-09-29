@@ -95,7 +95,7 @@ def test_ask_drops_invented_citations(monkeypatch):
                         '"cited": [7, 99], "gaps": ""}')
     r = info_ai.ask_sync("до какого числа защита?", facts)
     assert r["cited"] == [7]
-    assert "[#99]" not in r["answer"] and "[#7]" in r["answer"]
+    assert "99]" not in r["answer"] and "[#с7]" in r["answer"]
 
 
 def test_ask_without_model_is_fail_open(monkeypatch):
@@ -398,4 +398,46 @@ def test_argument_cites_facts_and_ai_context_gets_them():
         assert ctx["facts"]["list"][0].startswith(f"[#с{law}] (norm; general")
         empty = await db.add_node("Пусто", kind="question", title="Пусто")
         assert await main.problem_context(empty, "текст") is None
+    _run(body)
+
+
+# ------------------------------------------------------------ по живому ИИ 29.09
+
+def test_country_is_taken_from_the_question():
+    f = info_db.country_from_text
+    assert f("что нужно для продления в Чехии?") == "Чехия"
+    assert f("Як продовжити захист у Швеції?") == "Швеция"
+    assert f("Німеччина: що робити?") == "Германия"
+    assert f("How to extend protection in Germany?") == "Германия"
+    # основа — с начала слова и с коротким окончанием: без ложных стран
+    assert f("рассматривается индивидуально") is None
+    assert f("катастрофа с документами") is None
+    assert f("данные учёта") is None
+
+
+def test_answer_numbers_are_one_format_and_only_given(monkeypatch):
+    facts = [{"id": 7, "kind": "norm", "country": None, "city": None, "quote_status": "verified",
+              "title": "т", "body": None, "when_text": None, "source_quote": None}]
+    monkeypatch.setattr(info_ai.poi, "complete_messages", lambda *a, **k:
+                        '{"answer": "Сказано в [#7] и [#с7], а [#с99] нет.", "cited": ["с7", 99]}')
+    r = info_ai.ask_sync("вопрос", facts)
+    assert r["answer"] == "Сказано в [#с7] и [#с7], а  нет." and r["cited"] == [7]
+
+
+@needs_db
+def test_companion_gets_facts_closest_to_the_draft_and_duplicates_are_refused():
+    async def body(db):
+        uid = await db.add_user("u", "h", "U", invite_required=False)
+        root = await db.add_node("Защита", kind="problem", title="Защита")
+        for i in range(info_db.PROMPT_FACTS_MAX + 5):
+            await info_db.add_fact(root, {"title": f"Общее {i}", "kind": "report",
+                                          "source_url": f"https://e.eu/{i}"}, uid, limit=False)
+        de = await info_db.add_fact(root, {"title": "Продление автоматическое", "country": "Германия",
+                                           "kind": "report", "source_url": "https://d.de",
+                                           "source_quote": "automatisch"}, uid, limit=False)
+        ctx = await info_db.prompt_facts(root, "В Германии продление больше не автоматическое")
+        assert ctx["list"][0].startswith(f"[#с{de}]")        # ближайшее — первым, хоть и последнее
+        assert await info_db.find_duplicate(root, "https://d.de", "  Automatisch ") == de
+        assert await info_db.find_duplicate(root, "https://d.de", "другое") is None
+        assert [x["id"] for x in await info_db.facts_with_source(root, "https://d.de")] == [de]
     _run(body)

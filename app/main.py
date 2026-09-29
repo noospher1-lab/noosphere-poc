@@ -4459,6 +4459,8 @@ async def info_intake(root: str, body: InfoIntakeIn, author=Depends(verified_aut
     page = await _fetch_limited(info_db.fetch_text, url) if url else None
     res = await asyncio.to_thread(info_ai.intake_sync, text, url, page, sections)
     res["page_read"] = page is not None if url else None
+    # по этой ссылке сведения уже есть — показать до публикации
+    res["same_source"] = await info_db.facts_with_source(t["id"], url) if url else []
     return res
 
 
@@ -4469,6 +4471,11 @@ async def info_add_fact(root: str, body: InfoFactIn, request: Request,
     data = body.model_dump()
     try:
         info_db.validate_fact(data)
+        # то же сведение (ссылка + выдержка) уже есть — второе не заводим:
+        # человек может отметить «у меня так же» (QA 29.09, #201 = #156)
+        dup = await info_db.find_duplicate(t["id"], data.get("source_url"), data.get("source_quote"))
+        if dup:
+            raise info_db.InfoError(f"Такое сведение уже есть: #с{dup}. Если у вас так же — отметьте его.")
         # лимит — до сверки: сверка ходит в сеть (ревью 28.09, Б-2)
         await info_db.fact_limit_left(author["id"])
     except info_db.InfoError as e:
@@ -4519,13 +4526,16 @@ async def info_ask(root: str, body: InfoAskIn, author=Depends(verified_author)):
     q = (body.question or "").strip()
     if len(q) < 5:
         raise HTTPException(400, "Напишите вопрос хотя бы в несколько слов")
-    country = body.country if body.country in taxonomy.COUNTRIES else None
+    # страна — выбранная в форме, иначе названная в вопросе: без этого
+    # сведения страны не находились (QA 29.09: Чехия, Швеция)
+    country = body.country if body.country in taxonomy.COUNTRIES else info_db.country_from_text(q)
     facts = await info_db.search(t["id"], q, country)
     if facts:
         await spend_llm(author)
     res = await asyncio.to_thread(info_ai.ask_sync, q, facts)
     res["facts"] = [{"id": f["id"], "title": f["title"], "country": f["country"],
                      "city": f["city"], "kind": f["kind"]} for f in facts]
+    res["country"] = country
     return res
 
 

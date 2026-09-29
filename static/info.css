@@ -161,3 +161,6 @@ label.f textarea { min-height: 90px; resize: vertical; }
 .related { list-style: none; padding: 0; margin: 8px 0 0; }
 .related li { padding: 8px 0; border-bottom: 1px solid var(--line); }
 .related a { display: inline-flex; min-height: 32px; align-items: center; }
+
+label.f textarea.short { min-height: 64px; }
+.by-ai { border-color: #6b5a2c !important; background: #1d1a12 !important; }

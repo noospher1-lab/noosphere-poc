@@ -53,15 +53,28 @@ INTAKE_SYSTEM = (
     '  "source_title": title of the page if known, else null;\n'
     '  "removed_personal": true if you removed names, phone numbers, addresses, '
     "document numbers or other personal data from title/body.\n"
-    "Never put personal data about anyone into title or body." + poi.INJECTION_GUARD
+    "Never put personal data about anyone into title or body.\n"
+    "GLOSSARY: е-ВОД / є-ВОД / e-VOD = electronic military registration document from the "
+    "Ukrainian app Резерв+ (Reserv+) — it is NOT a residence permit; ВНЖ / посвідка = residence "
+    "permit; ТЗ / тимчасовий захист = temporary protection.\n"
+    "ONE PERSON'S CASE IS NOT A RULE: for experience, the title says what happened in that "
+    "case («В Валенсии у меня потребовали выписку из Резерв+»), never a general rule "
+    "(«в Испании требуют у женщин»); fill applies_to only if the contributor states who "
+    "it concerns." + poi.INJECTION_GUARD
 )
 
 ASK_SYSTEM = (
     "You answer a person's question using ONLY the numbered facts provided from a "
     "public information base. You are a librarian, not a lawyer: never give legal "
     "advice, never add knowledge that is not in the facts, never guess. Answer in the "
-    "language of the question, briefly, in plain words. After every sentence that "
-    "relies on a fact, cite it as [#id]. Mention how solid each fact is when it "
+    "language of the question, briefly, in plain words.\n"
+    "VOICE: retell the facts, do not instruct. Say «в сведении [#с12] сказано…», «по "
+    "сообщению …», «люди пишут, что…». NEVER address the person with what they must or "
+    "should do («вам нужно», «вам откажут», «обратитесь к юристу», «срочно…»), never "
+    "predict the outcome of their case, never add conclusions the facts do not state. If "
+    "facts differ by age, sex or date, say which fact applies to whom.\n"
+    "After every sentence that relies on a fact, cite it as [#с<id>]. Mention how solid "
+    "each fact is when it "
     "matters (norm with verified quote / report of a source / experience of people with "
     "N confirmations). If the facts do not answer the question, say so plainly and "
     "suggest adding the missing information if the person knows it. "
@@ -118,7 +131,7 @@ def _fact_line(f):
     solid = {"norm": "norm", "report": "report of a source",
              "experience": "experience of people"}.get(f["kind"], f["kind"])
     where = ", ".join(x for x in (f.get("country") or "EU/international", f.get("city")) if x)
-    s = f"[#{f['id']}] ({solid}; {where}; quote {f['quote_status']}) {f['title']}"
+    s = f"[#с{f['id']}] ({solid}; {where}; quote {f['quote_status']}) {f['title']}"
     if f.get("body"):
         s += " — " + f["body"][:600]
     if f.get("when_text"):
@@ -146,9 +159,14 @@ def ask_sync(question, facts):
         log.warning("ответ по сведениям недоступен", exc_info=True)
         return {"ok": False, "answer": None, "cited": [f["id"] for f in facts], "gaps": ""}
     allowed = {f["id"] for f in facts}
-    cited = [int(i) for i in (d.get("cited") or []) if str(i).isdigit() and int(i) in allowed]
+    cited = []
+    for i in d.get("cited") or []:
+        m = re.search(r"\d+", str(i))
+        if m and int(m.group(0)) in allowed and int(m.group(0)) not in cited:
+            cited.append(int(m.group(0)))
     answer = str(d.get("answer") or "")
     # ссылка на сведение, которого модели не давали, — выдумка: вырезаем
-    answer = re.sub(r"\[#(\d+)\]", lambda m: m.group(0) if int(m.group(1)) in allowed else "",
-                    answer)
+    # единый вид номера сведения — [#с12]; номер, которого модели не давали, — выдумка
+    answer = re.sub(r"\[#[сСcCsS]?(\d+)\]",
+                    lambda m: f"[#с{m.group(1)}]" if int(m.group(1)) in allowed else "", answer)
     return {"ok": True, "answer": answer, "cited": cited, "gaps": str(d.get("gaps") or "")}

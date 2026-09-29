@@ -796,7 +796,7 @@ async def stale_facts(limit=200):
     return [dict(r) for r in rows]
 
 
-async def search(root, question, country=None, limit=12):
+async def search(root, question, country=None, limit=16):
     """Кандидаты для ответа: слова вопроса против утверждения, пояснения и
     выдержки + всё по стране человека. Без эмбеддингов — стенд их не грузит,
     а сведений в обсуждении сотни, не миллионы."""
@@ -816,7 +816,7 @@ async def search(root, question, country=None, limit=12):
               AND (f.country IS NULL OR $2::text IS NULL OR f.country = $2)
             """, root, country, words)
     ranked = sorted((dict(r) for r in rows),
-                    key=lambda r: (-(r["hits"] + (2 if country and r["country"] == country else 0)),
+                    key=lambda r: (-(r["hits"] + (3 if country and r["country"] == country else 0)),
                                    r["id"]))
     # без совпадений — пусто, а не «первые 12 подряд»: иначе сведения, не
     # связанные с вопросом, выдавались за подходящие (QA 28.09)
@@ -896,7 +896,92 @@ async def prompt_facts(root, text=""):
     facts = [dict(r) for r in rows]
     refs = set(fact_refs(text))
     full = [f for f in facts if f["id"] in refs][:PROMPT_FACT_FULL_MAX]
-    brief = [f for f in facts if f["id"] not in refs][:PROMPT_FACTS_MAX]
+    # Ближайшие к черновику — первыми: слова черновика в утверждении, пояснении,
+    # стране. Раньше шли первые 40 по порядку, и компаньон не видел немецких
+    # сведений в споре о Германии, а потом выдумывал их (QA 29.09).
+    words = [w[:max(4, len(w) - 2)] for w in re.findall(r"\w{4,}", (text or "").lower())][:30]
+    near = country_from_text(text)
+
+    def score(f):
+        hay = " ".join(str(f.get(k) or "") for k in ("title", "body", "country", "city")).lower()
+        return sum(1 for w in words if w in hay) + (3 if near and f.get("country") == near else 0)
+    rest = sorted((f for f in facts if f["id"] not in refs),
+                  key=lambda f: (-score(f), f.get("country") is not None, f["kind"] != "norm", f["id"]))
+    brief = rest[:PROMPT_FACTS_MAX]
     return {"total": len(facts),
             "cited": [_prompt_line(f, full=True) for f in full],
             "list": [_prompt_line(f) for f in brief]}
+
+
+# ------------------------------------------------------------ страна из вопроса
+# «Спросить» без выбранной страны не находил её сведений: у норм страны нет в
+# тексте, только в поле. QA 29.09 на живой модели: про Чехию — «сведений нет»
+# при трёх нормах, про Швецию — неверный срок. Страну достаём из вопроса.
+_UA = str.maketrans({"і": "и", "ї": "и", "є": "е", "ґ": "г", "’": "", "'": ""})
+_COUNTRY_ALIASES = {
+    # украинские и английские названия, которые не сводятся к русскому основой
+    "німеччин": "Германия", "germany": "Германия", "deutschland": "Германия",
+    "польщ": "Польша", "poland": "Польша", "polska": "Польша",
+    "czech": "Чехия", "угорщин": "Венгрия", "hungary": "Венгрия",
+    "словаччин": "Словакия", "slovakia": "Словакия", "румуни": "Румыния",
+    "romania": "Румыния", "естони": "Эстония", "estonia": "Эстония",
+    "велика британи": "Великобритания", "британи": "Великобритания",
+    "britain": "Великобритания", "англи": "Великобритания", "uk ": "Великобритания",
+    "spain": "Испания", "sweden": "Швеция", "finland": "Финляндия",
+    "netherlands": "Нидерланды", "голланди": "Нидерланды", "belgium": "Бельгия",
+    "austria": "Австрия", "italy": "Италия", "france": "Франция",
+    "ireland": "Ирландия", "lithuania": "Литва", "latvia": "Латвия",
+    "bulgaria": "Болгария", "norway": "Норвегия", "switzerland": "Швейцария",
+    "denmark": "Дания", "portugal": "Португалия", "greece": "Греция",
+    "грециі": "Греция", "croatia": "Хорватия", "slovenia": "Словения",
+    "moldova": "Молдова", "iceland": "Исландия",
+}
+
+
+def country_from_text(text):
+    """Первая страна, названная в тексте (по основе слова, с украинскими и
+    английскими названиями), или None. Совпадение — с начала слова, и после
+    основы не больше трёх букв окончания: иначе «индивидуально» нашло бы
+    Индию, а «катастрофа» — Катар."""
+    t = " " + (text or "").lower().translate(_UA) + " "
+    hits = []
+
+    def scan(stem, country, max_tail=3):
+        for m in re.finditer(r"(?<![\w])" + re.escape(stem) + r"(\w*)", t):
+            if len(m.group(1)) <= max_tail:
+                hits.append((m.start(), country))
+                return
+
+    for alias, country in _COUNTRY_ALIASES.items():
+        scan(alias.lower().translate(_UA).strip(), country, max_tail=4)
+    for c in taxonomy.COUNTRIES:
+        name = c.lower().translate(_UA)
+        if " " in name or "-" in name:
+            scan(name, c, 0)
+        elif len(name) > 4:
+            scan(name[:-1], c)                   # Чехия → «чехи»: Чехии, Чехію
+        else:
+            scan(name, c, 0)                     # короткие — только целым словом
+    return min(hits)[1] if hits else None
+
+
+async def find_duplicate(root, url, quote):
+    """Живое сведение обсуждения с той же ссылкой и той же выдержкой."""
+    if not url or not (quote or "").strip():
+        return None
+    pool = db._pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, source_quote FROM info_facts WHERE topic_root_id = $1 "
+            "AND source_url = $2 AND deleted_at IS NULL", root, url)
+    q = normalize(quote)
+    return next((r["id"] for r in rows if normalize(r["source_quote"] or "") == q), None)
+
+
+async def facts_with_source(root, url):
+    pool = db._pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, title FROM info_facts WHERE topic_root_id = $1 AND source_url = $2 "
+            "AND deleted_at IS NULL ORDER BY id LIMIT 5", root, url)
+    return [dict(r) for r in rows]

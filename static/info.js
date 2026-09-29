@@ -274,6 +274,8 @@ async function openCountry(name, scroll = true) {
   document.querySelectorAll(`.map [data-c="${CSS.escape(name)}"]`).forEach(e => e.classList.add("sel"));
   document.querySelectorAll(".clist button").forEach(b => b.setAttribute("aria-current", b.dataset.c === name));
   if (!location.hash.startsWith("#f")) history.replaceState(null, "", "#c=" + encodeURIComponent(name));
+  const askSel = $("#ask-box select[name=ask_country]");
+  if (askSel) askSel.value = name;
   let v;
   try { v = await api(`/api/info/${ROOT}/country/${encodeURIComponent(name)}`); }
   catch (e) { box.innerHTML = `<p class="msg err">${esc(e.message)}</p>`; return; }
@@ -416,12 +418,14 @@ function renderAsk() {
     try {
       const r = await api(`/api/info/${ROOT}/ask`, { method: "POST",
         body: { question: q, country: box.querySelector("[name=ask_country]").value || null } });
-      const ans = r.answer ? esc(r.answer).replace(/\[#(\d+)\]/g, '<a href="#f$1" data-go="$1">[#$1]</a>') : "";
+      const ans = r.answer ? esc(r.answer).replace(/\[#[сСcCsS]?(\d+)\]/g, '<a href="#f$1" data-go="$1">[#с$1]</a>') : "";
+      const where = r.country ? `<p class="muted small">Искал по сведениям для всех и по стране: ${esc(r.country)}.</p>` : "";
+      const note = `<p class="muted small">Это пересказ собранных сведений, сделанный ИИ, — не консультация. Проверяйте по источникам в карточках.</p>`;
       const list = r.facts?.length
-        ? `<ul>${r.facts.map(f => `<li><a href="#f${f.id}" data-go="${f.id}">#${f.id}</a> ${esc(f.title)}${f.country ? " — " + esc(f.country) : ""}${f.city ? ", " + esc(f.city) : ""}</li>`).join("")}</ul>`
+        ? `<ul>${r.facts.map(f => `<li><a href="#f${f.id}" data-go="${f.id}">#с${f.id}</a> ${esc(f.title)}${f.country ? " — " + esc(f.country) : ""}${f.city ? ", " + esc(f.city) : ""}</li>`).join("")}</ul>`
         : "";
       out.innerHTML = r.ok && ans
-        ? `<div class="answer">${ans}</div>` + (list ? `<p class="muted">Сведения, по которым искали:</p>${list}` : "")
+        ? `<div class="answer">${ans}</div>${note}${where}` + (list ? `<p class="muted">Сведения, по которым искали:</p>${list}` : "")
         : (list ? `<p class="msg">ИИ сейчас недоступен. Сведения, где есть слова из вашего вопроса:</p>${list}`
                 : `<p class="msg">Таких сведений не нашлось. Если знаете ответ — <a href="#add">добавьте сведение</a>.</p>`);
       if (r.gaps) out.insertAdjacentHTML("beforeend", `<p class="muted">Чего не хватает: ${esc(r.gaps)}</p>`);
@@ -470,10 +474,15 @@ function renderAdd() {
     try {
       const r = await api(`/api/info/${ROOT}/intake`, { method: "POST", body: { text, url: url || null } });
       msg.textContent = r.ok
-        ? "Проверьте поля — ИИ мог ошибиться." + (r.removed_personal ? " Личные данные убраны." : "") +
+        ? "ИИ заполнил подсвеченные поля — проверьте каждое, он мог ошибиться." + (r.removed_personal ? " Личные данные убраны." : "") +
           (r.page_read === false ? " Страницу по ссылке открыть не удалось — выдержку вставьте сами." : "")
         : "ИИ недоступен — заполните поля сами.";
-      fields(r.draft || { body: text, source_url: url });
+      if (r.same_source?.length) msg.textContent += " По этой ссылке уже есть: " +
+        r.same_source.map(x => "#с" + x.id + " «" + x.title + "»").join("; ") + " — возможно, достаточно отметить «у меня так же».";
+      // если разбор ничего не дал, рассказ человека не пропадает — уходит в пояснение
+      const d = r.draft || {};
+      if (!d.title && !d.body) d.body = text;
+      fields(d, true, r.ok);
     } catch (e) { msg.className = "msg err"; msg.textContent = e.message; }
     finally { b.disabled = false; }
   };
@@ -482,13 +491,13 @@ function renderAdd() {
     source_url: box.querySelector("[name=url]").value.trim() });
 }
 
-function fields(d, scroll = true) {
+function fields(d, scroll = true, byAI = false) {
   const s2 = $("#step2");
   const opt = (arr, val) => arr.map(([k, t]) => `<option value="${k}"${k === val ? " selected" : ""}>${esc(t)}</option>`).join("");
   const kind = d.kind || (d.source_url ? "report" : "experience");
   s2.hidden = false;
   s2.innerHTML = `
-    <label class="f">Утверждение — одной фразой, что именно известно<input name="title" maxlength="200" value="${esc(d.title || "")}" /></label>
+    <label class="f">Утверждение — одной фразой, что именно известно<textarea name="title" class="short" maxlength="200">${esc(d.title || "")}</textarea></label>
     <div class="grid2">
       <label class="f">Вид<select name="kind">${opt([
         ["experience", "опыт людей — так было со мной или со знакомыми"],
@@ -505,8 +514,15 @@ function fields(d, scroll = true) {
     </div>
     <label class="f">Выдержка из источника — дословно, на языке оригинала<textarea name="source_quote" maxlength="2000">${esc(d.source_quote || "")}</textarea></label>
     <label class="f">Пояснение (необязательно)<textarea name="body" maxlength="4000">${esc(d.body || "")}</textarea></label>
+    <p class="muted small">Сведение увидят все: вместе с ним показываются ваш логин и дата.</p>
     <div class="btns"><button class="btn primary" id="publish">Опубликовать</button></div>
     <p class="msg" id="fields-msg"></p>`;
+  // что заполнил ИИ — видно: человек проверяет именно эти поля (UX 29.09)
+  if (byAI) for (const [k, v] of Object.entries(d)) {
+    if (!v || k === "source_url") continue;
+    const f = s2.querySelector(`[name=${k}]`);
+    if (f) f.classList.add("by-ai");
+  }
   $("#publish").onclick = async (ev) => {
     const b = ev.currentTarget;
     const get = (n) => (s2.querySelector(`[name=${n}]`).value || "").trim() || null;
