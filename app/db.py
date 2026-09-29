@@ -79,7 +79,11 @@ async def init_pool():
     """Create the shared connection pool (idempotent)."""
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+        # режим антиспама запроса → в настройки соединения при каждой выдаче
+        # (app/spam.py: функция noo_hidden читает их в выдачах)
+        from . import spam
+        _pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10,
+                                          setup=spam.conn_setup)
     return _pool
 
 
@@ -985,10 +989,10 @@ async def init_db():
     async with pool.acquire() as conn:
         for stmt in _SCHEMA:
             await conn.execute(stmt)
-        from . import opinion_db, info_db, antiabuse
+        from . import opinion_db, info_db, antiabuse, spam
         for stmt in opinion_db.SCHEMA:
             await conn.execute(stmt)
-        for stmt in antiabuse.SCHEMA + info_db.SCHEMA:
+        for stmt in antiabuse.SCHEMA + info_db.SCHEMA + spam.SCHEMA:
             await conn.execute(stmt)
         # строки масштаба переезжают в сведения (vault: decisions/2026-09-28-info-sector)
         async with conn.transaction():
@@ -1448,7 +1452,7 @@ async def get_node_full(node_id):
                    p.composed AS position_composed,
                    p.stance   AS position_stance,
                    (SELECT count(*) FROM edges e JOIN nodes rn ON rn.id = e.source_id
-                     WHERE e.target_id = n.id AND rn.deleted_at IS NULL) AS reply_count
+                     WHERE e.target_id = n.id AND rn.deleted_at IS NULL AND NOT noo_hidden(rn.spam_at, rn.author_id)) AS reply_count
             FROM nodes n
             LEFT JOIN authors a ON a.id = n.author_id
             LEFT JOIN positions p ON p.id = n.position_id
@@ -1477,24 +1481,24 @@ async def get_children(node_id, limit=20, offset=0):
     async with pool.acquire() as conn:
         total = await conn.fetchval(
             "SELECT count(*) FROM edges e JOIN nodes n ON n.id = e.source_id "
-            "WHERE e.target_id = $1 AND n.deleted_at IS NULL", node_id)
+            "WHERE e.target_id = $1 AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)", node_id)
         rows = await conn.fetch(
             """
             SELECT n.id, n.text, n.poi_score, n.kind, n.atom_group, e.type AS rel,
                    n.title, n.poi_breakdown,
-                   n.retracted_at, n.retract_note,
+                   n.retracted_at, n.retract_note, n.spam_reason, n.spam_by,
                    e.anchor_start, e.anchor_end, e.anchor_quote, n.author_id,
                    a.name AS author, a.color AS author_color,
                    a.is_service AS author_is_service,
                    (a.username IS NULL AND NOT a.is_service) AS author_is_seed,
                    (SELECT count(*) FROM edges e2 JOIN nodes rn ON rn.id = e2.source_id
-                     WHERE e2.target_id = n.id AND rn.deleted_at IS NULL) AS reply_count,
+                     WHERE e2.target_id = n.id AND rn.deleted_at IS NULL AND NOT noo_hidden(rn.spam_at, rn.author_id)) AS reply_count,
                    (c.id IS NOT NULL) AS concedes, c.anchor_quote AS concede_quote
             FROM edges e
             JOIN nodes n ON n.id = e.source_id
             LEFT JOIN authors a ON a.id = n.author_id
             LEFT JOIN concessions c ON c.node_id = n.id AND c.target_id = e.target_id
-            WHERE e.target_id = $1 AND n.deleted_at IS NULL
+            WHERE e.target_id = $1 AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
             ORDER BY n.created_at, n.id
             LIMIT $2 OFFSET $3
             """, node_id, limit, offset)
@@ -2156,11 +2160,11 @@ async def topic_material(topic_root_id):
             topic_root_id)
         atoms = await conn.fetch(
             "SELECT id, text, atom_group FROM nodes WHERE topic_root_id = $1 "
-            "AND atom_group IS NOT NULL AND deleted_at IS NULL "
+            "AND atom_group IS NOT NULL AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id) "
             "ORDER BY atom_group, id", topic_root_id)
         dissents = await conn.fetch(
             "SELECT id, text FROM nodes WHERE topic_root_id = $1 "
-            "AND dissented AND deleted_at IS NULL ORDER BY id", topic_root_id)
+            "AND dissented AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id) ORDER BY id", topic_root_id)
     return {
         "positions": [dict(r) for r in positions],
         "questions": [dict(r) for r in questions],
@@ -2527,7 +2531,7 @@ async def activity_summary(author_id):
               AVG(poi_score) FILTER (WHERE poi_score IS NOT NULL) AS avg_poi,
               MIN(created_at)                              AS first_at,
               MAX(created_at)                              AS last_at
-            FROM nodes WHERE author_id = $1 AND deleted_at IS NULL
+            FROM nodes WHERE author_id = $1 AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id)
             """, author_id)
     d = dict(row) if row else {}
     if d.get("avg_poi") is not None:
@@ -2587,9 +2591,9 @@ async def author_activity(author_id):
                    r.title AS topic_title, r.text AS topic_text, r.kind AS topic_kind,
                    (SELECT e.type FROM edges e WHERE e.source_id = n.id LIMIT 1) AS rel
             FROM nodes n
-            JOIN nodes r ON r.id = n.topic_root_id AND r.deleted_at IS NULL
+            JOIN nodes r ON r.id = n.topic_root_id AND r.deleted_at IS NULL AND NOT noo_hidden(r.spam_at, r.author_id)
             WHERE n.author_id = $1 AND n.atom_group IS NULL
-              AND n.deleted_at IS NULL
+              AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
             ORDER BY n.created_at DESC
             """, author_id)
     groups, order = {}, []
@@ -2999,7 +3003,7 @@ async def topic_marks(topic_root_id):
             SELECT r.author_id AS person_id, 'n:' || r.node_id AS item, r.stance,
                    COALESCE(n.title, left(n.text, 90)) AS label, a.name, n.value
             FROM reactions r
-            JOIN nodes n ON n.id = r.node_id AND n.deleted_at IS NULL
+            JOIN nodes n ON n.id = r.node_id AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
             JOIN authors a ON a.id = r.author_id
             WHERE COALESCE(n.topic_root_id, n.id) = $1
             UNION ALL
@@ -3164,7 +3168,7 @@ async def position_nodes(position_id, kind="argument"):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT * FROM nodes WHERE position_id = $1 AND kind = $2 "
-            "AND deleted_at IS NULL ORDER BY id",
+            "AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id) ORDER BY id",
             position_id, kind)
     out = []
     for r in rows:
@@ -3180,7 +3184,7 @@ async def position_planets(position_id):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT * FROM nodes WHERE position_id = $1 AND kind IN ('question','detail') "
-            "AND deleted_at IS NULL ORDER BY id", position_id)
+            "AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id) ORDER BY id", position_id)
     return [dict(r) for r in rows]
 
 
@@ -3196,7 +3200,7 @@ async def topic_argument_nodes(topic_root_id):
         rows = await conn.fetch(
             "SELECT * FROM nodes WHERE topic_root_id = $1 "
             "AND (kind = 'argument' OR kind IS NULL) AND atom_group IS NULL "
-            "AND deleted_at IS NULL ORDER BY id", topic_root_id)
+            "AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id) ORDER BY id", topic_root_id)
     return [dict(r) for r in rows]
 
 
@@ -3231,13 +3235,13 @@ async def topic_subtree(topic_root_id, limit=80):
             WITH RECURSIVE down AS (
                 SELECT n.id, n.text, n.kind, n.author_id,
                        NULL::int AS parent_id, NULL::text AS rel, 0 AS depth
-                FROM nodes n WHERE n.id = $1 AND n.deleted_at IS NULL
+                FROM nodes n WHERE n.id = $1 AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
                 UNION ALL
                 SELECT n.id, n.text, n.kind, n.author_id,
                        e.target_id, e.type, down.depth + 1
                 FROM down
                 JOIN edges e ON e.target_id = down.id
-                JOIN nodes n ON n.id = e.source_id AND n.deleted_at IS NULL
+                JOIN nodes n ON n.id = e.source_id AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
                 WHERE down.depth < 50
             )
             SELECT d.id, d.text, d.kind, d.author_id, d.parent_id, d.rel, d.depth,
@@ -3388,7 +3392,7 @@ async def value_marks():
             SELECT id AS node_id, author_id, COALESCE(topic_root_id, id) AS topic,
                    value, value_phrase AS phrase
             FROM nodes
-            WHERE value IS NOT NULL AND deleted_at IS NULL
+            WHERE value IS NOT NULL AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id)
             ORDER BY id
             """)
     return [dict(r) for r in rows]
@@ -3404,13 +3408,13 @@ async def dialectic_rows(node_id, limit=2000):
             WITH RECURSIVE down AS (
                 SELECT n.id, NULL::int AS parent_id, NULL::text AS rel,
                        n.poi_score, n.retracted_at, n.author_id, n.kind, 0 AS depth
-                FROM nodes n WHERE n.id = $1 AND n.deleted_at IS NULL
+                FROM nodes n WHERE n.id = $1 AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
                 UNION ALL
                 SELECT n.id, e.target_id, e.type, n.poi_score, n.retracted_at,
                        n.author_id, n.kind, down.depth + 1
                 FROM down
                 JOIN edges e ON e.target_id = down.id
-                JOIN nodes n ON n.id = e.source_id AND n.deleted_at IS NULL
+                JOIN nodes n ON n.id = e.source_id AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
                 WHERE down.depth < 50
             )
             SELECT id, parent_id, rel, poi_score, author_id, kind,
@@ -3430,7 +3434,7 @@ async def node_concessions(node_id):
                    sn.author_id, a.name AS author, a.color AS author_color,
                    e.type AS rel
             FROM concessions c
-            JOIN nodes sn ON sn.id = c.node_id AND sn.deleted_at IS NULL
+            JOIN nodes sn ON sn.id = c.node_id AND sn.deleted_at IS NULL AND NOT noo_hidden(sn.spam_at, sn.author_id)
             LEFT JOIN authors a ON a.id = sn.author_id
             LEFT JOIN edges e ON e.source_id = c.node_id AND e.target_id = c.target_id
             WHERE c.target_id = $1
@@ -3465,13 +3469,13 @@ async def get_graph():
             SELECT n.*, a.name AS author, a.color AS author_color
             FROM nodes n
             LEFT JOIN authors a ON a.id = n.author_id
-            WHERE n.deleted_at IS NULL
+            WHERE n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
             ORDER BY n.id
             """)
         edge_rows = await conn.fetch(
             "SELECT e.* FROM edges e "
-            "JOIN nodes s ON s.id = e.source_id AND s.deleted_at IS NULL "
-            "JOIN nodes t ON t.id = e.target_id AND t.deleted_at IS NULL")
+            "JOIN nodes s ON s.id = e.source_id AND s.deleted_at IS NULL AND NOT noo_hidden(s.spam_at, s.author_id) "
+            "JOIN nodes t ON t.id = e.target_id AND t.deleted_at IS NULL AND NOT noo_hidden(t.spam_at, t.author_id)")
         # связи между проблемами — отдельно от рёбер: в 3D-графе они соединяют
         # ДЕРЕВЬЯ обсуждений между собой (причина слева, следствие справа), а
         # не делают проблему-причину «ответом» внутри дерева следствия
@@ -3479,16 +3483,16 @@ async def get_graph():
             """
             SELECT l.cause_id, l.effect_id, l.node_id
             FROM problem_links l
-            JOIN nodes c ON c.id = l.cause_id AND c.deleted_at IS NULL
-            JOIN nodes e ON e.id = l.effect_id AND e.deleted_at IS NULL
+            JOIN nodes c ON c.id = l.cause_id AND c.deleted_at IS NULL AND NOT noo_hidden(c.spam_at, c.author_id)
+            JOIN nodes e ON e.id = l.effect_id AND e.deleted_at IS NULL AND NOT noo_hidden(e.spam_at, e.author_id)
             LEFT JOIN nodes j ON j.id = l.node_id
-            WHERE l.deleted_at IS NULL AND (l.node_id IS NULL OR j.deleted_at IS NULL)
+            WHERE l.deleted_at IS NULL AND (l.node_id IS NULL OR j.deleted_at IS NULL AND NOT noo_hidden(j.spam_at, j.author_id))
             ORDER BY l.id
             """)
         # уступки — плоский граф подсвечивает «признаёт» (graphview)
         concession_rows = await conn.fetch(
             "SELECT c.node_id, c.target_id, c.anchor_quote FROM concessions c "
-            "JOIN nodes s ON s.id = c.node_id AND s.deleted_at IS NULL")
+            "JOIN nodes s ON s.id = c.node_id AND s.deleted_at IS NULL AND NOT noo_hidden(s.spam_at, s.author_id)")
     nodes = [dict(r) for r in node_rows]
     for n in nodes:
         if n.get("poi_breakdown"):
@@ -3550,15 +3554,15 @@ async def workspace_topics(author_id):
                    w.added_at,
                    (SELECT count(*) FROM edges e2
                     JOIN nodes cn ON cn.id = e2.source_id
-                    WHERE e2.target_id = n.id AND cn.deleted_at IS NULL) AS reply_count,
+                    WHERE e2.target_id = n.id AND cn.deleted_at IS NULL AND NOT noo_hidden(cn.spam_at, cn.author_id)) AS reply_count,
                    (SELECT max(c.created_at) FROM nodes c
-                    WHERE c.topic_root_id = n.id AND c.deleted_at IS NULL) AS last_at
+                    WHERE c.topic_root_id = n.id AND c.deleted_at IS NULL AND NOT noo_hidden(c.spam_at, c.author_id)) AS last_at
             FROM workspace w
             JOIN nodes n ON n.id = w.topic_root_id
             LEFT JOIN authors a ON a.id = n.author_id
-            WHERE w.author_id = $1 AND n.deleted_at IS NULL
+            WHERE w.author_id = $1 AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
             ORDER BY COALESCE((SELECT max(c.created_at) FROM nodes c
-                               WHERE c.topic_root_id = n.id AND c.deleted_at IS NULL),
+                               WHERE c.topic_root_id = n.id AND c.deleted_at IS NULL AND NOT noo_hidden(c.spam_at, c.author_id)),
                               w.added_at) DESC
             """, author_id)
         links = await _links_by_root(conn)
@@ -3588,10 +3592,10 @@ async def seed_workspace_once(author_id, limit=5):
                 """
                 SELECT n.id
                 FROM nodes n
-                WHERE n.id = n.topic_root_id AND n.deleted_at IS NULL
+                WHERE n.id = n.topic_root_id AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
                 ORDER BY (SELECT count(*) FROM nodes c
                           WHERE c.topic_root_id = n.id
-                            AND c.deleted_at IS NULL) DESC, n.id DESC
+                            AND c.deleted_at IS NULL AND NOT noo_hidden(c.spam_at, c.author_id)) DESC, n.id DESC
                 LIMIT $1
                 """, limit)
             ids = [r["id"] for r in rows]
@@ -3661,18 +3665,18 @@ async def map_topics():
                              FROM topic_tags t WHERE t.topic_root_id = n.id),
                             '{}') AS tags,
                    (SELECT count(*) FROM nodes c
-                    WHERE c.topic_root_id = n.id AND c.deleted_at IS NULL) AS nodes,
+                    WHERE c.topic_root_id = n.id AND c.deleted_at IS NULL AND NOT noo_hidden(c.spam_at, c.author_id)) AS nodes,
                    (SELECT count(DISTINCT c.author_id) FROM nodes c
                     WHERE c.topic_root_id = n.id AND c.author_id IS NOT NULL
-                      AND c.deleted_at IS NULL) AS people,
+                      AND c.deleted_at IS NULL AND NOT noo_hidden(c.spam_at, c.author_id)) AS people,
                    (SELECT avg(c.poi_score) FROM nodes c
                     WHERE c.topic_root_id = n.id AND c.poi_score IS NOT NULL
-                      AND c.deleted_at IS NULL) AS avg_poi,
+                      AND c.deleted_at IS NULL AND NOT noo_hidden(c.spam_at, c.author_id)) AS avg_poi,
                    a.name AS author, a.color AS author_color
             FROM nodes n
             LEFT JOIN topic_facets f ON f.topic_root_id = n.id
             LEFT JOIN authors a ON a.id = n.author_id
-            WHERE n.id = n.topic_root_id AND n.deleted_at IS NULL
+            WHERE n.id = n.topic_root_id AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
             ORDER BY n.id
             """)
         links = await _links_by_root(conn)
@@ -3705,12 +3709,12 @@ async def list_topics():
                    (a.username IS NULL AND NOT a.is_service) AS author_is_seed,
                    (SELECT count(*) FROM edges e2
                     JOIN nodes cn ON cn.id = e2.source_id
-                    WHERE e2.target_id = n.id AND cn.deleted_at IS NULL) AS reply_count
+                    WHERE e2.target_id = n.id AND cn.deleted_at IS NULL AND NOT noo_hidden(cn.spam_at, cn.author_id)) AS reply_count
             FROM nodes n
             LEFT JOIN authors a ON a.id = n.author_id
             WHERE n.kind IN
                   ('argument', 'question', 'proposal', 'exploration', 'problem')
-              AND n.deleted_at IS NULL
+              AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
               AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_id = n.id)
             ORDER BY n.id
             """)
@@ -3870,7 +3874,7 @@ async def nodes_needing_embedding(model, hash_fn, limit=200):
             SELECT n.id, n.title, n.text, n.kind, e.model, e.text_hash
             FROM nodes n
             LEFT JOIN node_embeddings e ON e.node_id = n.id
-            WHERE n.deleted_at IS NULL
+            WHERE n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
               AND (e.node_id IS NULL OR e.model <> $1)
             ORDER BY n.id
             LIMIT $2
@@ -3883,7 +3887,7 @@ async def nodes_needing_embedding(model, hash_fn, limit=200):
                 """
                 SELECT n.id, n.title, n.text, n.kind, e.model, e.text_hash
                 FROM nodes n JOIN node_embeddings e ON e.node_id = n.id
-                WHERE n.deleted_at IS NULL AND e.model = $1
+                WHERE n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id) AND e.model = $1
                 ORDER BY n.id
                 """, model)
             rows = list(rows) + [r for r in stale
@@ -3903,11 +3907,11 @@ async def semantic_neighbours(qvec, model, floor, limit, exclude_id=None):
             SELECT n.id, n.title, n.text, e.vec,
                    (SELECT count(*) FROM node_topics nt
                     JOIN nodes cn ON cn.id = nt.node_id
-                    WHERE nt.topic_root_id = n.id AND cn.deleted_at IS NULL) AS nodes
+                    WHERE nt.topic_root_id = n.id AND cn.deleted_at IS NULL AND NOT noo_hidden(cn.spam_at, cn.author_id)) AS nodes
             FROM node_embeddings e
             JOIN nodes n ON n.id = e.node_id
             WHERE e.model = $1 AND n.kind = 'problem' AND n.id = n.topic_root_id
-              AND n.deleted_at IS NULL
+              AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
               AND ($2::int IS NULL OR n.id <> $2)
             """, model, exclude_id)
     scored = []
@@ -3950,7 +3954,7 @@ async def semantic_nodes(qvec, model, floor, limit, exclude_ids=()):
             JOIN nodes n ON n.id = e.node_id
             JOIN nodes r ON r.id = n.topic_root_id
             LEFT JOIN authors a ON a.id = n.author_id
-            WHERE e.model = $1 AND n.deleted_at IS NULL AND n.retracted_at IS NULL
+            WHERE e.model = $1 AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id) AND n.retracted_at IS NULL
               AND NOT (n.kind = 'problem' AND n.id = n.topic_root_id)
               AND NOT (n.id = ANY($2::int[]))
             """, model, list(exclude_ids))
@@ -3974,7 +3978,7 @@ async def nodes_with_text(topic_root_id, text):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, text, kind, topic_root_id FROM nodes WHERE topic_root_id = $1 "
-            "AND id <> topic_root_id AND deleted_at IS NULL "
+            "AND id <> topic_root_id AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id) "
             "AND lower(btrim(text)) = lower(btrim($2))", topic_root_id, text)
     return [dict(r) for r in rows]
 
@@ -4015,10 +4019,10 @@ async def _lexical_neighbours(q, limit, exclude_id):
                        (SELECT count(*) FROM node_topics nt
                         JOIN nodes cn ON cn.id = nt.node_id
                         WHERE nt.topic_root_id = n.id
-                          AND cn.deleted_at IS NULL) AS nodes
+                          AND cn.deleted_at IS NULL AND NOT noo_hidden(cn.spam_at, cn.author_id)) AS nodes
                 FROM nodes n
                 WHERE n.kind = 'problem' AND n.id = n.topic_root_id
-                  AND n.deleted_at IS NULL
+                  AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
                   AND ($2::int IS NULL OR n.id <> $2)
                 ORDER BY sim DESC
                 LIMIT $3
@@ -4039,10 +4043,10 @@ async def _lexical_neighbours(q, limit, exclude_id):
                    (SELECT count(*) FROM node_topics nt
                     JOIN nodes cn ON cn.id = nt.node_id
                     WHERE nt.topic_root_id = n.id
-                      AND cn.deleted_at IS NULL) AS nodes
+                      AND cn.deleted_at IS NULL AND NOT noo_hidden(cn.spam_at, cn.author_id)) AS nodes
             FROM nodes n
             WHERE n.kind = 'problem' AND n.id = n.topic_root_id
-              AND n.deleted_at IS NULL
+              AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
               AND ($1::int IS NULL OR n.id <> $1)
             """, exclude_id)
         scored = []
@@ -4112,18 +4116,18 @@ _LINK_SELECT = """
            left(j.text, 400) AS node_text, j.retracted_at AS node_retracted_at,
            ja.name AS node_author,
            (SELECT count(*) FROM edges e JOIN nodes s ON s.id = e.source_id
-             WHERE e.target_id = l.node_id AND s.deleted_at IS NULL
+             WHERE e.target_id = l.node_id AND s.deleted_at IS NULL AND NOT noo_hidden(s.spam_at, s.author_id)
                AND e.type IN ('refute', 'undercut')) AS disputed,
            (SELECT count(*) FROM edges e JOIN nodes s ON s.id = e.source_id
-             WHERE e.target_id = l.node_id AND s.deleted_at IS NULL
+             WHERE e.target_id = l.node_id AND s.deleted_at IS NULL AND NOT noo_hidden(s.spam_at, s.author_id)
                AND e.type = 'support') AS supported
     FROM problem_links l
-    JOIN nodes p ON p.id = {other} AND p.deleted_at IS NULL
+    JOIN nodes p ON p.id = {other} AND p.deleted_at IS NULL AND NOT noo_hidden(p.spam_at, p.author_id)
     LEFT JOIN authors a ON a.id = l.author_id
     LEFT JOIN nodes j ON j.id = l.node_id
     LEFT JOIN authors ja ON ja.id = j.author_id
     WHERE {mine} = $1 AND l.deleted_at IS NULL
-      AND (l.node_id IS NULL OR j.deleted_at IS NULL)
+      AND (l.node_id IS NULL OR j.deleted_at IS NULL AND NOT noo_hidden(j.spam_at, j.author_id))
     ORDER BY l.id
 """
 
@@ -4209,10 +4213,10 @@ async def _links_by_root(conn):
                c.title AS cause_title, left(c.text, 90) AS cause_text,
                e.title AS effect_title, left(e.text, 90) AS effect_text
         FROM problem_links l
-        JOIN nodes c ON c.id = l.cause_id AND c.deleted_at IS NULL
-        JOIN nodes e ON e.id = l.effect_id AND e.deleted_at IS NULL
+        JOIN nodes c ON c.id = l.cause_id AND c.deleted_at IS NULL AND NOT noo_hidden(c.spam_at, c.author_id)
+        JOIN nodes e ON e.id = l.effect_id AND e.deleted_at IS NULL AND NOT noo_hidden(e.spam_at, e.author_id)
         LEFT JOIN nodes j ON j.id = l.node_id
-        WHERE l.deleted_at IS NULL AND (l.node_id IS NULL OR j.deleted_at IS NULL)
+        WHERE l.deleted_at IS NULL AND (l.node_id IS NULL OR j.deleted_at IS NULL AND NOT noo_hidden(j.spam_at, j.author_id))
         ORDER BY l.id
         """)
     out = {}
@@ -4245,10 +4249,10 @@ async def problem_chain(topic_root_id, limit=40):
                 SELECT l.id AS via, l.effect_id, l.cause_id AS id, p.title,
                        left(p.text, 160) AS text
                 FROM problem_links l
-                JOIN nodes p ON p.id = l.cause_id AND p.deleted_at IS NULL
+                JOIN nodes p ON p.id = l.cause_id AND p.deleted_at IS NULL AND NOT noo_hidden(p.spam_at, p.author_id)
                 LEFT JOIN nodes j ON j.id = l.node_id
                 WHERE l.effect_id = ANY($1::int[]) AND l.deleted_at IS NULL
-                  AND (l.node_id IS NULL OR j.deleted_at IS NULL)
+                  AND (l.node_id IS NULL OR j.deleted_at IS NULL AND NOT noo_hidden(j.spam_at, j.author_id))
                 ORDER BY l.id
                 """, frontier)
             nxt = []
@@ -4404,10 +4408,10 @@ async def intervention_attributions(intervention_id):
                    n.retracted_at, n.retract_note,
                    a.name AS author, a.color AS author_color,
                    (SELECT count(*) FROM edges e JOIN nodes rn ON rn.id = e.source_id
-                     WHERE e.target_id = n.id AND rn.deleted_at IS NULL) AS reply_count
+                     WHERE e.target_id = n.id AND rn.deleted_at IS NULL AND NOT noo_hidden(rn.spam_at, rn.author_id)) AS reply_count
             FROM nodes n
             LEFT JOIN authors a ON a.id = n.author_id
-            WHERE n.intervention_id = $1 AND n.deleted_at IS NULL
+            WHERE n.intervention_id = $1 AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
             ORDER BY n.created_at, n.id
             """, intervention_id)
     out = []
@@ -4475,7 +4479,7 @@ async def node_topics_of(node_id):
                    a.name AS placed_by
             FROM node_topics nt
             JOIN nodes n ON n.id = nt.node_id
-            JOIN nodes r ON r.id = nt.topic_root_id AND r.deleted_at IS NULL
+            JOIN nodes r ON r.id = nt.topic_root_id AND r.deleted_at IS NULL AND NOT noo_hidden(r.spam_at, r.author_id)
             LEFT JOIN authors a ON a.id = nt.author_id
             WHERE nt.node_id = $1
             ORDER BY is_home DESC, nt.created_at
@@ -4505,7 +4509,7 @@ async def node_anchors(node_id):
                    e.anchor_start, e.anchor_end, e.anchor_quote, e.anchor_hash,
                    a.name AS author, a.color AS author_color
             FROM edges e
-            JOIN nodes sn ON sn.id = e.source_id AND sn.deleted_at IS NULL
+            JOIN nodes sn ON sn.id = e.source_id AND sn.deleted_at IS NULL AND NOT noo_hidden(sn.spam_at, sn.author_id)
             LEFT JOIN authors a ON a.id = sn.author_id
             WHERE e.target_id = $1 AND e.anchor_start IS NOT NULL
             ORDER BY e.anchor_start, e.id
@@ -4534,7 +4538,7 @@ async def topic_nodes(topic_root_id):
             FROM node_topics nt
             JOIN nodes n ON n.id = nt.node_id
             LEFT JOIN authors a ON a.id = n.author_id
-            WHERE nt.topic_root_id = $1 AND n.deleted_at IS NULL
+            WHERE nt.topic_root_id = $1 AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
             ORDER BY n.poi_score DESC NULLS LAST, n.id
             """, topic_root_id)
     return [dict(r) for r in rows]
@@ -4660,7 +4664,7 @@ async def topic_board(topic_root_id):
                    (a.username IS NULL AND NOT a.is_service) AS author_is_seed,
                    (SELECT count(*) FROM edges e
                     JOIN nodes cn ON cn.id = e.source_id
-                    WHERE e.target_id = n.id AND cn.deleted_at IS NULL)
+                    WHERE e.target_id = n.id AND cn.deleted_at IS NULL AND NOT noo_hidden(cn.spam_at, cn.author_id))
                        AS reply_count,
                    (SELECT count(*) FROM reactions r
                     WHERE r.node_id = n.id AND r.stance = 'agree')
@@ -4674,7 +4678,7 @@ async def topic_board(topic_root_id):
             WHERE nt.topic_root_id = $1
               AND n.kind IN ('proposal', 'question')
               AND n.atom_group IS NULL
-              AND n.deleted_at IS NULL
+              AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
               AND n.id <> $1                 -- сам корень в доску не входит
             ORDER BY n.created_at, n.id
             """, topic_root_id)
@@ -4785,7 +4789,7 @@ async def _points_stats(conn, author_id):
         JOIN nodes src ON src.id = e.source_id
         JOIN nodes tgt ON tgt.id = e.target_id
         WHERE tgt.author_id = $1 AND src.author_id IS DISTINCT FROM $1
-          AND src.deleted_at IS NULL AND src.atom_group IS NULL
+          AND src.deleted_at IS NULL AND src.spam_at IS NULL AND src.atom_group IS NULL
         """, author_id)
     # ...и доводы других под проблемой, которую завёл ты.
     problem_replies = await conn.fetchval(
@@ -4794,7 +4798,7 @@ async def _points_stats(conn, author_id):
         JOIN nodes root ON root.id = n.topic_root_id
         WHERE root.author_id = $1 AND root.id = root.topic_root_id
           AND n.id <> root.id AND n.author_id IS DISTINCT FROM $1
-          AND n.deleted_at IS NULL AND n.atom_group IS NULL
+          AND n.deleted_at IS NULL AND n.spam_at IS NULL AND n.atom_group IS NULL
         """, author_id)
     return {
         "arguments":     by_kind.get("argument", 0),

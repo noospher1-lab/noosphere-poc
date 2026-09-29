@@ -443,12 +443,12 @@ async def topic_of(root_or_slug):
         if str(root_or_slug).isdigit():
             row = await conn.fetchrow(
                 "SELECT id, title, text, kind FROM nodes WHERE id = $1 "
-                "AND id = topic_root_id AND deleted_at IS NULL", int(root_or_slug))
+                "AND id = topic_root_id AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id)", int(root_or_slug))
         else:
             row = await conn.fetchrow(
                 "SELECT n.id, n.title, n.text, n.kind FROM info_sectors s "
                 "JOIN nodes n ON n.id = s.problem_id WHERE s.slug = $1 "
-                "AND n.deleted_at IS NULL", str(root_or_slug))
+                "AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)", str(root_or_slug))
     if not row:
         raise InfoError("Такого обсуждения нет")
     return dict(row)
@@ -657,7 +657,7 @@ def scale_row_of(r):
 async def scale_rows(conn, root):
     rows = await conn.fetch(
         "SELECT * FROM info_facts WHERE topic_root_id = $1 AND section = $2 "
-        "AND deleted_at IS NULL ORDER BY id", root, SCALE_SECTION)
+        "AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id) ORDER BY id", root, SCALE_SECTION)
     return [scale_row_of(r) for r in rows]
 
 
@@ -686,6 +686,8 @@ def _fact_out(r, reports, rep_counts, me=None):
                    "at": x["created_at"].isoformat()}
                   for x in reports if x["note"]][-5:],
         "mine": mine,
+        # виден только при выключенном антиспаме или автору (app/spam.py)
+        "spam": r.get("spam_reason"),
     }
 
 
@@ -696,13 +698,13 @@ async def topic_facts(root, me=None, country=None):
             """
             SELECT f.*, a.name AS author_name, a.is_service AS author_is_service
             FROM info_facts f LEFT JOIN authors a ON a.id = f.author_id
-            WHERE f.topic_root_id = $1 AND f.deleted_at IS NULL
+            WHERE f.topic_root_id = $1 AND f.deleted_at IS NULL AND NOT noo_hidden(f.spam_at, f.author_id)
               AND ($2::text IS NULL OR f.country = $2)
             ORDER BY f.country NULLS FIRST, f.city NULLS FIRST, f.ord, f.id
             """, root, country)
         reps = await conn.fetch(
             "SELECT r.* FROM info_reports r JOIN info_facts f ON f.id = r.fact_id "
-            "WHERE f.topic_root_id = $1 AND f.deleted_at IS NULL ORDER BY r.created_at",
+            "WHERE f.topic_root_id = $1 AND f.deleted_at IS NULL AND NOT noo_hidden(f.spam_at, f.author_id) ORDER BY r.created_at",
             root)
     by_fact: dict[int, list] = {}
     for x in reps:
@@ -745,7 +747,7 @@ async def counts_for(roots):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT topic_root_id, count(*) AS n FROM info_facts "
-            "WHERE topic_root_id = ANY($1::int[]) AND deleted_at IS NULL GROUP BY 1",
+            "WHERE topic_root_id = ANY($1::int[]) AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id) GROUP BY 1",
             list(roots))
     return {r["topic_root_id"]: r["n"] for r in rows}
 
@@ -865,7 +867,7 @@ async def search(root, question, country=None, limit=16):
                                  coalesce(f.source_quote,'') || ' ' || coalesce(f.city,''))
                            LIKE '%' || left(w, greatest(4, length(w) - 2)) || '%') AS hits
             FROM info_facts f
-            WHERE f.topic_root_id = $1 AND f.deleted_at IS NULL
+            WHERE f.topic_root_id = $1 AND f.deleted_at IS NULL AND NOT noo_hidden(f.spam_at, f.author_id)
               AND (f.country IS NULL OR cardinality($2::text[]) = 0 OR f.country = ANY($2::text[]))
             """, root, countries, words)
     rows = [dict(r) for r in rows]
@@ -946,7 +948,7 @@ async def prompt_facts(root, text=""):
             """
             SELECT id, kind, section, title, body, country, city, place_note,
                    source_quote, quote_status
-            FROM info_facts WHERE topic_root_id = $1 AND deleted_at IS NULL
+            FROM info_facts WHERE topic_root_id = $1 AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id)
             ORDER BY (country IS NOT NULL), (kind <> 'norm'), id
             """, root)
     if not rows:
@@ -1065,7 +1067,7 @@ async def find_duplicate(root, url, quote):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, source_url, source_quote FROM info_facts WHERE topic_root_id = $1 "
-            "AND source_url IS NOT NULL AND deleted_at IS NULL", root)
+            "AND source_url IS NOT NULL AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id)", root)
     for r in rows:
         if canon_url(r["source_url"]) != key:
             continue
@@ -1081,7 +1083,7 @@ async def facts_with_source(root, url):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, title, source_url FROM info_facts WHERE topic_root_id = $1 "
-            "AND source_url IS NOT NULL AND deleted_at IS NULL ORDER BY id", root)
+            "AND source_url IS NOT NULL AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id) ORDER BY id", root)
     return [{"id": r["id"], "title": r["title"]} for r in rows
             if canon_url(r["source_url"]) == key][:5]
 

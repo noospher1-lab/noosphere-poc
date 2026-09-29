@@ -33,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from pathlib import Path
 
-from . import (alignment, antiabuse, auth, db, dialectic, graphview, schemes,
+from . import (alignment, antiabuse, auth, db, spam, dialectic, graphview, schemes,
                values as values_mod, value_candidates, lang as lang_mod, dialogue as dialogue_mod, embed as embed_mod, mail,
                material, poi, taxonomy, voteweight,
                votedialogue, pools as pools_mod)
@@ -408,6 +408,24 @@ _PARENTED_KINDS = {"question", "detail"}
 
 
 async def _score_later(node_id: int, text: str, kind: str = "argument", parent_text: str | None = None):
+    # антиспам — отдельной фоновой задачей со своей корзиной трат: оценка его
+    # не ждёт, а вызов модели записывается на автора (спамер платит за
+    # проверку своего спама)
+    _spawn(_spam_billed(node_id))
+    await _score_now(node_id, text, kind, parent_text)
+
+
+async def _spam_billed(node_id: int):
+    sink = []
+    poi.current_usage.set(sink)
+    author_id = None
+    try:
+        author_id = await spam.check_node(node_id)
+    finally:
+        await _flush_usage(author_id, sink, "фон:антиспам")
+
+
+async def _score_now(node_id: int, text: str, kind: str, parent_text: str | None):
     fn = _SCORERS.get(kind, poi.score_argument)
     # «#с12» оценка должна видеть как сведение, а не как «статью 12» (UX 29.09)
     try:
@@ -1242,6 +1260,27 @@ class AuthorIn(BaseModel):
 # в браузере, но каждый раз перепроверяется: совпал ETag — пустой 304, не
 # совпал — новый файл сразу, без «почисти кэш».
 _REVALIDATE = (".html", ".js", ".css", ".json", ".svg")
+
+
+@app.middleware("http")
+async def spam_mode(request: Request, call_next):
+    """Режим антиспама на время запроса (app/spam.py). GET — по переключателю
+    смотрящего (кука; по умолчанию спам скрыт). Запись — всегда со скрытием:
+    спам не должен кормить ИИ-ответы, поиск дублей и сводки, которые запись
+    запускает. Автор своё видит всегда."""
+    path = request.url.path
+    if "." not in path.rsplit("/", 1)[-1]:       # статику не трогаем
+        hide = request.method != "GET" or request.cookies.get(spam.COOKIE) != "show"
+        viewer = None
+        token = request.cookies.get(SESSION_COOKIE)
+        if hide and token:
+            try:
+                a = await db.session_author(token)
+                viewer = a["id"] if a else None
+            except Exception:
+                pass
+        spam.mode.set((hide, viewer))
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -2105,6 +2144,9 @@ async def add_argument(arg: ArgumentIn, author=Depends(verified_author)):
         if kind != "problem":
             _spawn_billed(author, "фон:оценка",
                           _score_later(node_id, arg.text, kind, parent_text))
+        else:
+            # постановка проблемы не оценивается, но спамом быть может
+            _spawn(_spam_billed(node_id))
         if kind == "argument":
             _spawn_billed(author, "фон:позиция",
                           _assign_position_later(node_id, arg.text))
@@ -4528,6 +4570,10 @@ async def info_add_fact(root: str, body: InfoFactIn, request: Request,
         raise _info_400(e)
     await antiabuse.record(author["id"], antiabuse.client_ip(request), "action",
                            f"fact_add:{t['id']}")
+    _spawn_billed(author, "фон:антиспам", spam.check(
+        "fact", fid, author["id"],
+        " — ".join(x for x in (data.get("title"), data.get("body"), data.get("source_quote")) if x),
+        " — ".join(x for x in (t.get("title"), (t.get("text") or "")[:600]) if x)))
     return {"id": fid, "quote_status": status, "kind": data["kind"]}
 
 
@@ -4590,6 +4636,35 @@ async def info_recheck(limit: int = 50):
 async def account_links(min_size: int = 2):
     """Группы аккаунтов, похожих на одного владельца. Без адресов."""
     return await antiabuse.link_groups(min_size)
+
+
+# ---- антиспам: разбор помеченного (app/spam.py). Только администратор:
+# снять пометку ИИ или поставить свою. Снятую ИИ повторно не ставит.
+class SpamIn(BaseModel):
+    spam: bool
+    reason: str | None = None
+
+
+@app.get("/api/admin/spam")
+async def admin_spam_list(author=Depends(current_author)):
+    if not is_admin_author(author):
+        raise HTTPException(403, "только для администратора")
+    return await spam.listing()
+
+
+@app.post("/api/admin/spam/{kind}/{item_id}")
+async def admin_spam_set(kind: str, item_id: int, body: SpamIn,
+                         author=Depends(current_author)):
+    if not is_admin_author(author):
+        raise HTTPException(403, "только для администратора")
+    if kind not in ("node", "fact"):
+        raise HTTPException(400, "kind: node или fact")
+    if body.spam:
+        ok = await spam.mark(kind, item_id, (body.reason or "").strip() or "спам (администратор)",
+                             "admin", actor_id=author["id"])
+    else:
+        ok = await spam.clear(kind, item_id, author["id"])
+    return {"ok": ok}
 
 
 if static_dir.exists():

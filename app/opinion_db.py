@@ -385,7 +385,7 @@ async def _objection_candidates(conn, pid):
         FROM edges e
         JOIN position_nodes pn ON pn.node_id = e.target_id AND pn.position_id = $1
         JOIN nodes n ON n.id = e.source_id
-        WHERE e.type = ANY($2::text[]) AND n.deleted_at IS NULL
+        WHERE e.type = ANY($2::text[]) AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
           AND NOT EXISTS (SELECT 1 FROM position_nodes own
                           WHERE own.position_id = $1 AND own.node_id = e.source_id)
         """, pid, list(om.OBJECTION_EDGES))
@@ -1025,7 +1025,7 @@ async def _crux_nodes(conn, topic, pid=None):
     if pid is None:
         rows = await conn.fetch(
             """
-            SELECT n.id FROM nodes n WHERE n.topic_root_id = $1 AND n.deleted_at IS NULL
+            SELECT n.id FROM nodes n WHERE n.topic_root_id = $1 AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id)
               AND (n.kind = 'question' OR EXISTS (SELECT 1 FROM edges e
                    WHERE e.source_id = n.id AND e.type = 'undercut'))
             """, topic)
@@ -1035,7 +1035,7 @@ async def _crux_nodes(conn, topic, pid=None):
             SELECT DISTINCT n.id FROM edges e
             JOIN position_nodes pn ON pn.node_id = e.target_id AND pn.position_id = $1
             JOIN nodes n ON n.id = e.source_id
-            WHERE n.deleted_at IS NULL AND (n.kind = 'question' OR e.type = 'undercut')
+            WHERE n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id) AND (n.kind = 'question' OR e.type = 'undercut')
             """, pid)
     return [r["id"] for r in rows]
 
@@ -1109,7 +1109,7 @@ async def topic_view(topic, period="30", sort=None, viewer_id=None, seed=None):
     async with _pool().acquire() as conn:
         root = await conn.fetchrow(
             "SELECT id, title, text, kind FROM nodes WHERE id = $1 AND id = topic_root_id "
-            "AND deleted_at IS NULL", topic)
+            "AND deleted_at IS NULL AND NOT noo_hidden(spam_at, author_id)", topic)
         if root is None:
             raise OpinionError("обсуждения нет")
         cfg = await settings(conn, topic)
@@ -1165,7 +1165,7 @@ async def topic_view(topic, period="30", sort=None, viewer_id=None, seed=None):
             SELECT count(*) FROM nodes n JOIN authors a ON a.id = n.author_id
             WHERE n.topic_root_id = $1 AND n.id <> n.topic_root_id
               AND (n.kind = 'argument' OR n.kind IS NULL) AND n.atom_group IS NULL
-              AND n.deleted_at IS NULL AND n.position_id IS NULL AND NOT n.dissented
+              AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id) AND n.position_id IS NULL AND NOT n.dissented
               AND NOT a.is_service
             """, topic)
         # Складывающиеся позиции видны всегда: иначе встать в них не из чего, и
@@ -1209,7 +1209,7 @@ async def position_view(pid, period="30", at=None, viewer_id=None):
         # доводы, из которых позиция состоит, — первым блоком экрана (А8)
         member_ids = [r["node_id"] for r in await conn.fetch(
             "SELECT pn.node_id FROM position_nodes pn JOIN nodes n ON n.id = pn.node_id "
-            "WHERE pn.position_id = $1 AND n.deleted_at IS NULL ORDER BY n.created_at, n.id", pid)]
+            "WHERE pn.position_id = $1 AND n.deleted_at IS NULL AND NOT noo_hidden(n.spam_at, n.author_id) ORDER BY n.created_at, n.id", pid)]
         mcards = await _node_cards(conn, member_ids)
         head["arguments"] = [mcards[i] for i in member_ids if i in mcards]
         if not see:

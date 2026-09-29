@@ -904,6 +904,8 @@ function nodeRow(node, type, parentKind) {
     tag.title = node.retract_note || "Автор больше не настаивает на этом доводе";
     row.appendChild(tag);
   }
+  // помеченное как спам видно только при выключенном антиспаме или автору
+  if (node.spam_reason && window.NooSpam) row.appendChild(NooSpam.tag(node.spam_reason));
   if (hasKids) row.appendChild(el("span", "poi", "(" + node.reply_count + ")"));
   const poi = el("span", "poi");
   // служебный текст платформы не оценивается вовсе — «…» здесь читалось бы как
@@ -1544,6 +1546,16 @@ async function selectNode(id) {
   if (node.belongings && node.belongings.length > 1)
     card.appendChild(belongingBar(node.belongings));
   d.appendChild(card);
+  // спам: причина видна тому, кто его видит; администратор может пометить
+  // или снять пометку (app/spam.py)
+  if (window.NooSpam && (node.spam_reason || (ME && ME.is_admin))) {
+    const sp = el("div", "muted spam-line",
+      node.spam_reason ? "Помечено как спам: " + node.spam_reason + ". " : "");
+    if (ME && ME.is_admin)
+      sp.appendChild(NooSpam.adminButton("node", node.id, !!node.spam_reason,
+                                         () => selectNode(id)));
+    d.appendChild(sp);
+  }
   // распоряжаться своим доводом может только его автор
   if (ME && node.author_id === ME.id)
     d.appendChild(ownAuthorCard(node, () => selectNode(id)));

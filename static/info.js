@@ -92,6 +92,19 @@ function quoteStatus(f) {
   }[f.quote_status] || "";
 }
 
+// администратор помечает сведение спамом или снимает пометку (app/spam.py)
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest(".spam-adm");
+  if (!b) return;
+  const id = b.closest("[data-id]").dataset.id, isSpam = !!b.dataset.spam;
+  let reason = null;
+  if (!isSpam) { reason = prompt("Причина (увидят те, кто выключил антиспам):", "спам"); if (reason === null) return; }
+  b.disabled = true;
+  const r = await fetch(`/api/admin/spam/fact/${id}`, { method: "POST", credentials: "same-origin",
+    headers: { "content-type": "application/json" }, body: JSON.stringify({ spam: !isSpam, reason }) });
+  if (r.ok) location.reload(); else { b.disabled = false; alert("Не получилось: " + r.status); }
+});
+
 function factCard(f, ctx) {
   // в общей части не повторять «ЕС и международное право», в стране — её имя
   const where = [ctx === "country" ? null : (f.country || null), f.city, f.office, f.place_note].filter(Boolean).join(" · ");
@@ -115,7 +128,7 @@ function factCard(f, ctx) {
   <article class="fact" id="f${f.id}" data-id="${f.id}">
     <div class="head">
       <span class="kind ${f.kind}" title="${esc(KIND[f.kind]?.[1] || "")}">${KIND[f.kind]?.[0] || f.kind}</span>
-      <div class="title">${esc(f.title)}</div>
+      <div class="title">${esc(f.title)}${f.spam ? ` <span class="spam-tag" title="Помечено как спам: ${esc(f.spam)}. Видно, потому что антиспам выключен или это ваше.">спам</span>` : ""}</div>
     </div>
     ${f.kind === "report" && f.source_url ? `<div class="byline">по данным: ${esc(f.source_title ? f.source_title + " (" + hostOf(f.source_url) + ")" : hostOf(f.source_url))}</div>` : ""}
     ${meta ? `<div class="where">${esc(meta)}</div>` : ""}
@@ -128,6 +141,7 @@ function factCard(f, ctx) {
       <span>внёс ${esc(f.author?.name || "—")}, ${dateRu(f.created_at)}</span>
       <a class="idlink" href="#f${f.id}" title="Чтобы сослаться на это сведение в доводе, напишите в тексте #с${f.id}">#с${f.id}</a>
       ${own ? `<button class="linkbtn rm">снять</button>` : ""}
+      ${ME && ME.is_admin ? `<button class="linkbtn spam-adm" data-spam="${f.spam ? 1 : ""}">${f.spam ? "не спам" : "спам"}</button>` : ""}
     </div>
     <div class="repform" hidden></div>
     ${notes}
