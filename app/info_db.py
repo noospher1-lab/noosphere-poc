@@ -831,3 +831,72 @@ async def fact_place(fact_id):
             "SELECT id, country, topic_root_id FROM info_facts "
             "WHERE id = $1 AND deleted_at IS NULL", fact_id)
     return dict(row) if row else None
+
+
+# ------------------------------------------------------------ сведения в споре
+# Довод ссылается на сведение как «#с123» (кириллическая «с», допустимы и
+# латинские c/s): просто «#123» уже значит узел обсуждения, а номера узлов и
+# сведений — из разных последовательностей (vault: decisions/2026-09-28-info-sector).
+FACT_REF = re.compile(r"#[сСcCsS](\d{1,9})\b")
+PROMPT_FACTS_MAX = 40          # сколько сведений обсуждения показать ИИ строкой
+PROMPT_FACT_FULL_MAX = 8       # сколько упомянутых в черновике — целиком
+
+
+def fact_refs(text):
+    seen = []
+    for m in FACT_REF.finditer(text or ""):
+        i = int(m.group(1))
+        if i not in seen:
+            seen.append(i)
+    return seen
+
+
+async def facts_brief(ids):
+    """Короткие карточки сведений по номерам — для блока под доводом."""
+    ids = [int(i) for i in ids][:20]
+    if not ids:
+        return []
+    pool = db._pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, topic_root_id, kind, section, title, country, city, place_note, "
+            "source_url, source_title, source_quote, quote_status "
+            "FROM info_facts WHERE id = ANY($1::int[]) AND deleted_at IS NULL", ids)
+    by_id = {r["id"]: dict(r) for r in rows}
+    return [by_id[i] for i in ids if i in by_id]
+
+
+def _prompt_line(f, full=False):
+    where = ", ".join(x for x in (f.get("country"), f.get("city"), f.get("place_note")) if x) \
+        or "general"
+    line = f'[#с{f["id"]}] ({f["kind"]}; {where}; {f["section"]}) {f["title"]}'
+    if full:
+        if f.get("body"):
+            line += " — " + f["body"][:400]
+        if f.get("source_quote"):
+            line += f' | source quote ({f.get("quote_status")}): «{f["source_quote"][:400]}»'
+    return line
+
+
+async def prompt_facts(root, text=""):
+    """Сведения обсуждения для запроса разбора и компаньона: строкой каждое
+    (до PROMPT_FACTS_MAX, законы и общее — первыми), а те, на которые ссылается
+    черновик, — целиком, с выдержкой. Пусто — блока нет."""
+    pool = db._pool_or_raise()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, kind, section, title, body, country, city, place_note,
+                   source_quote, quote_status
+            FROM info_facts WHERE topic_root_id = $1 AND deleted_at IS NULL
+            ORDER BY (country IS NOT NULL), (kind <> 'norm'), id
+            """, root)
+    if not rows:
+        return None
+    facts = [dict(r) for r in rows]
+    refs = set(fact_refs(text))
+    full = [f for f in facts if f["id"] in refs][:PROMPT_FACT_FULL_MAX]
+    brief = [f for f in facts if f["id"] not in refs][:PROMPT_FACTS_MAX]
+    return {"total": len(facts),
+            "cited": [_prompt_line(f, full=True) for f in full],
+            "list": [_prompt_line(f) for f in brief]}

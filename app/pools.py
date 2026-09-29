@@ -83,6 +83,27 @@ def _problem_parts(problem):
                 line += (f' | the link is supported {link["supported"]}, '
                          f'disputed {link["disputed"]}')
             links.append(line)
+    facts = problem.get("facts")
+    if facts:
+        # Сведения обсуждения — записанные факты с источниками (vault:
+        # decisions/2026-09-28-info-sector). Без них компаньон не видел, что
+        # цифра или закон, о которых пишет автор, уже лежат рядом — или что
+        # записанное прямо противоречит черновику.
+        block = []
+        if facts.get("cited"):
+            block.append("Cited by the draft (full):")
+            block += facts["cited"]
+        if facts.get("list"):
+            block.append(f"Recorded in this discussion ({facts['total']} in total), briefly:")
+            block += facts["list"]
+        parts.append(
+            "FACTS OF THIS DISCUSSION — recorded information with sources, NOT "
+            "arguments: norm = text of a law or an official authority, report = "
+            "retelling of media/lawyers/NGOs, experience = what people report "
+            "happened to them. Authors cite a fact as #с<id>. Use them: if the draft "
+            "states something already recorded, point to its #с<id>; if it "
+            "contradicts a recorded fact, say so and name it; never invent facts "
+            "that are not here:\n\n" + poi.wrap_user_text("\n".join(block)))
     if links:
         parts.append(
             "LINKED PROBLEMS — separate discussions tied to this problem by an "

@@ -175,7 +175,7 @@ PROBLEM_REGISTRY_MAX = 12
 PROBLEM_LINKS_MAX = 8
 
 
-async def problem_context(root_id):
+async def problem_context(root_id, text=None):
     """Карточка состояния проблемы и её связи с другими проблемами — для промпта
     разбора и компаньона. Без этого ИИ читал только дерево ответов: не знал, что
     уже пробовали и чем кончилось, и не знал, что причина, о которой пишет
@@ -183,10 +183,17 @@ async def problem_context(root_id):
     прочитать не вышло (разбор от этого не падает)."""
     if root_id is None:
         return None
+    # сведения — слой ЛЮБОГО обсуждения, не только проблемы: у вопроса или
+    # тезиса карточки состояния нет, а законы и опыт людей могут быть
+    try:
+        facts = await info_db.prompt_facts(root_id, text or "")
+    except Exception:
+        log.warning("сведения обсуждения %s не прочитались", root_id, exc_info=True)
+        facts = None
     try:
         root = await db.get_node(root_id)
         if not root or root.get("kind") != "problem":
-            return None
+            return {"facts": facts} if facts else None
         state = await db.get_problem(root_id)
         registry = await db.list_interventions(root_id)
         links = await db.problem_links_of(root_id)
@@ -218,6 +225,7 @@ async def problem_context(root_id):
                      for i in registry[-PROBLEM_REGISTRY_MAX:]],
         "causes": [link(r, "cause_id") for r in links["causes"]][:PROBLEM_LINKS_MAX],
         "effects": [link(r, "effect_id") for r in links["effects"]][:PROBLEM_LINKS_MAX],
+        "facts": facts,
     }
 
 
@@ -3611,7 +3619,8 @@ async def review_draft(body: DraftReviewIn, author=Depends(current_author)):
         # «уровня выше» нет — им нечего порождать
         root_node = parent if parent["id"] == root_id else await db.get_node(root_id)
         in_problem = bool(root_node and root_node.get("kind") == "problem")
-        problem = await problem_context(root_id) if in_problem else None
+        # сведения обсуждения нужны и не-проблеме — контекст берём всегда
+        problem = await problem_context(root_id, text)
     else:
         # Вид корня, заявленный автором. У проблемы сравнивать не с чем — там
         # тест на вред; у остальных видов сравнение обычное, как у ответа.
@@ -3865,7 +3874,7 @@ async def draft_companion(body: CompanionIn, author=Depends(verified_author)):
             raise HTTPException(404, f"connect_to node {body.connect_to} not found")
         root_id = parent.get("topic_root_id") or await db.topic_root_of(body.connect_to)
         branch = await topic_context(root_id, body.connect_to, text)
-        problem = await problem_context(root_id)
+        problem = await problem_context(root_id, text)
     neighbours = await suggest_problems(
         text, limit=8 if body.scope == "map" else 4,
         exclude_id=parent.get("topic_root_id") if parent else None)
@@ -4403,6 +4412,13 @@ async def info_fact_place(fact_id: int):
     if not place:
         raise HTTPException(404, "Такого сведения нет — возможно, его сняли")
     return place
+
+
+@app.get("/api/info/facts")
+async def info_facts_by_id(ids: str = ""):
+    """Карточки сведений по номерам — для блока «Опирается на сведения» под доводом."""
+    nums = [int(x) for x in ids.split(",") if x.strip().isdigit()][:20]
+    return await info_db.facts_brief(nums)
 
 
 @app.get("/api/info/{root}/count")

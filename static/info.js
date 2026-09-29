@@ -118,7 +118,7 @@ function factCard(f, ctx) {
       ${reports}
       <span class="spacer"></span>
       <span>внёс ${esc(f.author?.name || "—")}, ${dateRu(f.created_at)}</span>
-      <a class="idlink" href="#f${f.id}" title="Ссылка на это сведение">#${f.id}</a>
+      <a class="idlink" href="#f${f.id}" title="Чтобы сослаться на это сведение в доводе, напишите в тексте #с${f.id}">#с${f.id}</a>
       ${own ? `<button class="linkbtn rm">снять</button>` : ""}
     </div>
     <div class="repform" hidden></div>
@@ -198,6 +198,7 @@ function render() {
         <span><span class="kind report">сообщают</span> пересказ СМИ, юристов, организаций — со ссылкой</span>
         <span><span class="kind experience">опыт людей</span> так было с людьми; «независимых» — отметки, похожие на одного человека, считаются за одну</span>
       </div>
+      <p class="muted small">Сослаться на сведение в доводе обсуждения — написать его номер, например <b>#с${(v.common[0] || {}).id || 12}</b>: под доводом появится карточка сведения.</p>
     </div>
 
     ${v.total ? "" : `<p class="empty">У этого обсуждения сведений пока нет: законов, цифр, сообщений,

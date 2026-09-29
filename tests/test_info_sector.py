@@ -371,3 +371,31 @@ def test_any_discussion_has_facts_layer_and_related_links():
         await info_db.add_fact(a, {"title": "Цифра", "country": "Чехия", "section": "Пробки по городам"}, uid)
         assert (await info_db.topic_view(a))["sections"] == ["Пробки по городам"]
     _run(body)
+
+
+def test_fact_refs_parse_cyrillic_and_latin():
+    assert info_db.fact_refs("см. #с12 и #c7, ещё раз #С12; узел #45 — не сведение") == [12, 7]
+    assert info_db.fact_refs("#сорок") == []
+
+
+@needs_db
+def test_argument_cites_facts_and_ai_context_gets_them():
+    async def body(db):
+        from app import main
+        uid = await db.add_user("u", "h", "U", invite_required=False)
+        root = await db.add_node("Вопрос о защите", kind="question", title="Вопрос о защите")
+        law = await info_db.add_fact(root, {"title": "Закон", "kind": "norm", "section": "Закон-основание",
+                                            "source_url": "https://e.eu", "source_quote": "text"}, uid)
+        exp = await info_db.add_fact(root, {"title": "В Брно — один визит", "country": "Чехия",
+                                            "body": "подробности"}, uid)
+        cards = await info_db.facts_brief([exp, 999999, law])
+        assert [c["id"] for c in cards] == [exp, law] and cards[0]["topic_root_id"] == root
+        # вопрос, а не проблема — карточки состояния нет, сведения есть
+        ctx = await main.problem_context(root, f"как в #с{exp}?")
+        assert set(ctx) == {"facts"} and ctx["facts"]["total"] == 2
+        assert ctx["facts"]["cited"][0].startswith(f"[#с{exp}] (experience; Чехия")
+        assert "подробности" in ctx["facts"]["cited"][0]
+        assert ctx["facts"]["list"][0].startswith(f"[#с{law}] (norm; general")
+        empty = await db.add_node("Пусто", kind="question", title="Пусто")
+        assert await main.problem_context(empty, "текст") is None
+    _run(body)

@@ -95,3 +95,28 @@ def test_empty_card_adds_nothing(monkeypatch):
     pools.companion_reply("текст", [], PARENT, BRANCH, problem=empty)
     assert "STATE OF THE PROBLEM" not in seen["user"]
     assert "LINKED PROBLEMS —" not in seen["user"]
+
+
+def test_facts_of_the_discussion_reach_review_and_companion(monkeypatch):
+    """Сведения — слой обсуждения (vault: decisions/2026-09-28-info-sector): ИИ видит
+    их строкой, а те, на которые ссылается черновик (#с12), — целиком."""
+    facts = {"total": 3,
+             "cited": ["[#с12] (norm; Германия; Продление защиты) Продлевают автоматически — "
+                       "| source quote (verified): «automatically extended»"],
+             "list": ["[#с3] (norm; general; Закон-основание) Решение 2026/1912",
+                      "[#с40] (experience; Чехия; Продление защиты) В Брно — один визит"]}
+    for fn, answer in ((lambda: pools.review_draft("см. #с12", PARENT, BRANCH, [],
+                                                   problem={"facts": facts}),
+                        {"actual_type": "qualify", "verdict": "new"}),
+                       (lambda: pools.companion_reply("см. #с12", [], PARENT, BRANCH,
+                                                      problem={"facts": facts}),
+                        {"reply": "ok", "suggestion": ""})):
+        seen = _capture(monkeypatch, answer)
+        fn()
+        user = seen["user"]
+        assert "FACTS OF THIS DISCUSSION" in user and "never invent facts" in user
+        assert "Cited by the draft (full):" in user and "automatically extended" in user
+        assert "[#с40] (experience; Чехия" in user
+        # не проблема — карточки состояния нет, а сведения есть
+        assert "STATE OF THE PROBLEM" not in user
+        assert user.split("\n\n---\n\n")[-1].startswith("LANGUAGE")

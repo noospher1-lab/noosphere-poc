@@ -1425,6 +1425,10 @@ async function selectNode(id) {
   const tw = el("div", "hasmargins");
   tw.appendChild(textEl);
   card.appendChild(tw);
+  // «#с123» в тексте — ссылка на сведение обсуждения: карточки под текстом, а
+  // сам текст не трогаем — по его точным позициям работает ответ на фрагмент
+  const refs = factRefsBlock(node.text);
+  if (refs) card.appendChild(refs);
   // отзыв виден сразу под текстом: читать довод, не зная, что автор от него
   // отказался, — значит спорить с призраком
   if (node.retracted_at) card.appendChild(retractionBanner(node));
@@ -1788,6 +1792,39 @@ function renderAtomPreview(box, node, groups) {
 // Своя нынешняя сторона по узлу: по ней клик по другой кнопке — смена стороны.
 const REACT_MINE = new Map();
 const STANCE_WORD = { agree: "за", disagree: "против" };
+
+// СВЕДЕНИЯ, на которые опирается довод (vault: decisions/2026-09-28-info-sector).
+// «#с123» — кириллическая «с» (допустимы и латинские c/s): «#123» уже значит узел.
+const FACT_REF = /#[сСcCsS](\d{1,9})\b/g;
+const FACT_KIND = { norm: "норма", report: "сообщают", experience: "опыт людей" };
+function factRefsBlock(text) {
+  const ids = [...new Set([...String(text || "").matchAll(FACT_REF)].map(m => m[1]))].slice(0, 20);
+  if (!ids.length) return null;
+  const box = el("div", "fact-refs");
+  box.appendChild(el("div", "section-title", "Опирается на сведения"));
+  const list = el("div", null, "загрузка…");
+  box.appendChild(list);
+  api(`/api/info/facts?ids=${ids.join(",")}`).then((facts) => {
+    list.textContent = "";
+    const found = new Set(facts.map(f => String(f.id)));
+    for (const f of facts) {
+      const c = el("a", "fact-ref");
+      c.href = `/info.html?root=${f.topic_root_id}#f${f.id}`;
+      c.append(el("span", "fr-kind " + f.kind, FACT_KIND[f.kind] || f.kind),
+               el("span", "fr-title", f.title));
+      const where = [f.country, f.city, f.place_note].filter(Boolean).join(", ");
+      const meta = [`#с${f.id}`, where, f.quote_status === "verified" ? "цитата найдена на странице" : ""]
+        .filter(Boolean).join(" · ");
+      c.appendChild(el("span", "fr-meta", meta));
+      if (f.source_quote) c.appendChild(el("span", "fr-quote", "«" + f.source_quote.slice(0, 280) +
+        (f.source_quote.length > 280 ? "…" : "") + "»"));
+      list.appendChild(c);
+    }
+    for (const id of ids) if (!found.has(id))
+      list.appendChild(el("div", "muted", `#с${id} — такого сведения нет или его сняли`));
+  }).catch(() => { list.textContent = "сведения не загрузились"; });
+  return box;
+}
 
 // «#43» в тексте — ссылка на узел: люди и так ссылаются номерами
 function appendWithNodeRefs(parent, text) {
@@ -3103,7 +3140,9 @@ function replyForm(parentId, parentKind) {
     "ИИ-компаньон разберёт черновик — с ним можно спорить и переспрашивать. " +
     "<b>После публикации текст изменить нельзя</b>: на нём строят ответы.");
   const ta = el("textarea");
-  ta.placeholder = parentKind === "question" ? "Твой ответ…" : "Твой довод…";
+  // как сослаться на сведение обсуждения — прямо в поле, иначе о #с никто не узнает
+  ta.placeholder = (parentKind === "question" ? "Твой ответ…" : "Твой довод…") +
+    "  Сослаться на сведение: #с и его номер, например #с12";
   // чип якоря: показывает, на какой участок отвечаем (ответ на фрагмент)
   const chip = el("div", "anchor-chip");
   chip.style.display = "none";
