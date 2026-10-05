@@ -1294,6 +1294,42 @@ async def revalidate_static(request: Request, call_next):
     return response
 
 
+# Второй слой против XSS (задание безопасности 05.10.2026): первый — экранирование
+# при выводе на фронте (static/safe.js). Если оно что-то пропустит, браузер всё
+# равно не исполнит внедрённый код: встроенных скриптов и обработчиков on…= на
+# страницах нет, скрипты берутся только со своего адреса.
+#  - Turnstile: скрипт и фрейм с challenges.cloudflare.com;
+#  - стили: атрибуты style="…" и <style> на страницах — для стилей 'unsafe-inline'
+#    терпим, для скриптов нельзя;
+#  - шрифты Inter: Google Fonts (css) и gstatic (файлы).
+# NOOSPHERE_CSP: enforce (по умолчанию) | report-only (только сообщает в
+# консоль браузера, ничего не блокирует — для проверки новых страниц) | off.
+_CSP = "; ".join([
+    "default-src 'self'",
+    "script-src 'self' https://challenges.cloudflare.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "frame-src https://challenges.cloudflare.com",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+])
+_CSP_MODE = os.environ.get("NOOSPHERE_CSP", "enforce").strip().lower()
+
+
+@app.middleware("http")
+async def content_security_policy(request: Request, call_next):
+    response = await call_next(request)
+    if _CSP_MODE != "off" and response.headers.get(
+            "content-type", "").startswith("text/html"):
+        response.headers["Content-Security-Policy-Report-Only"
+                         if _CSP_MODE == "report-only"
+                         else "Content-Security-Policy"] = _CSP
+    return response
+
+
 @app.middleware("http")
 async def meter_llm_usage(request: Request, call_next):
     """Bill every LLM call made while handling this request to its author.
