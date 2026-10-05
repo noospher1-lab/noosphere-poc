@@ -76,6 +76,7 @@
   code { font-family:var(--mono); font-size:12.5px; color:var(--bronze);
     background:var(--panel2); padding:1px 6px; border-radius:4px; }
 </style>
+<script src="/safe.js"></script>
 <script src="/antispam.js"></script>
 </head>
 <body>
@@ -233,14 +234,14 @@ function showResult(view) {
   box.innerHTML = `
     <div class="ok-title">✓ Голосование открыто</div>
     <div><b>${escapeHtml(d.question || "")}</b></div>
-    <div class="tally">id <code>${d.id}</code> · статус ${escapeHtml(d.status || "open")} ·
+    <div class="tally">id <code>${+d.id}</code> · статус ${escapeHtml(d.status || "open")} ·
       вариантов: ${opts.length}</div>
     <div class="note" style="margin-top:14px">
       Голосование открыто. Участники разбирают вопрос с ИИ и голосуют на
-      <a href="/vote.html?id=${d.id}">странице голосования</a>; результат виден
+      <a href="/vote.html?id=${+d.id}">странице голосования</a>; результат виден
       по головам и по весу.
     </div>
-    <a class="btn-ghost" href="/vote.html?id=${d.id}" style="text-decoration:none">Перейти к голосованию →</a>
+    <a class="btn-ghost" href="/vote.html?id=${+d.id}" style="text-decoration:none">Перейти к голосованию →</a>
     <button class="btn-ghost" onclick="location.reload()">Создать ещё одно</button>`;
   window.scrollTo(0, 0);
 }

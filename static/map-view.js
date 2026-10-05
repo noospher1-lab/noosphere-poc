@@ -27,8 +27,6 @@ const MapView = (() => {
   let host = null, loaded = false, facets = null, hooks = {};
   let WS = new Set();                       // что уже в рабочем дереве
 
-  const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
   function shell() {
     host.innerHTML = `
       <div class="mv-bar">
@@ -59,10 +57,8 @@ const MapView = (() => {
     $(".mv-sort").addEventListener("change", refresh);
   }
 
-  function hl(text) {
-    if (!QUERY) return text;
-    return text.replace(new RegExp("(" + esc(QUERY) + ")", "gi"), "<mark>$1</mark>");
-  }
+  // Подсветка — escHighlight из safe.js: режет сырой текст и экранирует куски.
+  const hl = (text) => escHighlight(text, QUERY);
 
   function renderRows() {
     const box = host.querySelector(".mv-rows");
@@ -83,33 +79,33 @@ const MapView = (() => {
     box.innerHTML = out.map(t => {
       const d = DOM_BY_ID[t.domain];
       const meta = [
-        ...t.geo.slice(0, 4).map(g => `<span class="mv-tag">📍 ${g}</span>`),
-        ...t.tags.map(x => `<span class="mv-tag">#${x}</span>`),
+        ...t.geo.slice(0, 4).map(g => `<span class="mv-tag">📍 ${escHtml(g)}</span>`),
+        ...t.tags.map(x => `<span class="mv-tag">#${escHtml(x)}</span>`),
       ].join("");
       // «+ в дерево» — отдельное действие от «открыть». Если бы открытие само
       // добавляло, подборка забилась бы всем, во что человек заглянул.
       const inWs = WS.has(t.id);
       const btn = hooks.onToggleWorkspace && t.id > 0
-        ? `<span class="mv-ws${inWs ? " on" : ""}" data-ws="${t.id}"
+        ? `<span class="mv-ws${inWs ? " on" : ""}" data-ws="${+t.id}"
              title="${inWs ? "Убрать из рабочего дерева" : "Добавить в рабочее дерево"}"
            >${inWs ? "✓ в дереве" : "+ в дерево"}</span>`
         : "";
-      return `<div class="mv-card" data-id="${t.id}">
+      return `<div class="mv-card" data-id="${+t.id}">
         <div class="mv-top">
-          <span class="mv-dot" style="background:${d.color}"></span>
-          <span class="mv-dom" style="color:${d.color}">${d.name}</span>
-          ${t.sub ? `<span class="mv-sub">· ${t.sub}</span>` : ""}
+          <span class="mv-dot" style="background:${escHtml(d.color)}"></span>
+          <span class="mv-dom" style="color:${escHtml(d.color)}">${escHtml(d.name)}</span>
+          ${t.sub ? `<span class="mv-sub">· ${escHtml(t.sub)}</span>` : ""}
           ${t.unsorted ? `<span class="mv-warn">без рубрики</span>` : ""}
           ${btn}
         </div>
         <div class="mv-title">${hl(t.title)}</div>
         ${(t.causes.length || t.effects.length) ? `<div class="mv-links">${[
-          ...t.causes.map(c => `<span class="mv-link up" data-go="${c.id}">↑ причина: ${c.title}</span>`),
-          ...t.effects.map(c => `<span class="mv-link" data-go="${c.id}">↓ порождает: ${c.title}</span>`),
+          ...t.causes.map(c => `<span class="mv-link up" data-go="${+c.id}">↑ причина: ${escHtml(c.title)}</span>`),
+          ...t.effects.map(c => `<span class="mv-link" data-go="${+c.id}">↓ порождает: ${escHtml(c.title)}</span>`),
         ].join("")}</div>` : ""}
         <div class="mv-bot">${meta}
-          <span class="mv-stats"><b>${t.nodes}</b> узлов · <b>${t.people}</b> уч.${
-            t.poi ? ` · PoI <b>${t.poi}</b>` : ""}</span>
+          <span class="mv-stats"><b>${+t.nodes}</b> узлов · <b>${+t.people}</b> уч.${
+            t.poi ? ` · PoI <b>${+t.poi}</b>` : ""}</span>
         </div>
       </div>`;
     }).join("");
@@ -154,7 +150,7 @@ const MapView = (() => {
       host.innerHTML = `<div class="mv-none">загружаю каталог…</div>`;
       try { await loadMapData(); }
       catch (e) {
-        host.innerHTML = `<div class="mv-none">каталог не загрузился: ${e.message}</div>`;
+        host.innerHTML = `<div class="mv-none">каталог не загрузился: ${escHtml(e.message)}</div>`;
         return;
       }
       shell();

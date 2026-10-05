@@ -65,7 +65,7 @@ function tag(card) {
 
 function nodeLink(card, cls = "") {
   if (!card) return "";
-  return `<a class="${cls}" href="/n/${card.id}">${esc(card.text)}</a>`;
+  return `<a class="${cls}" href="/n/${+card.id}">${esc(card.text)}</a>`;
 }
 
 function short(text, n = 90) {
@@ -157,13 +157,13 @@ function composer({ topic, target, action = "refute", anchor = null, note = "" }
     sugg.innerHTML = `
       ${dup.map((d) => `<div class="sugg"><div class="why">Это уже сказано (сходство ${Math.round(d.sim * 100)}%):</div>
         <div>${tag(d)} ${nodeLink(d)}</div>
-        <div class="btns"><button type="button" class="btn" data-join="${d.id}">Присоединиться — вместо нового текста</button></div></div>`).join("")}
+        <div class="btns"><button type="button" class="btn" data-join="${+d.id}">Присоединиться — вместо нового текста</button></div></div>`).join("")}
       <div class="sugg"><div class="why">${dup.length ? "Или опубликовать своё — " : ""}Место в обсуждении:</div>
         <div>${esc(place.edge_label)} → ${place.target ? nodeLink(place.target) : "обсуждение целиком"}</div>
         ${place.position ? `<div class="why">Относится к позиции «${esc(place.position.title)}»</div>` : ""}
         ${place.alternatives && place.alternatives.length ? `<label class="why" for="cmp-where">Другое место:</label>
           <select class="select" id="cmp-where"><option value="">${esc(short(place.target ? place.target.text : "обсуждение", 70))}</option>
-          ${place.alternatives.map((a) => `<option value="${a.id}">${esc(short(a.text, 70))}</option>`).join("")}</select>` : ""}
+          ${place.alternatives.map((a) => `<option value="${+a.id}">${esc(short(a.text, 70))}</option>`).join("")}</select>` : ""}
         <div class="btns"><button type="button" class="btn primary" id="cmp-publish">Опубликовать</button></div>
         <div class="why">опубликованное не редактируется</div></div>`;
     for (const b of sugg.querySelectorAll("[data-join]")) {
@@ -187,7 +187,7 @@ function composer({ topic, target, action = "refute", anchor = null, note = "" }
       if (anchor && connect === (target && target.id)) body.anchor = anchor;
       try {
         const r = await api("/api/argument", { method: "POST", body });
-        msg.innerHTML = `Опубликовано: <a href="/n/${r.id}">открыть в дереве</a>. В течение часа, пока нет ответов, его можно снять.`;
+        msg.innerHTML = `Опубликовано: <a href="/n/${+r.id}">открыть в дереве</a>. В течение часа, пока нет ответов, его можно снять.`;
         $("#cmp-next", dlg).disabled = true;
         setTimeout(refresh, 800);
       } catch (e) { pub.disabled = false; msg.textContent = e.message; }
@@ -273,16 +273,16 @@ function drawPosition(d) {
   let status = "";
   if (p.status === "forming") status = `<p class="note">Позиция складывается: на карту она выйдет, когда в ней встанут трое.</p>`;
   if (p.status === "empty") status = `<p class="note">Сейчас в этой позиции никого нет. Она остаётся — любой может в неё вернуться.</p>`;
-  if (p.status === "merged" && p.merged_into) status = `<p class="note">Позиция слита с «<a href="position.html?id=${p.merged_into.id}">${esc(p.merged_into.title)}</a>».</p>`;
-  if (p.status === "split") status = `<p class="note">Позиция раскололась на: ${p.parts.map((x) => `<a href="position.html?id=${x.id}">${esc(x.title)}</a>`).join(" · ")}. Кто ещё не выбрал часть, считается здесь с пометкой «не уточнил».</p>`;
+  if (p.status === "merged" && p.merged_into) status = `<p class="note">Позиция слита с «<a href="position.html?id=${+p.merged_into.id}">${esc(p.merged_into.title)}</a>».</p>`;
+  if (p.status === "split") status = `<p class="note">Позиция раскололась на: ${p.parts.map((x) => `<a href="position.html?id=${+x.id}">${esc(x.title)}</a>`).join(" · ")}. Кто ещё не выбрал часть, считается здесь с пометкой «не уточнил».</p>`;
   const head = `
-    <div class="crumbs"><a href="opinion.html?root=${topic}">${esc(p.topic.title)}</a><span class="sep">›</span><span>позиция</span></div>
+    <div class="crumbs"><a href="opinion.html?root=${+topic}">${esc(p.topic.title)}</a><span class="sep">›</span><span>позиция</span></div>
     <h1>${esc(p.title)}</h1>
     <div class="meta">Позиция собрана из ${fmt(p.members)} ${plural(p.members, "довода", "доводов", "доводов")} · существует с ${since} · держится, пока в ней есть хотя бы один человек</div>
     ${status}`;
   if (d.blind) {
     main.innerHTML = head + membersBlock(p) + `<p class="note">Сначала напишите свой ответ в обсуждении — после этого откроются числа.
-      Так ваш ответ не подстраивается под большинство. <a href="/n/${topic}">К обсуждению</a></p>
+      Так ваш ответ не подстраивается под большинство. <a href="/n/${+topic}">К обсуждению</a></p>
       <p class="caption">${esc(d.caption)}</p>`;
     return;
   }
@@ -380,7 +380,7 @@ function drawPersonal(d) {
   }
   if (me.unclarified) {
     box.innerHTML = `<div class="card personal"><div class="lbl">Позиция раскололась — уточните, какая часть ваша:</div>
-      <div class="btns">${me.choices.map((c) => `<button type="button" class="btn" data-part="${c.id}">${esc(c.title)}</button>`).join("")}</div>
+      <div class="btns">${me.choices.map((c) => `<button type="button" class="btn" data-part="${+c.id}">${esc(c.title)}</button>`).join("")}</div>
       <div class="msg" id="pmsg" role="status"></div></div>`;
     for (const b of box.querySelectorAll("[data-part]")) {
       b.onclick = async () => {
@@ -398,7 +398,7 @@ function drawPersonal(d) {
   box.innerHTML = `<div class="card personal">
     <div class="lbl">Вы в этой позиции · главное возражение, которое вы ещё не видели</div>
     <div class="objection">${tag(o)}<div class="text" id="obj-text">${esc(o.text)}</div></div>
-    <div class="msg">Этот довод увёл отсюда ${fmt(o.led_away)} ${people(o.led_away)}. ${fmt(o.stayed)} прочитали его и остались. <a href="/n/${o.id}">открыть в дереве</a></div>
+    <div class="msg">Этот довод увёл отсюда ${fmt(o.led_away)} ${people(o.led_away)}. ${fmt(o.stayed)} прочитали его и остались. <a href="/n/${+o.id}">открыть в дереве</a></div>
     <div class="btns" id="obj-btns">
       <button type="button" class="btn" data-r="not_convinced">Не убедило</button>
       <button type="button" class="btn" data-r="partial">Частично — уточню</button>
@@ -429,11 +429,11 @@ async function answerObjection(d, o, response) {
     msg.textContent = "Выделите фрагмент возражения, с которым согласны не полностью, или ответьте на него целиком.";
     $("#why").onclick = () => composer({ topic: p.topic.id, target: o, action: "qualify" });
   } else {
-    const me = await api(`/api/opinion/me/${p.topic.id}`);
+    const me = await api(`/api/opinion/me/${+p.topic.id}`);
     const opts = me.open_positions.filter((x) => x.id !== p.id);
     btns.innerHTML = undo;
     msg.innerHTML = `Выберите позицию, в которую переходите. Переход запишется с этим доводом как причиной.
-      <div class="poslist">${opts.map((x) => `<button type="button" class="btn" data-to="${x.id}">${esc(x.title)}</button>`).join("")}
+      <div class="poslist">${opts.map((x) => `<button type="button" class="btn" data-to="${+x.id}">${esc(x.title)}</button>`).join("")}
       <button type="button" class="btn" data-to="">Моей позиции здесь нет — выйти без позиции</button></div>`;
     for (const b of msg.querySelectorAll("[data-to]")) {
       b.onclick = async () => {
@@ -454,7 +454,7 @@ async function answerObjection(d, o, response) {
 function flowRows(side, max, dir) {
   if (!side.groups.length && !side.rest) return `<div class="muted">никого ${PERIOD_WORD[STATE.period]}</div>`;
   const rows = side.groups.map((g) => {
-    const name = g.position_id ? `<a href="position.html?id=${g.position_id}">${esc(g.title)}</a>`
+    const name = g.position_id ? `<a href="position.html?id=${+g.position_id}">${esc(g.title)}</a>`
       : (dir === "in" ? "Новые участники без прежней позиции" : "Ушли без позиции");
     return `<div class="flow ${dir}"><div class="top"><span>${name}</span><span class="n">${fmt(g.n)}</span></div>
       <div class="track"><span style="width:${Math.max(2, Math.round(100 * g.n / max))}%"></span></div>
@@ -555,8 +555,8 @@ function drawCruxes(d, sel = "#cruxes", topic = d.position && d.position.topic.i
     ${cruxBar(c)}
     <div class="stat">${cruxStat(c)}</div>
     <div class="btns" style="margin-top:6px">
-      ${c.kind === "question" ? `<button type="button" class="act" data-same="${c.id}">у меня тот же вопрос</button>` : ""}
-      <button type="button" class="act" data-reply="${c.id}">ответить</button></div>
+      ${c.kind === "question" ? `<button type="button" class="act" data-same="${+c.id}">у меня тот же вопрос</button>` : ""}
+      <button type="button" class="act" data-reply="${+c.id}">ответить</button></div>
   </div>`).join("");
   if (d.cruxes.length > SHOW) {
     const more = document.createElement("button");
@@ -584,9 +584,9 @@ function drawCruxes(d, sel = "#cruxes", topic = d.position && d.position.topic.i
 function drawMovers(d) {
   const box = $("#movers");
   if (!d.movers.length) { box.innerHTML = `<p class="muted">Пока никто не переходил, назвав причину.</p>`; return; }
-  box.innerHTML = d.movers.map((m) => `<div class="item mover ${m.direction}">
+  box.innerHTML = d.movers.map((m) => `<div class="item mover ${esc(m.direction)}">
     <div><div class="big">${fmt(m.n)}</div><div class="dir">${m.direction === "in" ? "привёл сюда" : "увёл отсюда"}</div></div>
-    <div><div class="head">${tag(m)}${m.poi != null ? `<span class="tag">PoI ${m.poi}</span>` : ""}</div>
+    <div><div class="head">${tag(m)}${m.poi != null ? `<span class="tag">PoI ${fmt(m.poi)}</span>` : ""}</div>
       <div class="text">${nodeLink(m)}</div></div></div>`).join("");
 }
 
@@ -610,7 +610,7 @@ async function renderTopic() {
   refresh = async () => {
     let d;
     try {
-      const sort = TSTATE.sort ? `&sort=${TSTATE.sort}` : "";
+      const sort = TSTATE.sort ? `&sort=${encodeURIComponent(TSTATE.sort)}` : "";
       d = await api(`/api/opinion/topic/${root}?period=${TSTATE.period}${sort}`);
     } catch (e) { main.innerHTML = `<p class="note">${esc(e.message)}</p>`; return; }
     drawTopic(d);
@@ -623,11 +623,11 @@ function drawTopic(d) {
   const t = d.topic;
   document.title = `${t.title} — карта позиций`;
   TSTATE.sort = d.sort;
-  const head = `<div class="crumbs"><a href="/n/${t.id}">Дерево обсуждения</a><span class="sep">›</span><span>карта позиций</span></div>
+  const head = `<div class="crumbs"><a href="/n/${+t.id}">Дерево обсуждения</a><span class="sep">›</span><span>карта позиций</span></div>
     <h1>${esc(t.title)}</h1>`;
   if (d.cold_start) {
     main.innerHTML = head + `<p class="note">Позиции ещё складываются: на карте ${fmt(d.active_positions)} из ${fmt(d.min_positions)} нужных.
-      Позиция выходит на карту, когда в ней встанут ${fmt(d.min_supporters)} человека. Пока главное здесь — <a href="/n/${t.id}">дерево обсуждения</a>.</p>
+      Позиция выходит на карту, когда в ней встанут ${fmt(d.min_supporters)} человека. Пока главное здесь — <a href="/n/${+t.id}">дерево обсуждения</a>.</p>
       ${unassignedNote(d)}
       ${d.positions.length ? `<div class="plist" id="plist"></div>` : ""}
       ${formingList(d)}
@@ -693,7 +693,7 @@ function formingList(d) {
   if (!d.forming || !d.forming.length) return "";
   return `<section class="card" style="margin-top:16px" aria-labelledby="fm-h"><h2 id="fm-h">Складываются</h2>
     <p class="sub" style="margin-top:4px">Откройте позицию, прочитайте её доводы и возражения — и встаньте в неё, если она ваша.</p>
-    ${d.forming.map((f) => `<div class="item"><div class="head"><a class="title" href="position.html?id=${f.id}">${esc(f.title)}</a>
+    ${d.forming.map((f) => `<div class="item"><div class="head"><a class="title" href="position.html?id=${+f.id}">${esc(f.title)}</a>
       ${f.mine ? `<span class="tag ok">вы здесь</span>` : ""}</div>
       <div class="stat">в позиции ${fmt(f.in_now)} из ${fmt(d.min_supporters)} нужных для карты</div></div>`).join("")}
   </section>`;
@@ -705,9 +705,9 @@ function drawPositionCards(d) {
     if (d.blind) return `<div class="card pcard"><div class="title">${esc(p.title)}</div></div>`;
     const fl = p.flows;
     const line = (g, dir) => `<div>${dir === "in" ? "← " : "→ "}${fmt(g.n)} ${dir === "in" ? "из" : "в"} ${g.position_id
-      ? `«${esc(short(g.title, 50))}»` : (dir === "in" ? "новых" : "без позиции")}${g.cause ? `: <a href="/n/${g.cause.id}">${esc(short(g.cause.text, 60))}</a>` : ""}</div>`;
+      ? `«${esc(short(g.title, 50))}»` : (dir === "in" ? "новых" : "без позиции")}${g.cause ? `: <a href="/n/${+g.cause.id}">${esc(short(g.cause.text, 60))}</a>` : ""}</div>`;
     return `<article class="card pcard ${p.mine ? "mine" : ""}">
-      <div><a class="title" href="position.html?id=${p.id}">${esc(p.title)}</a>${p.mine ? ` <span class="tag ok">вы здесь</span>` : ""}
+      <div><a class="title" href="position.html?id=${+p.id}">${esc(p.title)}</a>${p.mine ? ` <span class="tag ok">вы здесь</span>` : ""}
         ${p.status === "split" ? ` <span class="tag">раскалывается · не уточнили ${fmt(p.unclarified)}</span>` : ""}
         <div class="counts"><span>сейчас <b>${fmt(p.in_now)}</b></span>
           <span class="${p.delta >= 0 ? "" : ""}">${p.delta > 0 ? "+" : ""}${fmt(p.delta)} ${PERIOD_WORD[d.period]}</span>

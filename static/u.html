@@ -67,6 +67,7 @@
     padding:2px 10px; font-size:12.5px; }
   .vote .why { color:var(--dim); font-size:13.5px; line-height:1.55; margin-top:4px; }
 </style>
+<script src="/safe.js"></script>
 <script src="/antispam.js"></script>
 </head>
 <body>
@@ -129,8 +130,7 @@ const $ = s => document.querySelector(s);
 // профили, сервер отдаёт его на любой /u/<логин>.
 const username = decodeURIComponent(location.pathname.replace(/^\/u\//, "")).trim();
 
-const esc = s => String(s == null ? "" : s)
-  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const esc = escHtml;   // общий, из safe.js: экранирует и кавычки
 
 const dt = s => s ? new Date(s).toLocaleDateString("ru-RU",
   { year: "numeric", month: "long", day: "numeric" }) : "";

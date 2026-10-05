@@ -96,6 +96,7 @@
   .sec-h { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim2);
     margin:22px 0 6px; }
 </style>
+<script src="/safe.js"></script>
 <script src="/antispam.js"></script>
 </head>
 <body>
@@ -176,11 +177,11 @@ function voteCard(d) {
   const badge = isOpen ? '<span class="badge open">открыто</span>'
                        : '<span class="badge">завершено</span>';
   return `
-    <a class="card vote-card" href="/vote.html?id=${d.id}">
+    <a class="card vote-card" href="/vote.html?id=${+d.id}">
       <div class="vc-q">${esc(d.question)}</div>
       <div class="vc-topic">Обсуждение: ${esc(topicName(d))}</div>
       <div class="vc-meta">${badge}
-        &nbsp;· голосов: ${d.voters} · вариантов: ${d.options}
+        &nbsp;· голосов: ${esc(d.voters)} · вариантов: ${esc(d.options)}
       </div>
     </a>`;
 }
@@ -223,7 +224,7 @@ function renderControls(view) {
   const isCreator = ME && d.created_by === ME.id;
   const canManage = isCreator || (ME && ME.is_admin);
   const empty = (view.tally.voters || 0) === 0;
-  ctl.innerHTML = `<span class="badge ${d.status === "open" ? "open" : ""}">${st}</span>`;
+  ctl.innerHTML = `<span class="badge ${d.status === "open" ? "open" : ""}">${esc(st)}</span>`;
 
   if (isCreator && d.status === "open") {
     const b = document.createElement("button");
@@ -259,12 +260,12 @@ function renderTally(t) {
   const maxW = Math.max(1, ...t.answers.map((a) => Number(a.weighted)));
   $("#tally").innerHTML = `
     <div class="muted" style="font-size:12.5px;margin-bottom:8px">
-      участников: ${t.voters} · средний вес: ${t.avg_weight.toFixed(2)}</div>
+      участников: ${esc(t.voters)} · средний вес: ${esc(Number(t.avg_weight).toFixed(2))}</div>
     ${t.answers.map((a) => `
       <div class="opt">
         <div class="opt-top"><span class="opt-label">${esc(a.label || a.headline || "—")}</span></div>
         <div class="bar-track"><div class="bar-fill bar-heads" style="width:${Math.round(a.heads / maxH * 100)}%"></div></div>
-        <div class="bars">по головам: ${a.heads}
+        <div class="bars">по головам: ${esc(a.heads)}
           &nbsp;·&nbsp; по весу: ${Number(a.weighted).toFixed(1)}</div>
         <div class="bar-track"><div class="bar-fill bar-weight" style="width:${Math.round(Number(a.weighted) / maxW * 100)}%"></div></div>
       </div>`).join("")}`;
@@ -284,11 +285,11 @@ function renderVote(view) {
   const votable = view.options.filter((o) => o.origin !== "reframe");
   box.innerHTML = `
     <div class="muted" style="font-size:13px;margin-bottom:8px">
-      Твой вес: <span class="weight-badge">${w}</span>
+      Твой вес: <span class="weight-badge">${esc(w)}</span>
       ${(DLG && DLG.finished) ? "" : "— пройди подготовку с ИИ, чтобы поднять вес (без неё голос весит 1)"}</div>
     ${votable.map((o) => `
       <label class="opt-top" style="margin:6px 0">
-        <input type="checkbox" name="opt" value="${o.id}" />
+        <input type="checkbox" name="opt" value="${+o.id}" />
         <span class="opt-label">${esc(o.label || o.headline || "—")}</span>
         ${o.origin === "proposed"
           ? `<span class="muted" style="font-size:12px"> — свой вариант${
@@ -340,7 +341,7 @@ async function castVote() {
     renderTally(res.tally);
     const done = $("#cast-done");
     done.classList.remove("hidden");
-    done.innerHTML = `✓ Голос учтён, вес <span class="weight-badge">${res.weight}</span>. Спасибо!`;
+    done.innerHTML = `✓ Голос учтён, вес <span class="weight-badge">${esc(res.weight)}</span>. Спасибо!`;
   } catch (e) { err("Не удалось проголосовать: " + e.message); btn.disabled = false; }
 }
 
@@ -377,10 +378,10 @@ function renderPrepare() {
     }
   }
   html += "</div>";
-  html += `<div class="prog">ходов: ${DLG.user_turns} / ${DLG.min_turns} (мин.) · до ${DLG.max_turns} макс.</div>`;
+  html += `<div class="prog">ходов: ${esc(DLG.user_turns)} / ${esc(DLG.min_turns)} (мин.) · до ${esc(DLG.max_turns)} макс.</div>`;
 
   if (DLG.finished) {
-    html += `<div class="note">Разбор завершён. Твой вес: <span class="weight-badge">${DLG.weight}</span>.
+    html += `<div class="note">Разбор завершён. Твой вес: <span class="weight-badge">${esc(DLG.weight)}</span>.
       ${DLG.summary ? '<div class="summary">' + esc(DLG.summary) + "</div>" : ""}</div>`;
   } else if (pending) {
     html += `<div class="row" style="margin-top:8px">
@@ -393,7 +394,7 @@ function renderPrepare() {
         <button class="btn" id="send">Отправить</button></div>`;
     const canFinalize = DLG.user_turns >= DLG.min_turns;
     html += `<button class="btn primary" id="finalize" style="margin-top:10px" ${canFinalize ? "" : "disabled"}>
-        ${canFinalize ? "Готов — оценить и открыть голос" : `Ещё минимум ${DLG.min_turns - DLG.user_turns} ход(а)`}</button>`;
+        ${canFinalize ? "Готов — оценить и открыть голос" : `Ещё минимум ${+(DLG.min_turns - DLG.user_turns) || 0} ход(а)`}</button>`;
   }
   box.innerHTML = html;
   $("#chat") && ($("#chat").scrollTop = $("#chat").scrollHeight);

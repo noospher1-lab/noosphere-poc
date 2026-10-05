@@ -76,11 +76,22 @@ function buildFacets(host, onChange) {
     const d = document.createElement("div");
     d.className = "fx-row" + (on ? " on" : "") + (count ? "" : " zero");
     d.style.paddingLeft = (8 + depth * 13) + "px";
-    d.innerHTML =
-      (openable ? `<span class="fx-caret">${opened ? "▾" : "▸"}</span>`
-                : `<span class="fx-caret"></span>`) +
-      (color ? `<span class="fx-dot" style="background:${color}"></span>` : "") +
-      `<span class="fx-nm">${label}</span><span class="fx-ct">${count}</span>`;
+    // label (теги и названия приходят с сервера) и count — только textContent
+    const caret = document.createElement("span");
+    caret.className = "fx-caret";
+    if (openable) caret.textContent = opened ? "▾" : "▸";
+    d.appendChild(caret);
+    if (color) {
+      const dot = document.createElement("span");
+      dot.className = "fx-dot";
+      dot.style.background = color;
+      d.appendChild(dot);
+    }
+    const nm = document.createElement("span");
+    nm.className = "fx-nm"; nm.textContent = label;
+    const ct = document.createElement("span");
+    ct.className = "fx-ct"; ct.textContent = count;
+    d.append(nm, ct);
     d.querySelector(".fx-caret").onclick = e => {
       if (!openable) return;
       e.stopPropagation(); onOpen();

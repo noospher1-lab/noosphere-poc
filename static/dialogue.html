@@ -85,6 +85,7 @@
     padding-left:8px; margin:4px 0; }
   .err { color:var(--red); margin:8px 0; }
 </style>
+<script src="/safe.js"></script>
 <script src="/antispam.js"></script>
 </head>
 <body>
@@ -369,8 +370,8 @@ function renderResults() {
     if (!c) continue;
     const d = document.createElement("div");
     d.className = "crit card";
-    d.innerHTML = `<b>${label}</b> <span class="muted">${c.score} / ${max}</span>
-      <div class="bar"><span style="width:${(c.score / max) * 100}%"></span></div>
+    d.innerHTML = `<b>${escHtml(label)}</b> <span class="muted">${escHtml(c.score)} / ${max}</span>
+      <div class="bar"><span style="width:${+((c.score / max) * 100) || 0}%"></span></div>
       <div class="why"></div>`;
     d.querySelector(".why").textContent = c.why || "";
     for (const q of c.evidence || []) {

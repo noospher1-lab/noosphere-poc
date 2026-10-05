@@ -18,7 +18,8 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const qs = new URLSearchParams(location.search);
 // Сведения — слой обсуждения: адрес — корень обсуждения (?root=128). Старый
 // адрес со словом (?s=ua-eu) сервер ещё понимает.
-const ROOT = qs.get("root") || qs.get("s") || "";
+// ROOT идёт в пути запросов к API: только цифры/слаг, иначе ?root=../… гуляет по API
+const ROOT = /^[\w-]+$/.test(qs.get("root") || qs.get("s") || "") ? (qs.get("root") || qs.get("s")) : "";
 // пришли из довода по карточке сведения — назад к этому доводу (UX 29.09)
 const FROM = /^\d+$/.test(qs.get("from") || "") ? qs.get("from") : null;
 
@@ -111,11 +112,11 @@ function factCard(f, ctx) {
   const extra = [f.applies_to && "кого касается: " + f.applies_to, f.when_text && "когда: " + f.when_text]
     .filter(Boolean).join(" · ");
   const meta = [where, extra].filter(Boolean).join(" · ");
-  const src = f.source_url
-    ? `<a href="${esc(f.source_url)}" target="_blank" rel="noopener nofollow">${esc(f.source_title || hostOf(f.source_url))}</a>`
+  const src = safeUrl(f.source_url)
+    ? `<a href="${esc(safeUrl(f.source_url))}" target="_blank" rel="noopener nofollow">${esc(f.source_title || hostOf(f.source_url))}</a>`
     : `<span>без ссылки</span>`;
   const own = ME && f.author && f.author.id === ME.id;
-  const n = (v, ind) => v ? ` · ${v}${ind !== v ? ` <span class="ind">(независимых ${ind})</span>` : ""}` : "";
+  const n = (v, ind) => v ? ` · ${+v}${ind !== v ? ` <span class="ind">(независимых ${+ind})</span>` : ""}` : "";
   let reports = "";
   if (f.kind === "experience") {
     reports = own ? `<span class="muted">ваше сведение отмечают другие люди</span>` : `
@@ -125,9 +126,9 @@ function factCard(f, ctx) {
   const notes = (f.notes || []).length ? `<ul class="notes">${f.notes.map(x =>
       `<li>${x.verdict === "same" ? "так же" : "иначе"}, ${dateRu(x.at)}: ${esc(x.note)}</li>`).join("")}</ul>` : "";
   return `
-  <article class="fact" id="f${f.id}" data-id="${f.id}">
+  <article class="fact" id="f${+f.id}" data-id="${+f.id}">
     <div class="head">
-      <span class="kind ${f.kind}" title="${esc(KIND[f.kind]?.[1] || "")}">${KIND[f.kind]?.[0] || f.kind}</span>
+      <span class="kind ${esc(f.kind)}" title="${esc(KIND[f.kind]?.[1] || "")}">${esc(KIND[f.kind]?.[0] || f.kind)}</span>
       <div class="title">${esc(f.title)}${f.spam ? ` <span class="spam-tag" title="Помечено как спам: ${esc(f.spam)}. Видно, потому что антиспам выключен или это ваше.">спам</span>` : ""}</div>
     </div>
     ${f.kind === "report" && f.source_url ? `<div class="byline">по данным: ${esc(f.source_title ? f.source_title + " (" + hostOf(f.source_url) + ")" : hostOf(f.source_url))}</div>` : ""}
@@ -139,7 +140,7 @@ function factCard(f, ctx) {
       ${reports}
       <span class="spacer"></span>
       <span>внёс ${esc(f.author?.name || "—")}, ${dateRu(f.created_at)}</span>
-      <a class="idlink" href="#f${f.id}" title="Чтобы сослаться на это сведение в доводе, напишите в тексте #с${f.id}">#с${f.id}</a>
+      <a class="idlink" href="#f${+f.id}" title="Чтобы сослаться на это сведение в доводе, напишите в тексте #с${+f.id}">#с${+f.id}</a>
       ${own ? `<button class="linkbtn rm">снять</button>` : ""}
       ${ME && ME.is_admin ? `<button class="linkbtn spam-adm" data-spam="${f.spam ? 1 : ""}">${f.spam ? "не спам" : "спам"}</button>` : ""}
     </div>
@@ -150,8 +151,8 @@ function factCard(f, ctx) {
 
 // общая часть: заголовки, раскрываются по нажатию
 function factRow(f) {
-  return `<details class="frow" id="f${f.id}" data-id="${f.id}">
-    <summary><span class="kind ${f.kind}">${KIND[f.kind]?.[0] || f.kind}</span>
+  return `<details class="frow" id="f${+f.id}" data-id="${+f.id}">
+    <summary><span class="kind ${esc(f.kind)}">${esc(KIND[f.kind]?.[0] || f.kind)}</span>
       <span class="rt">${esc(f.title)}</span><span class="chev" aria-hidden="true">›</span></summary>
     <div class="fbody"></div>
   </details>`;
@@ -186,7 +187,7 @@ function mapSvg(counts) {
     const cls = (n ? "has" + lvl(n) : "") + (ok ? " pick" : " off");
     const t = `<title>${esc(name)}${n ? ": " + n + " " + plural(n, "сведение", "сведения", "сведений") : ""}</title>`;
     const data = ok ? ` data-c="${esc(name)}"` : "";
-    if (c.d) parts.push(`<path d="${c.d}" class="${cls}"${data}>${t}</path>`);
+    if (c.d) parts.push(`<path d="${esc(c.d)}" class="${cls}"${data}>${t}</path>`);
     if (c.dot) {
       // точка микрогосударства видна маленькой, но нажимается широким кругом
       dots.push(`<g class="dot ${cls}"${data}>${t}<circle class="hit" cx="${c.c[0]}" cy="${c.c[1]}" r="26"/>` +
@@ -204,9 +205,9 @@ function render() {
   SINGLE = v.countries.length === 1 && !v.common.length;
   const counts = Object.fromEntries(v.countries.map(c => [c.country, c.facts]));
   const listed = v.countries.map(c => c.country).sort((a, b) => a.localeCompare(b, "ru"));
-  const rel = (v.related || []).map(r => `<li><a href="/info.html?root=${r.id}">${r.rel === "cause" ? "↑ причина" : "↓ порождает"}: ${esc(r.title || "#" + r.id)}</a> <span class="muted">· сведений: ${r.facts}</span></li>`).join("");
+  const rel = (v.related || []).map(r => `<li><a href="/info.html?root=${+r.id}">${r.rel === "cause" ? "↑ причина" : "↓ порождает"}: ${esc(r.title || "#" + r.id)}</a> <span class="muted">· сведений: ${+r.facts}</span></li>`).join("");
   $("main").innerHTML = `
-    <p class="crumbs"><a href="/n/${FROM || v.topic.id}">${FROM ? "← К доводу" : "← К обсуждению"}</a></p>
+    <p class="crumbs"><a href="/n/${FROM || +v.topic.id}">${FROM ? "← К доводу" : "← К обсуждению"}</a></p>
     <h1><span class="muted small-h">Сведения ·</span> ${esc(v.topic.title)}</h1>
     <nav class="toc toc-top">
       ${v.countries.length && !SINGLE ? `<a class="primary" href="#countries">По странам →</a>` : ""}
@@ -221,7 +222,7 @@ function render() {
         <span><span class="kind report">сообщают</span> пересказ СМИ, юристов, организаций — со ссылкой</span>
         <span><span class="kind experience">опыт людей</span> так было с людьми; «независимых» — отметки, похожие на одного человека, считаются за одну</span>
       </div>
-      <p class="muted small">Сослаться на сведение в доводе обсуждения — написать его номер, например <b>#с${exampleId(v)}</b>: под доводом появится карточка сведения.</p>
+      <p class="muted small">Сослаться на сведение в доводе обсуждения — написать его номер, например <b>#с${esc(exampleId(v))}</b>: под доводом появится карточка сведения.</p>
     </div>` : ""}
 
     ${v.total ? "" : `<p class="empty">У этого обсуждения сведений пока нет — законов, цифр, сообщений
@@ -233,7 +234,7 @@ function render() {
 
     ${SINGLE ? `<section id="country-panel"></section>` : v.countries.length ? `<h2 id="countries">По странам</h2>
     <p class="muted">${v.countries.length} ${plural(v.countries.length, "страна", "страны", "стран")} со сведениями,
-      всего сведений: ${v.total}. Выберите страну в списке или на карте.</p>
+      всего сведений: ${+v.total}. Выберите страну в списке или на карте.</p>
     <div class="mapwrap">
       <div class="side">
         <input type="search" class="csearch" placeholder="Найти страну…" aria-label="Найти страну" />
@@ -275,7 +276,7 @@ function exampleId(v) {
 function countryItems(names, counts) {
   if (!names.length) return `<li class="none"><span>Ничего не нашлось</span></li>`;
   return names.map(c => `<li><button data-c="${esc(c)}" aria-current="${c === CURRENT}">` +
-    `<span>${esc(c)}</span><span class="n">${counts[c] || "—"}</span></button></li>`).join("");
+    `<span>${esc(c)}</span><span class="n">${+counts[c] || "—"}</span></button></li>`).join("");
 }
 
 function bindCountryList(counts, listed) {
@@ -477,7 +478,7 @@ function renderAsk() {
       const where = r.country ? `<p class="muted small">Искал по сведениям для всех и по стране: ${esc(r.country)}.</p>` : "";
       const note = `<p class="muted small">Это пересказ собранных сведений, сделанный ИИ, — не консультация. Проверяйте по источникам в карточках.</p>`;
       const list = r.facts?.length
-        ? `<ul>${r.facts.map(f => `<li><a href="#f${f.id}" data-go="${f.id}">#с${f.id}</a> ${esc(f.title)}${f.country ? " — " + esc(f.country) : ""}${f.city ? ", " + esc(f.city) : ""}</li>`).join("")}</ul>`
+        ? `<ul>${r.facts.map(f => `<li><a href="#f${+f.id}" data-go="${+f.id}">#с${+f.id}</a> ${esc(f.title)}${f.country ? " — " + esc(f.country) : ""}${f.city ? ", " + esc(f.city) : ""}</li>`).join("")}</ul>`
         : "";
       out.innerHTML = r.ok && ans
         ? `<div class="answer">${ans}</div>${note}${where}` + (list ? `<p class="muted">Сведения, по которым искали:</p>${list}` : "")
@@ -583,7 +584,7 @@ function fields(d, scroll = true, byAI = false) {
   // что заполнил ИИ — видно: человек проверяет именно эти поля (UX 29.09)
   if (byAI) for (const [k, v] of Object.entries(d)) {
     if (!v || k === "source_url") continue;
-    const f = s2.querySelector(`[name=${k}]`);
+    const f = s2.querySelector(`[name="${CSS.escape(k)}"]`);
     if (f) f.classList.add("by-ai");
   }
   $("#publish").onclick = async (ev) => {
@@ -611,7 +612,7 @@ async function publishFact(body, b, msg) {
     const downgraded = body.kind === "norm" && r.kind !== "norm"
       ? " Цитату не удалось сверить, поэтому сведение показано как «сообщают»." : "";
     // сообщение переживает перерисовку страницы (UX 28.09, М3)
-    FLASH = { cls: "ok", html: `Опубликовано: <a href="#f${r.id}" data-go="${r.id}">#с${r.id}</a>. ${esc(st + downgraded)}` };
+    FLASH = { cls: "ok", html: `Опубликовано: <a href="#f${+r.id}" data-go="${+r.id}">#с${+r.id}</a>. ${esc(st + downgraded)}` };
     PRESET_COUNTRY = null;
     await reload();
     await reveal(String(r.id));

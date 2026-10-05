@@ -118,6 +118,7 @@
   .act .item .rel { font-size: 12px; color:var(--dim2); font-family:var(--mono); }
   .act .item .t { color:var(--dim); line-height:1.5; margin-top:2px; }
 </style>
+<script src="/safe.js"></script>
 <script src="/antispam.js"></script>
 </head>
 <body>
@@ -287,7 +288,7 @@ function when(iso) {
     { day: "numeric", month: "short", year: "numeric" });
 }
 
-function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : s; return d.innerHTML; }
+const esc = escHtml;   // общий, из safe.js: экранирует и кавычки (годится для атрибутов)
 
 function renderVotes(votes) {
   const box = $("#votesList");
@@ -308,8 +309,8 @@ function renderVotes(votes) {
       <div class="q">${esc(v.question)}</div>
       <div class="opts">${opts}</div>
       <div class="meta">вес <span class="w">×${w}</span>
-        · <span class="st">${st}</span>
-        ${v.dialogue_score != null ? "· понимание " + v.dialogue_score + "/100 " : ""}
+        · <span class="st">${esc(st)}</span>
+        ${v.dialogue_score != null ? "· понимание " + esc(v.dialogue_score) + "/100 " : ""}
         · ${when(v.cast_at)}</div>
       ${why}
     </div>`;
@@ -344,12 +345,12 @@ function renderActivity(activity) {
       : "";
     const items = g.items.filter((it) => !it.is_root).map((it) => {
       const label = it.rel ? (REL_LABEL[it.rel] || it.rel) : (KIND_LABEL[it.kind] || it.kind);
-      const poi = it.poi_score != null ? ` · PoI ${it.poi_score}` : "";
+      const poi = it.poi_score != null ? ` · PoI ${esc(it.poi_score)}` : "";
       return `<div class="item"><span class="rel">${esc(label)}${poi}</span>
         <div class="t">${esc(it.text)}</div></div>`;
     }).join("");
     return `<div class="act">
-      <div class="disc"><a href="/?topic=${g.topic_root_id}" target="_blank">${esc(g.topic_title)}</a>${made}</div>
+      <div class="disc"><a href="/?topic=${+g.topic_root_id}" target="_blank">${esc(g.topic_title)}</a>${made}</div>
       ${items}
     </div>`;
   }).join("");
@@ -473,7 +474,7 @@ function renderPoints(p) {
 
   $("#ptMilestones").innerHTML = p.milestones.map((m) =>
     `<div class="m ${m.done ? "on" : ""}">
-       <div class="t"><span>${m.done ? "✓ " : ""}${esc(m.title)}</span><b>+${m.points}</b></div>
+       <div class="t"><span>${m.done ? "✓ " : ""}${esc(m.title)}</span><b>+${esc(m.points)}</b></div>
        <div class="h">${esc(m.hint)}</div>
      </div>`).join("");
 
@@ -489,7 +490,7 @@ function renderPoints(p) {
         : PT_NAMES[r.kind] || r.kind;
       const sign = r.amount > 0 ? "+" : "";
       return `<div class="r"><span class="k">${esc(label)} · ${when(r.ts)}</span>
-        <span class="amt ${r.amount < 0 ? "neg" : ""}">${sign}${r.amount}</span></div>`;
+        <span class="amt ${r.amount < 0 ? "neg" : ""}">${sign}${esc(r.amount)}</span></div>`;
     }).join("");
   }
 }
@@ -507,7 +508,7 @@ async function loadPoints(myId) {
     $("#ptTop").innerHTML = top.map((t, i) =>
       `<div class="r ${t.id === myId ? "me" : ""}">
          <span class="k">${i + 1}. ${esc(t.name || t.username)}</span>
-         <span class="amt">${t.total}</span></div>`).join("")
+         <span class="amt">${esc(t.total)}</span></div>`).join("")
       || '<p class="muted" style="margin:0">Пока никто не набрал баллов.</p>';
   } catch (_) { /* рейтинг — не главное в карточке, без него она живёт */ }
 }

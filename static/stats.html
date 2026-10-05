@@ -100,6 +100,7 @@
     padding:5px 10px; cursor:pointer; }
   button:hover { border-color:var(--bronze); }
 </style>
+<script src="/safe.js"></script>
 <script src="/antispam.js"></script>
 </head>
 <body>
@@ -209,7 +210,7 @@ function render(d) {
     tile("подтвердили почту", u.verified,
          u.registered ? Math.round(100 * u.verified / u.registered) + "% от всех" : "") +
     tile("прошли диалог PoI", u.with_poi) +
-    tile("новых за сутки", u.new_24h, "за неделю: " + u.new_7d) +
+    tile("новых за сутки", u.new_24h, "за неделю: " + esc(u.new_7d)) +
     tile("живых сессий", p.live_sessions, "включая неактивные вкладки");
 
   $("#online").innerHTML = d.online_now.length ? `<table>
@@ -238,20 +239,20 @@ function render(d) {
       <i class="free" style="width:${100 * inv.free / total}%"></i>
     </div>
     <div class="legend">
-      <span>потрачено <b>${inv.used}</b></span>
-      <span>свободно <b>${inv.free}</b></span>
-      <span>выпущено всего <b>${inv.total}</b></span>
+      <span>потрачено <b>${+inv.used || 0}</b></span>
+      <span>свободно <b>${+inv.free || 0}</b></span>
+      <span>выпущено всего <b>${+inv.total || 0}</b></span>
     </div>`;
 
   const c = d.content, g = d.dialogues;
   $("#content").innerHTML = `<div class="kv">
-    <div><span class="k">тем</span><span class="v">${c.topics}</span></div>
-    <div><span class="k">узлов</span><span class="v">${c.nodes}</span></div>
-    <div><span class="k">доводов</span><span class="v">${c.arguments}</span></div>
-    <div><span class="k">вопросов</span><span class="v">${c.questions}</span></div>
-    <div><span class="k">за сутки</span><span class="v">${c.nodes_24h}</span></div>
-    <div><span class="k">диалогов начато</span><span class="v">${g.started}</span></div>
-    <div><span class="k">из них с итогом</span><span class="v">${g.finished}</span></div>
+    <div><span class="k">тем</span><span class="v">${+c.topics || 0}</span></div>
+    <div><span class="k">узлов</span><span class="v">${+c.nodes || 0}</span></div>
+    <div><span class="k">доводов</span><span class="v">${+c.arguments || 0}</span></div>
+    <div><span class="k">вопросов</span><span class="v">${+c.questions || 0}</span></div>
+    <div><span class="k">за сутки</span><span class="v">${+c.nodes_24h || 0}</span></div>
+    <div><span class="k">диалогов начато</span><span class="v">${+g.started || 0}</span></div>
+    <div><span class="k">из них с итогом</span><span class="v">${+g.finished || 0}</span></div>
   </div>`;
 
   $("#updated").textContent = "обновлено " +
@@ -274,9 +275,9 @@ const COLS = [
       : `<span class="no">—</span>` },
   { k:"created_at",    t:"регистрация", num:true, cell:r => `<span class="muted">${fmtDate(r.created_at)}</span>` },
   { k:"last_seen",     t:"был здесь",   num:true, cell:r => `<span class="muted">${ago(r.last_seen)}</span>` },
-  { k:"nodes",         t:"узлов",       num:true, cell:r => r.nodes || `<span class="zero">0</span>` },
-  { k:"dialogue_poi",  t:"PoI",         num:true, cell:r => r.dialogue_poi ?? `<span class="zero">—</span>` },
-  { k:"calls",         t:"вызовов",     num:true, cell:r => r.calls || `<span class="zero">0</span>` },
+  { k:"nodes",         t:"узлов",       num:true, cell:r => esc(r.nodes) || `<span class="zero">0</span>` },
+  { k:"dialogue_poi",  t:"PoI",         num:true, cell:r => esc(r.dialogue_poi) ?? `<span class="zero">—</span>` },
+  { k:"calls",         t:"вызовов",     num:true, cell:r => esc(r.calls) || `<span class="zero">0</span>` },
   { k:"spent_usd",     t:"потрачено",   num:true, cell:r => r.spent_usd
       ? `<span class="money">${usd(r.spent_usd)}</span>` : `<span class="zero">$0</span>` },
   { k:"spent_24h_usd", t:"за сутки",    num:true, cell:r => r.spent_24h_usd

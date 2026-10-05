@@ -251,9 +251,9 @@ async function loadPresence() {
   try {
     const s = await api("/api/stats");
     const online = s.online
-      ? `<span class="live"><span class="dot"></span><b>${s.online}</b> сейчас</span> · `
+      ? `<span class="live"><span class="dot"></span><b>${+s.online}</b> сейчас</span> · `
       : "";
-    box.innerHTML = online + `<b>${s.registered}</b> ` + plural(s.registered,
+    box.innerHTML = online + `<b>${+s.registered}</b> ` + plural(s.registered,
       "участник", "участника", "участников");
     box.title = `Зарегистрировано: ${s.registered}. ` +
       `Онлайн — те, кто был активен за последние ${s.online_window_min} минут.`;
@@ -916,7 +916,7 @@ function nodeRow(node, type, parentKind) {
   // довод, у которого есть вес.
   const unscored = node.author_is_service || node.author_is_seed
                 || node.kind === "problem";
-  poi.innerHTML = node.poi_score != null ? "PoI <b>" + node.poi_score + "</b>"
+  poi.innerHTML = node.poi_score != null ? "PoI <b>" + escHtml(node.poi_score) + "</b>"
                 : unscored ? "" : "…";
   if (unscored && node.poi_score == null)
     poi.title = node.author_is_service
@@ -2884,11 +2884,11 @@ async function problemCard(nodeId) {
     for (const r of rows) s.appendChild(scaleRow(r, nodeId));
     if (!rows.length) {
       if (p.scale_note) s.appendChild(el("div", "causes", p.scale_note));
-      if (p.scale_url) {
+      if (safeUrl(p.scale_url)) {
         const src = el("div", "scale-src");
         if (p.scale_excerpt) src.appendChild(el("span", "q", "«" + p.scale_excerpt + "» "));
         const a = el("a", null, "источник ↗");
-        a.href = p.scale_url; a.target = "_blank"; a.rel = "noopener";
+        a.href = safeUrl(p.scale_url); a.target = "_blank"; a.rel = "noopener";
         src.appendChild(a);
         s.appendChild(src);
       }
@@ -3005,9 +3005,9 @@ function scaleRow(r, nodeId) {
   if (r.source_url || r.source_excerpt) {
     const src = el("div", "scale-src");
     if (r.source_excerpt) src.appendChild(el("span", "q", "«" + r.source_excerpt + "» "));
-    if (r.source_url) {
+    if (safeUrl(r.source_url)) {
       const a = el("a", null, "источник ↗");
-      a.href = r.source_url; a.target = "_blank"; a.rel = "noopener";
+      a.href = safeUrl(r.source_url); a.target = "_blank"; a.rel = "noopener";
       src.appendChild(a);
       if (r.retrieved_at) src.appendChild(el("span", null,
         " · проверено " + new Date(r.retrieved_at).toLocaleDateString("ru-RU")));
@@ -3141,11 +3141,11 @@ async function interventionCard(iv) {
   if (meta.length) box.appendChild(el("div", "iv-meta", meta.join("    ")));
   if (iv.outcome) box.appendChild(el("div", "iv-out", iv.outcome));
   if (iv.conditions) box.appendChild(el("div", "iv-cond", "условия: " + iv.conditions));
-  if (iv.source_url) {
+  if (safeUrl(iv.source_url)) {
     const src = el("div", "scale-src");
     if (iv.source_excerpt) src.appendChild(el("span", "q", "«" + iv.source_excerpt + "» "));
     const a = el("a", null, "источник ↗");
-    a.href = iv.source_url; a.target = "_blank"; a.rel = "noopener";
+    a.href = safeUrl(iv.source_url); a.target = "_blank"; a.rel = "noopener";
     src.appendChild(a);
     box.appendChild(src);
   }
@@ -3717,7 +3717,7 @@ function newTopicForm(prefill) {
   ];
   function renderChosen() {
     geoChosen.innerHTML = [...chosen]
-      .map(n => `<span class="cmp-chip">${n}<i>×</i></span>`).join("");
+      .map(n => `<span class="cmp-chip">${escHtml(n)}<i>×</i></span>`).join("");
     geoChosen.querySelectorAll(".cmp-chip i").forEach(x => {
       x.onclick = () => { chosen.delete(x.parentElement.firstChild.textContent); renderChosen(); };
     });
@@ -3727,7 +3727,7 @@ function newTopicForm(prefill) {
     if (!q) { geoHits.innerHTML = ""; return; }
     const hits = [...new Set(geoAll())]
       .filter(n => n.toLowerCase().includes(q) && !chosen.has(n)).slice(0, 8);
-    geoHits.innerHTML = hits.map(n => `<span class="cmp-hit">${n}</span>`).join("");
+    geoHits.innerHTML = hits.map(n => `<span class="cmp-hit">${escHtml(n)}</span>`).join("");
     geoHits.querySelectorAll(".cmp-hit").forEach(x => {
       x.onclick = () => { chosen.add(x.textContent); geoIn.value = ""; geoHits.innerHTML = ""; renderChosen(); };
     });
@@ -4243,6 +4243,6 @@ $("#authPass").addEventListener("keydown", (e) => {
     if (AUTH_INTENT && !ME) openAuth(null, AUTH_INTENT);
   } catch (e) {
     $("#tree").innerHTML = '<div class="muted" style="padding:10px">' +
-      "не удалось загрузить: " + e.message + "<br>Обнови страницу через минуту.</div>";
+      "не удалось загрузить: " + escHtml(e.message) + "<br>Обнови страницу через минуту.</div>";
   }
 })();

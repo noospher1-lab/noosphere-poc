@@ -76,6 +76,7 @@
   <div id="main"><div class="empty">выбери человека слева — или смотри общую ленту</div></div>
 </div>
 
+<script src="/safe.js"></script>
 <script>
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
@@ -135,7 +136,7 @@ async function loadAuthors() {
       box.appendChild(row);
     }
   } catch (e) {
-    box.innerHTML = `<div class="empty err">ошибка: ${e.message}</div>`;
+    box.innerHTML = `<div class="empty err">ошибка: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -227,7 +228,7 @@ async function loadFeed() {
     }
     for (const e of items) main.appendChild(entryCard(e));
   } catch (e) {
-    main.innerHTML = `<div class="empty err">ошибка: ${e.message}</div>`;
+    main.innerHTML = `<div class="empty err">ошибка: ${escHtml(e.message)}</div>`;
   }
 }
 
