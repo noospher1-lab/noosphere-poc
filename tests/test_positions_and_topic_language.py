@@ -130,3 +130,12 @@ def test_first_argument_opens_the_first_position(monkeypatch):
     out = pools.assign_argument("первый довод в теме", [])
     assert "none yet" in seen["user"]
     assert out["position_id"] is None and out["headline"] == "Первая"
+
+
+def test_argument_reply_is_scored_with_the_parent_text(monkeypatch):
+    seen = _capture_scoring(monkeypatch)
+    poi.score_argument("Ответ", parent_text="Исходное утверждение")
+    assert "Claim being replied to" in seen[-1]
+    assert "Исходное утверждение" in seen[-1]
+    poi.score_argument("Корневой довод")
+    assert "Claim being replied to" not in seen[-1]

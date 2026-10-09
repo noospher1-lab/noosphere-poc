@@ -404,6 +404,7 @@ def _spawn_billed(author, endpoint, coro):
 _SCORERS = {"question": poi.score_question, "proposal": poi.score_proposal,
             "exploration": poi.score_exploration, "detail": poi.score_detail}
 # rubrics that judge a contribution against the claim it attaches to
+# (score_argument тоже получает родителя — см. _score_now)
 _PARENTED_KINDS = {"question", "detail"}
 
 
@@ -433,7 +434,7 @@ async def _score_now(node_id: int, text: str, kind: str, parent_text: str | None
     except Exception:
         pass
     try:
-        if kind in _PARENTED_KINDS:
+        if kind in _PARENTED_KINDS or fn is poi.score_argument:
             score, breakdown = await asyncio.to_thread(fn, text, parent_text)
         else:
             score, breakdown = await asyncio.to_thread(fn, text)
