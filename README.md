@@ -32,9 +32,17 @@ full design it is an *emergent property* across four layers — semantic,
 identification, economic, and social. LLM-generated text invalidates the
 semantic layer alone, which is precisely why the other layers exist.
 
-PoI does **not** give anyone power. It is a lens — a way to sort and to see
-one's own reasoning — not a vote weight: once a score converts into influence,
-routing everything through an external LLM becomes the dominant strategy.
+PoI is a score of **one text**, not of its author: it is a lens — a way to
+sort and to see one's own reasoning. It is not accumulated into a reputation
+and does not give anyone standing: once an author's history converts into
+influence, routing everything through an external LLM becomes the dominant
+strategy.
+
+Voting is a separate mechanism. A vote's weight (1 to 5, never below 1) comes
+from a fresh dialogue with an AI about that specific vote's topic, held at the
+moment of voting — it measures understanding of the question, not past
+activity. The dialogue and the weight are logged. Voting is switched off on the
+public test stand; the weight code is present but not exercised there.
 
 Out of scope for this PoC: blockchain / smart contracts, hardware, graph DBs,
 real staking or token mechanics, production hardening. These are intentional
